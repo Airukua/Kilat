@@ -16,6 +16,11 @@ ENV/
 .tox/
 .nox/
 
+# Token data files
+data/tokens/
+data/tokens/**/*.parquet
+data/tokens/**/tokenizer/
+
 # Coverage and build outputs
 .coverage
 .coverage.*

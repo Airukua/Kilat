@@ -22,7 +22,7 @@ import torch.nn.functional as F
 from typing import Union, List, Optional
 from transformers import AutoTokenizer
 
-from model import KilatTransformerHF
+from arc.model import KilatTransformer
 from .generation_config import GenerationConfig
 
 
@@ -31,7 +31,7 @@ class KilatGenerator:
 
     def __init__(
         self,
-        model: KilatTransformerHF,
+        model: KilatTransformer,
         tokenizer: AutoTokenizer,
         device: Optional[torch.device] = None,
     ):

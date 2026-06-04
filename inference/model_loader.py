@@ -4,10 +4,10 @@ Model and tokenizer loading utilities.
 Supports multiple checkpoint formats:
 - Standard HuggingFace directory with config.json and model weights (safetensors or bin)
 - YAML configuration (config.yaml) + weights in same directory
-- FullConfig YAML (full_config.yaml) which contains both model and training settings
+- MainConfig YAML (full_config.yaml) which contains both model and training settings
 
 Why support YAML? During development, it's convenient to keep model configs
-in a human‑editable YAML file.  The `FullConfig` also allows storing training
+in a human‑editable YAML file.  The `MainConfig` also allows storing training
 hyperparameters alongside the model for reproducibility.
 """
 
@@ -16,15 +16,15 @@ from typing import Optional, Tuple
 import torch
 from transformers import AutoTokenizer
 
-from model import KilatTransformerHF
-from utils.config import KilatConfig, FullConfig
+from arc.model import KilatTransformer
+from utils.config import KilatConfig, MainConfig
 
 
 def load_model_and_tokenizer(
     checkpoint_path: str,
     device: Optional[torch.device] = None,
     use_yaml_config: bool = False,
-) -> Tuple[KilatTransformerHF, AutoTokenizer]:
+) -> Tuple[KilatTransformer, AutoTokenizer]:
     """
     Load a KilatTransformer model and its tokenizer from a checkpoint.
 
@@ -38,7 +38,7 @@ def load_model_and_tokenizer(
 
     Loading strategy priority (highest to lowest):
         1. If use_yaml_config=True: Load config from config.yaml
-        2. Else if full_config.yaml exists: Load FullConfig (model + training params)
+        2. Else if full_config.yaml exists: Load MainConfig (model + training params)
         3. Else: Standard HF config.json
         
     Why this order? full_config.yaml is the most complete (preserves training
@@ -70,19 +70,19 @@ def load_model_and_tokenizer(
 
     # --- Determine model configuration ---
     # Priority ordering supports development workflow: YAML for active tweaking,
-    # FullConfig for checkpointing experiments, JSON for HF ecosystem compat.
+    # MainConfig for checkpointing experiments, JSON for HF ecosystem compat.
     if use_yaml_config:
         yaml_path = checkpoint_path / "config.yaml" if checkpoint_path.is_dir() else checkpoint_path
         config = KilatConfig.from_yaml(yaml_path)
     elif (checkpoint_path / "full_config.yaml").exists():
-        full_config = FullConfig.from_yaml(checkpoint_path / "full_config.yaml")
+        full_config = MainConfig.from_yaml(checkpoint_path / "full_config.yaml")
         config = full_config.model
     else:
         # Standard HF format - used when sharing models with non-Kilat code
         config = KilatConfig.from_pretrained(str(checkpoint_path))
 
     # --- Instantiate model ---
-    model = KilatTransformerHF(config)
+    model = KilatTransformer(config)
 
     # --- Load weights with fallback strategies ---
     # Three loading methods in order of preference:
@@ -92,7 +92,7 @@ def load_model_and_tokenizer(
     if checkpoint_path.is_dir():
         try:
             # Preferred: Handles modern checkpoint formats transparently
-            model = KilatTransformerHF.from_pretrained(str(checkpoint_path))
+            model = KilatTransformer.from_pretrained(str(checkpoint_path))
         except Exception:
             # Fallback: Older checkpoints from early development
             state_dict_path = checkpoint_path / "pytorch_model.bin"

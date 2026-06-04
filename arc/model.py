@@ -70,7 +70,7 @@ class KilatPreTrainedModel(PreTrainedModel):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
 
-class KilatTransformerHF(KilatPreTrainedModel):
+class KilatTransformer(KilatPreTrainedModel):
     """
     Hugging Face‑compatible KilatTransformer for causal language modelling.
 
@@ -137,7 +137,7 @@ class KilatTransformerHF(KilatPreTrainedModel):
 
     Example::
         >>> config = KilatConfig(vocab_size=32000, n_embd=768, n_head=12, n_layer=12)
-        >>> model = KilatTransformerHF(config)
+        >>> model = KilatTransformer(config)
         >>> input_ids = torch.randint(0, 32000, (2, 128))
         >>> labels = input_ids.clone()
         >>> out = model(input_ids, labels=labels)
@@ -356,7 +356,7 @@ class KilatTransformerHF(KilatPreTrainedModel):
         present_key_values = []
         # ------------------------------------------------
 
-        for block in self.layers:
+        for i, block in enumerate(self.layers):
             # ---------- MODIFIED: pass cache and use_cache to block ----------
             # Original line: x, layer_aux_loss = block(x)
             # Now we pass per‑layer cache and use_cache flag.

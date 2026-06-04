@@ -18,7 +18,7 @@ class KilatConfig(PretrainedConfig):
     ----------------
     This config class serves three purposes:
 
-    1. **Model construction**: All parameters needed by ``KilatTransformerHF.__init__``
+    1. **Model construction**: All parameters needed by ``KilatTransformer.__init__``
        are present, with sensible defaults for each model scale.
     
     2. **Serialization**: Compatible with HF's ``save_pretrained``/``from_pretrained``
@@ -311,7 +311,7 @@ class KilatConfig(PretrainedConfig):
         Enables the workflow:
         1. Edit ``config.yaml`` with desired hyperparameters
         2. Load: ``config = KilatConfig.from_yaml("config.yaml")``
-        3. Construct model: ``model = KilatTransformerHF(config)``
+        3. Construct model: ``model = KilatTransformer(config)``
 
         Parameters
         ----------
@@ -651,7 +651,7 @@ class TrainingConfig:
         return cls(**config_dict)
 
 
-class FullConfig:
+class MainConfig:
     """
     Complete experiment configuration combining model and training settings.
 
@@ -668,7 +668,7 @@ class FullConfig:
     - Did you remember to update both when changing an experiment?
     - How do you reproduce an experiment from a checkpoint directory?
 
-    ``FullConfig`` solves this by bundling everything together while still
+    ``MainConfig`` solves this by bundling everything together while still
     allowing the individual components to be used independently when needed
     (e.g., loading just the model config for inference).
 
@@ -690,8 +690,8 @@ class FullConfig:
           ...
 
     Example::
-        >>> config = FullConfig.from_yaml("experiment_config.yaml")
-        >>> model = KilatTransformerHF(config.model)
+        >>> config = MainConfig.from_yaml("experiment_config.yaml")
+        >>> model = KilatTransformer(config.model)
         >>> train_args = TrainingArguments(**config.training.to_dict())
         >>> config.save_pretrained("./checkpoints/my-model")
     """
@@ -783,7 +783,7 @@ class FullConfig:
         return yaml_str
 
     @classmethod
-    def from_yaml(cls, yaml_path: str | Path) -> "FullConfig":
+    def from_yaml(cls, yaml_path: str | Path) -> "MainConfig":
         """
         Load complete experiment configuration from YAML.
 
@@ -797,7 +797,7 @@ class FullConfig:
 
         Returns
         -------
-        FullConfig
+        MainConfig
             Fully validated configuration ready for training.
         """
         with open(yaml_path, 'r', encoding='utf-8') as f:
