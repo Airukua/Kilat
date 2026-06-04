@@ -281,7 +281,7 @@ class KilatDataset(Dataset):
             # .to_pylist() converts Arrow scalar → Python list.
             # This is a zero‑copy operation for the underlying buffer;
             # the Python list is a view into Arrow's memory in many cases.
-            token_ids = self.parquet_table.column(self.key_name)[idx].to_pylist()
+            token_ids = self.parquet_table.column(self.key_name)[idx].as_py()
         else:
             # In‑memory backend: direct dictionary lookup.
             token_ids = self.samples[idx][self.key_name]

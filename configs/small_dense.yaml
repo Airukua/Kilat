@@ -70,7 +70,7 @@ training:
   precision: fp16  # FP16 for GPU, fp32 for CPU
   
   # Reporting
-  report_to: wandb
+  report_to: "none"
   run_name: "kilat-small-dense-finetune"
   
   # Reproducibility
