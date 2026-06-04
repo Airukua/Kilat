@@ -118,6 +118,23 @@ class KilatTransformerHF(KilatPreTrainedModel):
       placeholder. Full KV‑cache support requires implementing a cache object
       that tracks the compressed MLA KV states.
 
+    Incremental Decoding Support (added)
+    ------------------------------------
+    The model now supports efficient autoregressive generation using a compressed
+    KV‑cache. The cache is a tuple of per‑layer caches, each of which is a tuple
+    `(global_state, latent_kv)` as produced by `KilatAttention`.
+    - `global_state`: (B, n_global_heads, head_dim) – recurrent state for global decay heads.
+    - `latent_kv`: (B, total_len, latent_dim) – compressed KV for latent MLA heads.
+
+    Usage:
+        # First forward (prompt processing)
+        outputs = model(input_ids, use_cache=True)
+        past_key_values = outputs.past_key_values
+
+        # Subsequent steps (generation)
+        next_token = sample(outputs.logits[:, -1, :])
+        outputs = model(next_token, past_key_values=past_key_values, use_cache=True)
+
     Example::
         >>> config = KilatConfig(vocab_size=32000, n_embd=768, n_head=12, n_layer=12)
         >>> model = KilatTransformerHF(config)
@@ -238,6 +255,10 @@ class KilatTransformerHF(KilatPreTrainedModel):
         input_ids: torch.Tensor,
         labels: Optional[torch.Tensor] = None,
         return_dict: Optional[bool] = None,
+        # ---------- ADDED FOR INCREMENTAL DECODING ----------
+        past_key_values: Optional[Tuple[Tuple[torch.Tensor, torch.Tensor], ...]] = None,
+        use_cache: Optional[bool] = None,
+        # ---------------------------------------------------
         **kwargs,  # absorb extra HF Trainer args (e.g., attention_mask)
     ) -> Union[Tuple[torch.Tensor, ...], CausalLMOutputWithPast]:
         """
@@ -266,6 +287,20 @@ class KilatTransformerHF(KilatPreTrainedModel):
         - The aux loss is added AFTER the primary cross‑entropy loss, so it
           doesn't affect perplexity calculations (only gradients)
 
+        Incremental Decoding Parameters (added)
+        ----------------------------------------
+        past_key_values : Optional[Tuple]
+            Caches from previous forward calls, as returned by this method.
+            For the first forward call, pass None. For subsequent generation steps,
+            pass the `past_key_values` that was returned earlier.
+            The tuple has length `config.n_layer`. Each element is either None
+            (if no cache available for that layer) or a tuple of
+            (global_state, latent_kv).
+        use_cache : Optional[bool]
+            If True, returns `past_key_values` that can be used for incremental
+            decoding. If False, no cache is returned (saves memory during training).
+            Defaults to self.config.use_cache.
+
         Parameters
         ----------
         input_ids : torch.Tensor
@@ -283,17 +318,32 @@ class KilatTransformerHF(KilatPreTrainedModel):
         Returns
         -------
         Union[Tuple, CausalLMOutputWithPast]
-            If return_dict=True: CausalLMOutputWithPast with loss and logits.
-            If return_dict=False: tuple of (loss, logits) or just (logits,)
-            if labels is None.
+            If return_dict=True: CausalLMOutputWithPast with loss, logits,
+            and past_key_values (if use_cache).
+            If return_dict=False: tuple of (loss, logits, past_key_values) or
+            (logits, past_key_values) or (loss, logits) depending on flags.
         """
         return_dict = (
             return_dict if return_dict is not None else self.config.use_return_dict
         )
+        # ---------- ADDED: handle use_cache default ----------
+        use_cache = use_cache if use_cache is not None else self.config.use_cache
+        # -----------------------------------------------------
         validate_tensor_rank(input_ids, 2, "input_ids")
 
         # Embed and apply dropout
         x = self.drop(self.wte(input_ids))
+
+        # ---------- ADDED: prepare per‑layer cache list ----------
+        if past_key_values is None:
+            past_key_values = [None] * self.config.n_layer
+        else:
+            if len(past_key_values) != self.config.n_layer:
+                raise ValueError(
+                    f"past_key_values length ({len(past_key_values)}) does not match "
+                    f"number of layers ({self.config.n_layer})"
+                )
+        # ---------------------------------------------------------
 
         # Pass through transformer blocks, accumulating MoE auxiliary loss.
         # The auxiliary loss is a scalar tensor that accumulates across blocks.
@@ -302,11 +352,35 @@ class KilatTransformerHF(KilatPreTrainedModel):
         total_aux_loss = torch.tensor(0.0, device=x.device, dtype=x.dtype)
         has_moe = False  # Track if any block actually uses MoE
 
+        # ---------- ADDED: collect new caches ----------
+        present_key_values = []
+        # ------------------------------------------------
+
         for block in self.layers:
-            x, layer_aux_loss = block(x)
+            # ---------- MODIFIED: pass cache and use_cache to block ----------
+            # Original line: x, layer_aux_loss = block(x)
+            # Now we pass per‑layer cache and use_cache flag.
+            # The block returns (output, aux_loss, present_cache)
+            x, layer_aux_loss, layer_present = block(
+                x,
+                past_key_values=past_key_values[i] if past_key_values else None,
+                use_cache=use_cache,
+            )
+            # -----------------------------------------------------------------
             if layer_aux_loss is not None:
                 total_aux_loss = total_aux_loss + layer_aux_loss
                 has_moe = True
+            # ---------- ADDED: store present cache ----------
+            if use_cache:
+                present_key_values.append(layer_present)
+            # ------------------------------------------------
+
+        # ---------- ADDED: convert list to tuple for HF ----------
+        if use_cache:
+            present_key_values = tuple(present_key_values)
+        else:
+            present_key_values = None
+        # ---------------------------------------------------------
 
         # Final norm + project to vocabulary.
         # ln_f ensures the hidden states are normalized before the LM head,
@@ -349,17 +423,22 @@ class KilatTransformerHF(KilatPreTrainedModel):
 
         # Return format: respect HF's return_dict convention.
         # Tuple format: (loss, logits) or just (logits,) for backward compat.
+        # ---------- MODIFIED: include cache in tuple when use_cache ----------
         if not return_dict:
             output = (logits,)
-            return ((loss,) + output) if loss is not None else output
+            if use_cache:
+                output = output + (present_key_values,)
+            if loss is not None:
+                output = (loss,) + output
+            return output
+        # ---------------------------------------------------------------------
 
         # CausalLMOutputWithPast: standard HF output dataclass.
-        # past_key_values=None is a placeholder — KV‑cache support requires
-        # implementing cache tracking for the compressed MLA KV states.
+        # past_key_values now contains the updated cache for incremental decoding.
         return CausalLMOutputWithPast(
             loss=loss,
             logits=logits,
-            past_key_values=None,   # KV‑cache placeholder for future integration
+            past_key_values=present_key_values,   # was None, now cache
             hidden_states=None,
             attentions=None,
         )

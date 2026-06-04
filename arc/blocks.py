@@ -42,6 +42,13 @@ class RMSNorm(nn.Module):
     weight parameter allows the model to adjust per-dimension magnitude
     as needed.
 
+    Incremental Decoding Compatibility
+    ----------------------------------
+    RMSNorm is stateless — each position is normalized independently using
+    only its own feature values. This means no cache is needed and no changes
+    are required for incremental decoding. Unlike attention or recurrent
+    layers, normalization layers don't accumulate state across time steps.
+
     Parameters
     ----------
     normalized_shape : int or tuple
@@ -95,6 +102,26 @@ class Block(nn.Module):
 
     When the FFN is in MoE mode, an auxiliary load‑balancing loss is returned.
 
+    Incremental Decoding Support
+    ----------------------------
+    The block acts as a pass-through for KV-cache: it receives cached states
+    from previous steps via ``past_key_values`` and returns updated states
+    via ``present_key_values``. The FFN path does NOT participate in caching
+    because it's a position-wise operation with no inter-token dependencies.
+    
+    Cache flow through the block:
+        Input:  x, past_key_values
+        Step 1: norm_x = rms1(x)                           [stateless]
+        Step 2: attn_out, present_kv = attn(norm_x, ...)   [stateful, produces cache]
+        Step 3: x = x + attn_out                            [residual, stateless]
+        Step 4: ffn_out, aux = mlp(rms2(x))                [stateless]
+        Step 5: x = x + dropout(ffn_out)                   [residual, stateless]
+        Output: x, aux_loss, present_key_values
+
+    The auxiliary loss from MoE layers is accumulated across blocks during
+    training. During incremental decoding, MoE routing operates independently
+    on each token — no state tracking needed.
+
     Design Decisions
     ----------------
     1. **Pre-norm architecture**: Normalization BEFORE each sublayer (attention,
@@ -122,32 +149,34 @@ class Block(nn.Module):
        regularization and potentially harm gradient flow through the critical
        attention pathway.
 
-    5. **Auxiliary loss return**: For MoE FFNs, the block returns a tuple
-       ``(output, aux_loss)``. The auxiliary loss must be accumulated across
-       all blocks and added to the main loss. Returning it here allows the
-       trainer to collect it without the block needing to know about the
-       training loop. For dense FFNs, returns ``None`` to indicate no
-       auxiliary loss — the trainer can sum only the non-None values.
+    5. **Auxiliary loss return**: For MoE FFNs, the block returns the auxiliary
+       loss alongside the output. The loss is accumulated across all blocks in
+       the main model's forward pass and added to the primary language modeling
+       loss. For dense FFNs, returns ``None`` — the trainer can safely sum
+       only non-None values. During incremental decoding, the auxiliary loss is
+       ignored (MoE routing still operates but without loss computation).
 
     Normalization layers are **RMSNorm** (not LayerNorm), which is more
     memory‑efficient and widely adopted in recent LLMs.
 
-    Example usage (dense FFN)::
+    Example usage (dense FFN, training)::
 
         >>> block = Block(n_embd=512, n_head=8, ffn_mode='dense')
         >>> x = torch.randn(2, 128, 512)
-        >>> out, loss = block(x)
+        >>> out, aux_loss, cache = block(x)
         >>> print(out.shape)   # torch.Size([2, 128, 512])
-        >>> print(loss)        # None
+        >>> print(aux_loss)    # None
+        >>> print(cache)       # None (use_cache=False by default)
 
-    Example usage (MoE FFN)::
+    Example usage (MoE FFN, incremental decoding)::
 
         >>> block = Block(n_embd=512, n_head=8, ffn_mode='moe',
         ...               num_experts=8, active_experts=2, aux_loss_coef=0.01)
-        >>> x = torch.randn(2, 128, 512)
-        >>> out, loss = block(x)
-        >>> print(out.shape)   # torch.Size([2, 128, 512])
-        >>> print(loss)        # scalar tensor
+        >>> x = torch.randn(2, 1, 512)  # Single new token
+        >>> cache = load_cache()  # From previous step
+        >>> out, aux_loss, new_cache = block(x, past_key_values=cache, use_cache=True)
+        >>> print(out.shape)      # torch.Size([2, 1, 512])
+        >>> print(new_cache)      # Updated cache for next step
     """
 
     def __init__(
@@ -211,7 +240,8 @@ class Block(nn.Module):
 
         # Fused attention module: combines global decay (linear complexity)
         # and latent MLA (compressed KV-cache) attention pathways.
-        # See KilatAttention docstring for architecture details.
+        # This is the only stateful component in the block — it produces
+        # and consumes KV-cache for incremental decoding.
         self.attn = KilatAttention(
             n_embd=n_embd,
             n_head=n_head,
@@ -223,6 +253,7 @@ class Block(nn.Module):
         # Feed‑forward module (dense SwiGLU or MoE with SwiGLU experts).
         # SwiGLU is used instead of ReLU/GELU because it consistently
         # outperforms in transformer architectures (Shazeer, 2020).
+        # FFN is stateless — each token is processed independently.
         self.mlp = FeedForward(
             dim=n_embd,
             mode=ffn_mode,
@@ -239,10 +270,13 @@ class Block(nn.Module):
         self.resid_drop = nn.Dropout(resid_drop) if resid_drop > 0 else nn.Identity()
 
     def forward(
-        self, x: torch.Tensor
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        self,
+        x: torch.Tensor,
+        past_key_values: Optional[Tuple] = None,
+        use_cache: bool = False,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple]]:
         """
-        Forward pass with pre-norm and residual connections.
+        Forward pass with pre-norm, residual connections, and KV-cache support.
 
         The pre-norm pattern (norm before sublayer, add residual after)
         ensures that the residual stream carries "clean" representations
@@ -250,35 +284,89 @@ class Block(nn.Module):
         of the original Transformer's post-norm design and has become
         standard for large model training.
 
+        Cache Management
+        ---------------
+        The block acts as a thin wrapper around KilatAttention for cache
+        management. It does NOT modify or inspect the cache — it simply
+        passes it through. This separation of concerns keeps the block
+        focused on the residual structure while the attention module
+        handles all cache logic.
+
+        The FFN path produces an auxiliary loss in MoE mode. During
+        incremental decoding, this loss is still produced but typically
+        ignored by the caller (who only needs the output and cache).
+
         Parameters
         ----------
         x : torch.Tensor
-            Input tensor of shape ``(B, N, n_embd)`` where:
-            B = batch size, N = sequence length, n_embd = hidden dimension.
+            Input tensor of shape (B, N, n_embd). For incremental decoding,
+            N=1 (single new token).
+        past_key_values : Optional[Tuple]
+            Cached attention states from previous forward pass, or None
+            for the first step or full-sequence processing.
+        use_cache : bool
+            If True, the attention module will return updated cache alongside
+            its output. Should be False during training, True during generation.
 
         Returns
         -------
-        Tuple[torch.Tensor, Optional[torch.Tensor]]
-            - **output**: Tensor of shape ``(B, N, n_embd)``.
-            - **aux_loss**: Scalar tensor if FFN is MoE (should be summed
-              across all blocks and added to main loss), else ``None``.
+        Tuple containing:
+            - **output**: Tensor of shape (B, N, n_embd). The transformed
+              representation after attention, FFN, and residual connections.
+            - **aux_loss**: Scalar tensor if FFN is MoE (routed experts active),
+              else None. During generation, this is typically ignored.
+            - **present_key_values**: Updated cache tuple if use_cache=True,
+              else None. Contains the attention module's cache for the next
+              incremental step.
         """
-        # Attention residual path:
-        # 1. Apply RMSNorm (pre-norm)
-        # 2. Run attention (includes both global decay and latent MLA paths)
-        # 3. Add to residual stream (x = x + attention_output)
-        # The residual connection preserves the original signal, while
-        # attention adds context-dependent information.
-        x = x + self.attn(self.rms1(x))
+        # -----------------------------------------------------------------
+        # ATTENTION RESIDUAL PATH
+        # -----------------------------------------------------------------
+        # The attention sublayer is the ONLY stateful component.
+        # 1. Apply RMSNorm (pre-norm) — stateless, works on any sequence length
+        # 2. Run attention with cache — produces output and optionally new cache
+        # 3. Add to residual stream — preserves identity path for gradient flow
+        #
+        # The attention module returns either:
+        # - use_cache=False: just the output tensor
+        # - use_cache=True: (output, cache_tuple)
+        attn_out = self.attn(
+            self.rms1(x),
+            past_key_values=past_key_values,
+            use_cache=use_cache,
+        )
+        
+        # Unpack attention output based on whether caching is enabled.
+        # This conditional maintains backward compatibility: existing training
+        # code that doesn't pass use_cache will still work because the default
+        # is False, and the attention module returns just the tensor.
+        if use_cache:
+            attn_output, present_key_values = attn_out
+        else:
+            attn_output = attn_out
+            present_key_values = None
+            
+        # Residual connection: add attention output to the input.
+        # The residual stream (x) accumulates information from all layers,
+        # while the attention sublayer contributes context-dependent features.
+        x = x + attn_output
 
-        # FFN residual path:
-        # 1. Apply RMSNorm (pre-norm, separate from attention norm)
+        # -----------------------------------------------------------------
+        # FFN RESIDUAL PATH
+        # -----------------------------------------------------------------
+        # The FFN sublayer is stateless — each position is processed
+        # independently with no cross-position dependencies. This means:
+        # - No cache is needed or produced
+        # - Incremental decoding only processes the new token(s)
+        # - MoE routing operates independently per token
+        #
+        # 1. Apply RMSNorm (separate from attention norm)
         # 2. Run feed-forward network (dense or MoE)
-        # 3. Apply residual dropout (if configured)
+        # 3. Apply residual dropout (only during training)
         # 4. Add to residual stream
-        # The FFN transforms each position independently, adding
-        # position-wise processing capacity to the block.
         ffn_out, aux_loss = self.mlp(self.rms2(x))
         x = x + self.resid_drop(ffn_out)
 
-        return x, aux_loss
+        # Return output, auxiliary loss, and optionally the updated cache.
+        # The cache is None during training to avoid unnecessary memory usage.
+        return x, aux_loss, present_key_values
