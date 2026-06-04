@@ -1,0 +1,77 @@
+experiment:
+  name: "kilat-small-dense-finetune"
+  description: "Fine-tuning on downstream task with dense FFN"
+  tags: ["fine-tuning", "dense", "small"]
+
+model:
+  # Core architecture
+  vocab_size: 32000
+  n_embd: 768
+  n_layer: 12
+  n_head: 12
+  
+  # Attention
+  recall_ratio: 0.5
+  latent_dim: null  # n_embd // 4 = 192
+  attn_drop: 0.1
+  
+  # Feed-forward (dense)
+  ffn_mode: dense
+  ff_mult: 2.67
+  ffn_dropout: 0.1
+  
+  # Regularisation
+  embd_drop: 0.1
+  resid_drop: 0.1
+  
+  # Token IDs
+  pad_token_id: 0
+  bos_token_id: 1
+  eos_token_id: 2
+  
+  # Weight tying
+  tie_word_embeddings: true
+  use_cache: false
+  initializer_range: 0.02
+
+training:
+  # I/O
+  output_dir: "./checkpoints/kilat-small-dense"
+  resume_from_checkpoint: null
+  save_checkpoints: true
+  
+  # Training mode (epoch-based for fine-tuning)
+  training_mode: epochs
+  num_train_epochs: 5
+  
+  # Optimisation
+  learning_rate: 5.0e-05
+  per_device_train_batch_size: 16
+  per_device_eval_batch_size: 32
+  gradient_accumulation_steps: 2
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+  
+  # Schedule
+  warmup_steps: 500
+  max_steps: -1  # Ignored in epochs mode
+  
+  # Logging & evaluation
+  logging_steps: 50
+  eval_steps: 200
+  save_steps: 500
+  save_total_limit: 3
+  
+  # Early stopping
+  early_stopping_patience: 3
+  early_stopping_threshold: 0.0
+  
+  # Mixed precision
+  precision: fp16  # FP16 for GPU, fp32 for CPU
+  
+  # Reporting
+  report_to: wandb
+  run_name: "kilat-small-dense-finetune"
+  
+  # Reproducibility
+  seed: 42

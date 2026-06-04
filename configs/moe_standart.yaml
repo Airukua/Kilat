@@ -1,0 +1,85 @@
+experiment:
+  name: "kilat-moe-medium"
+  description: "Medium-scale MoE model with standard routing"
+  tags: ["pretraining", "moe", "medium"]
+
+model:
+  # Core architecture
+  vocab_size: 64000
+  n_embd: 1024
+  n_layer: 24
+  n_head: 16
+  
+  # Attention
+  recall_ratio: 0.4  # 40% recall, 60% global decay
+  latent_dim: 256
+  attn_drop: 0.0
+  
+  # Feed-forward (Standard MoE)
+  ffn_mode: moe
+  ff_mult: 2.67
+  ffn_dropout: 0.0
+  
+  # MoE settings
+  num_experts: 8
+  active_experts: 2
+  num_shared_experts: 0  # Standard MoE
+  fine_grained_factor: 1
+  aux_loss_coef: 0.01
+  device_balance_coef: 0.0  # Single GPU
+  
+  # Regularisation
+  embd_drop: 0.0
+  resid_drop: 0.0
+  
+  # Token IDs
+  pad_token_id: 0
+  bos_token_id: 1
+  eos_token_id: 2
+  
+  # Weight tying
+  tie_word_embeddings: true
+  use_cache: false
+  initializer_range: 0.02
+
+training:
+  # I/O
+  output_dir: "./checkpoints/kilat-moe-medium"
+  resume_from_checkpoint: null
+  save_checkpoints: true
+  
+  # Training mode (step-based for pretraining)
+  training_mode: steps
+  max_steps: 100000
+  
+  # Optimisation
+  learning_rate: 3.0e-04
+  per_device_train_batch_size: 8
+  per_device_eval_batch_size: 16
+  gradient_accumulation_steps: 4
+  weight_decay: 0.1
+  max_grad_norm: 1.0
+  
+  # Schedule
+  warmup_steps: 2000
+  num_train_epochs: 1  # Ignored in steps mode
+  
+  # Logging & evaluation
+  logging_steps: 100
+  eval_steps: 1000
+  save_steps: 5000
+  save_total_limit: 5
+  
+  # Early stopping
+  early_stopping_patience: 5
+  early_stopping_threshold: 0.0001
+  
+  # Mixed precision
+  precision: bf16  # BF16 for Ampere+ GPUs
+  
+  # Reporting
+  report_to: wandb
+  run_name: "kilat-moe-medium-pretrain"
+  
+  # Reproducibility
+  seed: 42

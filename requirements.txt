@@ -1,0 +1,6 @@
+torch>=2.0
+transformers>=4.40
+tqdm>=4.66
+pyarrow>=14.0
+triton>=2.0
+wandb>=0.16
