@@ -320,7 +320,7 @@ If Kilat helps your research, please cite:
 @software{kilat2024,
   author  = {Abdul Wahid Rukua},
   title   = {Kilat: Lightweight Transformer Training \& Inference Toolkit},
-  year    = {2024},
+  year    = {2026},
   url     = {https://github.com/Airukua/kilat}
 }
 ```
@@ -330,6 +330,7 @@ If Kilat helps your research, please cite:
 ## Author
 
 **Abdul Wahid Rukua** — AI/ML Engineer & Researcher
+
 Focus: efficient sequence modeling, Indonesian NLP, low-resource language technology
 
 [![HuggingFace](https://img.shields.io/badge/🤗%20HuggingFace-AiRukua-FFD21E?style=flat-square)](https://huggingface.co/AiRukua)
