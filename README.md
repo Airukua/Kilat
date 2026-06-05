@@ -1,6 +1,6 @@
 <div align="center">
 
-# ⚡ Kilat
+# ⚡ Kilat : Kernelized Lightweight Attention
 
 **Lightweight Transformer Training & Inference Toolkit**
 
@@ -317,9 +317,9 @@ git push origin feature/your-feature
 If Kilat helps your research, please cite:
 
 ```bibtex
-@software{kilat2024,
+@software{kilat2026,
   author  = {Abdul Wahid Rukua},
-  title   = {Kilat: Lightweight Transformer Training \& Inference Toolkit},
+  title   = {Kilat: Kernelized Lightweight Attention},
   year    = {2026},
   url     = {https://github.com/Airukua/kilat}
 }
