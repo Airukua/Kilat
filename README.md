@@ -342,8 +342,6 @@ If Kilat helps your research, please cite:
 ## Author
 
 **Abdul Wahid Rukua** — AI/ML Engineer & Researcher
-
-MSc Artificial Intelligence · University of Southampton  
 Focus: efficient sequence modeling, Indonesian NLP, low-resource language technology
 
 [![HuggingFace](https://img.shields.io/badge/🤗%20HuggingFace-AiRukua-FFD21E?style=flat-square)](https://huggingface.co/AiRukua)
