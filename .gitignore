@@ -21,6 +21,10 @@ data/tokens/
 data/tokens/**/*.parquet
 data/tokens/**/tokenizer/
 
+# checkpoints and logs
+checkpoints/
+logs/
+
 # Coverage and build outputs
 .coverage
 .coverage.*

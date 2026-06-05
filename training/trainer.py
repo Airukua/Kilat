@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import math
+import os
+import random
 import time
 from typing import Any, Optional
 
+import sentencepiece as spm
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, IterableDataset
 from tqdm import tqdm
 from transformers import PreTrainedModel
 
@@ -31,6 +34,23 @@ from .checkpointing import (
     resume_from_checkpoint,
     prune_checkpoints,
 )
+
+
+def _iterable_from_dataset(ds: Dataset) -> IterableDataset:
+    """Wrap a Dataset with an IterableDataset that delegates iteration.
+
+    This forces DataLoader to use the dataset's __iter__ implementation
+    (required for streaming mode where __getitem__ is not supported).
+    """
+
+    class _Wrapper(IterableDataset):
+        def __init__(self, inner: Dataset):
+            self._inner = inner
+
+        def __iter__(self):
+            return iter(self._inner)
+
+    return _Wrapper(ds)
 
 
 class KilatTrainer:
@@ -133,12 +153,14 @@ class KilatTrainer:
         train_dataset: Dataset,
         eval_dataset: Optional[Dataset] = None,
         data_collator: Optional[Any] = None,
+        tokenizer_model_path: Optional[str] = None,
     ) -> None:
         self.model = model
         self.args = args
         self.train_dataset = train_dataset
         self.eval_dataset = eval_dataset
         self.data_collator = data_collator
+        self._prompt_decoder = self._load_prompt_decoder(tokenizer_model_path)
 
         # Reproducibility: Set seed before any initialization to ensure
         # consistent parameter initialization, data shuffling, and dropout patterns.
@@ -171,29 +193,56 @@ class KilatTrainer:
         # to the correct backend. CPU AMP is not supported for training.
         self._autocast_device: str = "cuda" if torch.cuda.is_available() else "cpu"
 
-        # Training DataLoader: shuffle=True for training to prevent the model
+        # Training DataLoader: shuffle=Flase for training to prevent the model
         # from learning dataset order patterns. pin_memory speeds up CPU->GPU
         # transfers by using pinned (page-locked) memory.
-        self.train_dataloader = DataLoader(
-            self.train_dataset,
-            batch_size=self.args.per_device_train_batch_size,
-            shuffle=True,
-            collate_fn=self.data_collator,
-            pin_memory=torch.cuda.is_available(),
-        )
+        is_streaming = getattr(self.train_dataset, 'streaming', False)
+        self._train_is_streaming = is_streaming
+
+        if is_streaming:
+            ds_for_loader = _iterable_from_dataset(self.train_dataset)
+            # When streaming, set batch_size=None so DataLoader yields the
+            # dataset's elements directly (already collated batches).
+            self.train_dataloader = DataLoader(
+                ds_for_loader,
+                batch_size=None,
+                shuffle=False,
+                collate_fn=None,
+                pin_memory=torch.cuda.is_available(),
+            )
+        else:
+            self.train_dataloader = DataLoader(
+                self.train_dataset,
+                batch_size=self.args.per_device_train_batch_size,
+                shuffle=True,
+                collate_fn=self.data_collator,
+                pin_memory=torch.cuda.is_available(),
+            )
 
         # Evaluation DataLoader (optional) + early stopping callback
         # Early stopping uses a patience-based approach: training stops if
         # eval loss doesn't improve for 'patience' consecutive evaluations.
         # Threshold prevents stopping on negligible improvements.
         if self.eval_dataset is not None:
-            self.eval_dataloader: Optional[DataLoader] = DataLoader(
-                self.eval_dataset,
-                batch_size=self.args.per_device_eval_batch_size,
-                shuffle=False,  # No shuffling for evaluation - deterministic results
-                collate_fn=self.data_collator,
-                pin_memory=torch.cuda.is_available(),
-            )
+            is_streaming_eval = getattr(self.eval_dataset, "streaming", False)
+            self._eval_is_streaming = is_streaming_eval
+            if is_streaming_eval:
+                eval_ds_for_loader = _iterable_from_dataset(self.eval_dataset)
+                self.eval_dataloader: Optional[DataLoader] = DataLoader(
+                    eval_ds_for_loader,
+                    batch_size=None,
+                    shuffle=False,
+                    collate_fn=None,
+                    pin_memory=torch.cuda.is_available(),
+                )
+            else:
+                self.eval_dataloader: Optional[DataLoader] = DataLoader(
+                    self.eval_dataset,
+                    batch_size=self.args.per_device_eval_batch_size,
+                    shuffle=False,  # No shuffling for evaluation - deterministic results
+                    collate_fn=self.data_collator,
+                    pin_memory=torch.cuda.is_available(),
+                )
             self.early_stopping: Optional[EarlyStoppingCallback] = EarlyStoppingCallback(
                 patience=args.early_stopping_patience,
                 threshold=args.early_stopping_threshold,
@@ -201,16 +250,24 @@ class KilatTrainer:
         else:
             self.eval_dataloader = None
             self.early_stopping = None
+            self._eval_is_streaming = False
 
         # Compute total steps: In steps mode, this is simply max_steps.
         # In epochs mode, this is calculated from num_epochs * batches_per_epoch,
         # divided by gradient_accumulation_steps since optimizer only steps
         # after accumulation is complete.
+        # Compute dataloader length: For streaming datasets, use dataset length
+        # if available; otherwise use dataloader length for regular datasets.
+        if self._train_is_streaming:
+            dataloader_len = len(self.train_dataset) if hasattr(self.train_dataset, '__len__') else 1
+        else:
+            dataloader_len = len(self.train_dataloader)
+
         self.total_steps = compute_total_steps(
             args.training_mode,
             args.max_steps,
             args.num_train_epochs,
-            len(self.train_dataloader),
+            dataloader_len,
             args.gradient_accumulation_steps,
         )
 
@@ -281,6 +338,36 @@ class KilatTrainer:
             },
             self.model.config.to_dict(),
         )
+
+    def _load_prompt_decoder(self, tokenizer_model_path: Optional[str]) -> Optional[spm.SentencePieceProcessor]:
+        """Load a SentencePiece model for decoding validation prompts."""
+        if tokenizer_model_path is not None and os.path.exists(tokenizer_model_path):
+            decoder = spm.SentencePieceProcessor()
+            decoder.load(tokenizer_model_path)
+            return decoder
+
+        default_path = os.path.join(
+            os.getcwd(),
+            "data",
+            "tokens",
+            "train",
+            "tokenizer",
+            "sp_tokenizer.model",
+        )
+        if os.path.exists(default_path):
+            decoder = spm.SentencePieceProcessor()
+            decoder.load(default_path)
+            return decoder
+
+        return None
+
+    def _decode_prompt(self, token_ids: torch.Tensor) -> str:
+        """Decode token IDs to text using the loaded SentencePiece model."""
+        if self._prompt_decoder is None:
+            text = " ".join(str(int(tok)) for tok in token_ids.tolist())
+            return f"[token ids] {text}"
+
+        return self._prompt_decoder.decode(token_ids.tolist())
 
     # -------------------------------------------------------------------
     # Main training loop -- dispatcher
@@ -483,9 +570,15 @@ class KilatTrainer:
 
             # Each epoch gets its own progress bar for cleaner visualization.
             # 'leave=True' keeps completed epoch bars visible for reference.
+            # Compute total batches for progress bar: Use dataset length for streaming
+            if self._train_is_streaming:
+                total_batches = len(self.train_dataset) if hasattr(self.train_dataset, '__len__') else None
+            else:
+                total_batches = len(self.train_dataloader)
+
             progress_bar = tqdm(
                 enumerate(self.train_dataloader),
-                total=len(self.train_dataloader),
+                total=total_batches,
                 desc=f"Epoch {epoch}/{self.args.num_train_epochs}",
                 dynamic_ncols=True,
                 unit="batch",
@@ -571,7 +664,7 @@ class KilatTrainer:
         self._finish()
 
 
-    def _forward_backward(self, batch: dict[str, torch.Tensor]) -> float:
+    def _forward_backward(self, batch: Any) -> float:
         """
         Run a single forward + backward pass with AMP autocast.
         
@@ -590,8 +683,21 @@ class KilatTrainer:
         - autocast handles the mixed precision conversion automatically
           based on the configured dtype and device type.
         """
-        input_ids = batch["input_ids"].to(self.device, non_blocking=True)
-        labels = batch["labels"].to(self.device, non_blocking=True)
+        # Support both mapping batches (dict with 'input_ids'/'labels')
+        # and streaming IterableDatasets that return (inputs, labels) tuples.
+        if isinstance(batch, (tuple, list)):
+            input_ids, labels = batch
+            # DataLoader may wrap each element in a leading batch dim when
+            # using batch_size=1 for streaming. Squeeze that dim if present.
+            if isinstance(input_ids, torch.Tensor) and input_ids.dim() == 3:
+                input_ids = input_ids.squeeze(0)
+                labels = labels.squeeze(0)
+        else:
+            input_ids = batch["input_ids"]
+            labels = batch["labels"]
+
+        input_ids = input_ids.to(self.device, non_blocking=True)
+        labels = labels.to(self.device, non_blocking=True)
 
         # AMP autocast context: Automatically casts operations to the
         # specified precision where beneficial (e.g., matmul in FP16/BF16)
@@ -708,9 +814,30 @@ class KilatTrainer:
             leave=False,  # Don't leave progress bar after completion
         )
 
+        selected_prompt: Optional[torch.Tensor] = None
+        selected_count = 0
+
         for batch in eval_progress:
-            input_ids = batch["input_ids"].to(self.device, non_blocking=True)
-            labels = batch["labels"].to(self.device, non_blocking=True)
+            # Support both dict batches and (inputs, labels) tuples from streaming datasets
+            if isinstance(batch, (tuple, list)):
+                input_ids, labels = batch
+                if isinstance(input_ids, torch.Tensor) and input_ids.dim() == 3:
+                    input_ids = input_ids.squeeze(0)
+                    labels = labels.squeeze(0)
+            else:
+                input_ids = batch["input_ids"]
+                labels = batch["labels"]
+
+            if isinstance(input_ids, torch.Tensor) and input_ids.dim() == 1:
+                input_ids = input_ids.unsqueeze(0)
+
+            for seq in input_ids.detach().cpu():
+                selected_count += 1
+                if random.randrange(selected_count) == 0:
+                    selected_prompt = seq
+
+            input_ids = input_ids.to(self.device, non_blocking=True)
+            labels = labels.to(self.device, non_blocking=True)
 
             with torch.amp.autocast(
                 device_type=self._autocast_device,
@@ -725,8 +852,17 @@ class KilatTrainer:
 
         # Compute average loss: divide by number of batches.
         # max(1, ...) prevents division by zero in edge case of empty dataloader.
-        avg_eval_loss = eval_loss / max(1, len(self.eval_dataloader))
+        if self._eval_is_streaming:
+            num_eval_batches = len(self.eval_dataset) if self.eval_dataset is not None and hasattr(self.eval_dataset, '__len__') else 1
+        else:
+            num_eval_batches = len(self.eval_dataloader)
+
+        avg_eval_loss = eval_loss / max(1, num_eval_batches)
         eval_ppl = math.exp(avg_eval_loss) if avg_eval_loss < 100 else float("inf")
+
+        if selected_prompt is not None:
+            prompt_text = self._decode_prompt(selected_prompt)
+            print(f"\n[Eval sample prompt] {prompt_text}")
 
         log_eval_summary(
             avg_eval_loss,

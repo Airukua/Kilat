@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kilat"
+version = "0.1.0"
+description = "Kilat: a lightweight transformer training and inference toolkit."
+requires-python = ">=3.10"
+dependencies = [
+  "torch>=2.0",
+  "transformers>=4.40",
+  "tqdm>=4.66",
+  "pyarrow>=14.0",
+  "triton>=2.0",
+  "wandb>=0.16",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["arc*", "data*", "training*", "utils*", "inference*"]
