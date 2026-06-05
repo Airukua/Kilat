@@ -46,9 +46,7 @@ Most training frameworks give you either too much magic (HuggingFace Trainer) or
 ### Install
 
 ```bash
-git clone https://github.com/Airukua/kilat.git
-cd kilat
-pip install -e .
+pip install git+https://github.com/Airukua/kilat.git
 ```
 
 Verify:
