@@ -292,18 +292,6 @@ See `configs/` for ready-made examples.
 - [ ] ONNX / TorchScript export
 - [ ] Additional sampling strategies (beam search, contrastive decoding)
 
----
-
-## Related Work
-
-This toolkit was developed alongside active research in efficient sequence modeling for low-resource languages. See also:
-
-- [`AiRukua/GAWA`](https://huggingface.co/AiRukua/GAWA) — custom architecture (CausalWaveConv + dual-path attention) used to train Kilat's first Indonesian LM
-- [`AiRukua/IndoCleanCorpus`](https://huggingface.co/datasets/AiRukua/IndoCleanCorpus) — 13.4M row Indonesian sentence corpus used for pre-training
-- [`AiRukua/Geser_Indo_En`](https://huggingface.co/datasets/AiRukua/Geser_Indo_En) — Indonesian–Geser parallel corpus for low-resource NMT
-
----
-
 ## Contributing
 
 PRs are welcome. Useful areas:
