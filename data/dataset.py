@@ -222,6 +222,7 @@ class KilatDataset(Dataset):
         self._part_files = None
         self._total_rows = 0
         self._source_sequence_length = None
+        self._has_attention_mask = False
 
         # --- Input type dispatch ---
         # Path‑based loading: detect format from file extension.
@@ -247,17 +248,20 @@ class KilatDataset(Dataset):
                 ext = ext.lower()
 
                 if ext in (".parquet", ".parq"):
-                    # Single Parquet file backend: memory‑mapped, column‑selective loading.
-                    # Only the required column is read into memory to minimize
-                    # RAM usage. Other columns (e.g., metadata, source info)
-                    # are ignored entirely.
-                    self.is_parquet = True
-                    self.parquet_file = pq.ParquetFile(file_or_data)
-                    # Column‑selective read: if the dataset has 50 columns but we
-                    # only need "input_ids", we avoid loading the other 49 columns.
-                    # This can reduce memory by 10‑100x for wide datasets.
-                    self.parquet_table = self.parquet_file.read(columns=[self.key_name])
-                    self.dataset_length = self.parquet_table.num_rows
+                    if streaming:
+                        self._init_streaming_mode_from_file(file_or_data, key_name)
+                    else:
+                        # Single Parquet file backend: memory‑mapped, column‑selective loading.
+                        # Only the required column is read into memory to minimize
+                        # RAM usage. Other columns (e.g., metadata, source info)
+                        # are ignored entirely.
+                        self.is_parquet = True
+                        self.parquet_file = pq.ParquetFile(file_or_data)
+                        # Column‑selective read: if the dataset has 50 columns but we
+                        # only need "input_ids", we avoid loading the other 49 columns.
+                        # This can reduce memory by 10‑100x for wide datasets.
+                        self.parquet_table = self.parquet_file.read(columns=[self.key_name])
+                        self.dataset_length = self.parquet_table.num_rows
                 else:
                     # JSON/JSONL backend: full in‑memory loading.
                     # Suitable for datasets up to a few GB that fit in RAM.
@@ -283,6 +287,30 @@ class KilatDataset(Dataset):
             raise ValueError("Dataset contains zero samples.")
         elif streaming and self._total_rows == 0:
             raise ValueError("Dataset contains zero rows (streaming mode).")
+
+    def _init_streaming_mode_from_file(self, file_path: str, key_name: str):
+        """
+        Initialize streaming mode for a single Parquet file.
+
+        This method stores metadata and row counts without loading the full
+        dataset into memory. It is compatible with a single file when the user
+        wants streaming mode but does not have a directory of shards.
+        """
+        self._part_files = [file_path]
+        self.is_parquet = True
+
+        parquet_file = pq.ParquetFile(file_path)
+        self._total_rows = parquet_file.metadata.num_rows
+        self._has_attention_mask = "attention_mask" in parquet_file.schema.names
+        self._source_sequence_length = self._infer_source_sequence_length()
+
+        chunk_factor = max(1, self._source_sequence_length // self.sequence_length)
+        estimated_samples = self._total_rows * chunk_factor
+        self.dataset_length = math.ceil(estimated_samples / self.batch_size)
+
+        print(f"Streaming mode: {self._total_rows:,} rows, 1 file")
+        print(f"Source seq length: {self._source_sequence_length}")
+        print(f"Estimated batches: {self.dataset_length:,}")
 
     def _init_streaming_mode(self, dir_path: str, key_name: str):
         """
@@ -318,6 +346,7 @@ class KilatDataset(Dataset):
 
         # Infer source sequence length from first file
         self._source_sequence_length = self._infer_source_sequence_length()
+        self._has_attention_mask = "attention_mask" in pq.ParquetFile(self._part_files[0]).schema.names
 
         # For compatibility with Dataset interface, set dataset_length to
         # estimated number of batches (not actual samples count)
@@ -332,7 +361,7 @@ class KilatDataset(Dataset):
     def _infer_source_sequence_length(self) -> int:
         """Infer the sequence length of source data from first file."""
         first_file = pq.ParquetFile(self._part_files[0])
-        first_batch = next(first_file.iter_batches(batch_size=1, columns=["input_ids"]))
+        first_batch = next(first_file.iter_batches(batch_size=1, columns=[self.key_name]))
         return len(first_batch.column(0)[0].as_py())
 
     def _iter_chunks(self) -> Iterator[List[int]]:
@@ -350,12 +379,28 @@ class KilatDataset(Dataset):
 
         for part_file in part_files:
             parquet_file = pq.ParquetFile(part_file)
+            columns = [self.key_name]
+            if self._has_attention_mask:
+                columns.append("attention_mask")
+
             for record_batch in parquet_file.iter_batches(
                 batch_size=self.read_batch_size,
-                columns=["input_ids", "attention_mask"],
+                columns=columns,
             ):
                 token_rows = record_batch.column(0).to_pylist()
-                mask_rows = record_batch.column(1).to_pylist()
+                if self._has_attention_mask:
+                    mask_rows = record_batch.column(1).to_pylist()
+                else:
+                    mask_rows = []
+                    for token_ids in token_rows:
+                        if self.pad_token_id is None:
+                            mask_rows.append([1] * len(token_ids))
+                        else:
+                            valid_len = len(token_ids)
+                            while valid_len > 0 and token_ids[valid_len - 1] == self.pad_token_id:
+                                valid_len -= 1
+                            mask_rows.append([1] * valid_len + [0] * (len(token_ids) - valid_len))
+
                 rows = list(zip(token_rows, mask_rows))
                 if self.shuffle:
                     rng.shuffle(rows)
