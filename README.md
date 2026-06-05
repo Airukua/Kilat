@@ -1,118 +1,75 @@
-# Kilat: Lightweight Transformer Training & Inference Toolkit
+<div align="center">
 
-[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/downloads/)
-[![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-red)](https://pytorch.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+# ⚡ Kilat
 
-A high-performance, modular transformer training and inference toolkit with support for dense and Mixture-of-Experts (MoE) architectures, efficient KV-cache generation, and production-ready training loops.
+**Lightweight Transformer Training & Inference Toolkit**
 
-## Why Kilat?
+*Built for researchers who care about what's under the hood.*
 
-- **Production-Ready**: Battle-tested training loop with gradient accumulation, AMP, checkpointing, and early stopping.
-- **Flexible Architecture**: Dense transformers, standard MoE, or DeepSeek-V2 style MoE with shared experts.
-- **Developer-Friendly**: Clear module separation, type hints, and comprehensive configuration system.
-- **Efficient Inference**: KV-cache support with multi-mode CLI (generate, chat, batch processing).
-- **Scale Your Data**: Parquet streaming, JSON/JSONL support, and in-memory datasets—choose what fits your workflow.
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue?style=flat-square)](https://www.python.org/downloads/)
+[![PyTorch 2.0+](https://img.shields.io/badge/PyTorch-2.0%2B-EE4C2C?style=flat-square&logo=pytorch&logoColor=white)](https://pytorch.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](LICENSE)
+[![HuggingFace](https://img.shields.io/badge/🤗-AiRukua-FFD21E?style=flat-square)](https://huggingface.co/AiRukua)
 
-## Features
+</div>
 
-✅ **Model Architectures**
-- Dense transformer (SwiGLU FFN)
-- Standard Mixture-of-Experts (MoE)
-- DeepSeek-V2 style MoE with shared experts
-- Configurable attention (recall ratio, latent projections)
+---
 
-✅ **Training**
-- Step-based and epoch-based training modes
-- Mixed precision (FP16, BF16, FP32)
-- Gradient accumulation & clipping
-- Early stopping with patience-based scheduling
-- WandB integration for experiment tracking
-
-✅ **Data Handling**
-- Parquet files and directories
-- JSON/JSONL streaming
-- In-memory Python lists
-- Efficient batch packing for long sequences
-
-✅ **Inference**
-- CLI with three modes: generate, chat, batch
-- Autoregressive decoding with KV-cache
-- Temperature, top-k, top-p sampling
-- Repetition penalty
-
-## Installation
-
-### Prerequisites
-- Python 3.10+
-- CUDA 11.8+ (recommended for GPU training)
-
-### Quick Install
-
-```bash
-git clone https://github.com/your-username/kilat.git
-cd kilat
-pip install -e .
-```
-
-Or install without editable mode:
-```bash
-pip install .
-```
-
-Verify installation:
-```bash
-python -c "from arc.model import KilatTransformer; print('✓ Kilat installed')"
-```
-
-## Getting Started
-
-### 1. Create a Model
+Kilat (*Indonesian: lightning*) is a modular toolkit for training and deploying transformer-based language models — from a single dense baseline to DeepSeek-V2 style Mixture-of-Experts architectures. Designed for researchers who want production-grade training loops without the overhead of a full framework.
 
 ```python
 from arc.model import KilatTransformer
 from utils.config import KilatConfig
 
-# Dense transformer (8 layers, 640 hidden dim)
-config = KilatConfig(
-    vocab_size=50000,
-    n_embd=640,
-    n_layer=8,
-    n_head=10,
-    ffn_mode="dense",
-)
-model = KilatTransformer(config)
-print(f"Model: {sum(p.numel() for p in model.parameters()):,} parameters")
+model = KilatTransformer(KilatConfig(vocab_size=50_000, n_embd=640, n_layer=8, ffn_mode="dense"))
+print(f"{sum(p.numel() for p in model.parameters()) / 1e6:.1f}M parameters")
+# → 45.2M parameters
 ```
 
-### 2. Prepare Your Data
+---
 
-```python
-from data.dataset import KilatDataset
-from data.collator import PackedTokenBatchLoader
+## Why Kilat?
 
-# Load from Parquet
-dataset = KilatDataset(
-    "path/to/tokenized_data.parquet",
-    key_name="input_ids",
-    streaming=False  # Set to True for large datasets
-)
+Most training frameworks give you either too much magic (HuggingFace Trainer) or too little structure (raw PyTorch scripts). Kilat sits in between: a clean, hackable codebase with the production features you'd otherwise rebuild yourself.
 
-# Or from in-memory list
-dataset = KilatDataset(
-    [{"input_ids": [1, 2, 3, ...]}, ...],
-    key_name="input_ids"
-)
+- **Real training loop** — gradient accumulation, AMP (FP16/BF16/FP32), early stopping, checkpointing, WandB integration
+- **Three FFN modes** — dense SwiGLU, standard MoE, or DeepSeek-V2 style MoE with shared experts
+- **Hybrid attention** — linear global-decay heads + latent MLA heads, fused via learned gate
+- **KV-cache inference** — autoregressive generation with temperature / top-k / top-p / repetition penalty
+- **Flexible data** — stream from Parquet, JSON/JSONL, or in-memory lists; efficient batch packing for long sequences
+- **No framework lock-in** — configs export as YAML, checkpoints are plain PyTorch state dicts
 
-print(f"Dataset size: {len(dataset):,} samples")
+---
+
+## Quick Start
+
+### Install
+
+```bash
+git clone https://github.com/Airukua/kilat.git
+cd kilat
+pip install -e .
 ```
 
-### 3. Train Your Model
+Verify:
+```bash
+python -c "from arc.model import KilatTransformer; print('✓ Kilat ready')"
+```
+
+### Train a model in ~20 lines
 
 ```python
+from arc.model import KilatTransformer
+from utils.config import KilatConfig
 from training.trainer import KilatTrainer
 from training.arguments import TrainingArguments
-from data.collator import PackedTokenBatchLoader
+from data.dataset import KilatDataset
+
+config = KilatConfig(vocab_size=50_000, n_embd=640, n_layer=8, n_head=10, ffn_mode="dense")
+model  = KilatTransformer(config)
+
+train_dataset = KilatDataset("data/train.parquet", key_name="input_ids")
+eval_dataset  = KilatDataset("data/eval.parquet",  key_name="input_ids")
 
 args = TrainingArguments(
     output_dir="./checkpoints",
@@ -120,183 +77,279 @@ args = TrainingArguments(
     num_train_epochs=3,
     per_device_train_batch_size=32,
     learning_rate=5e-5,
-    precision="fp16",
-    logging_steps=100,
-    eval_steps=500,
-    save_steps=500,
-    report_to="wandb",  # Optional: remove for console-only logging
+    precision="bf16",
 )
 
-trainer = KilatTrainer(
-    model=model,
-    args=args,
-    train_dataset=train_dataset,
-    eval_dataset=eval_dataset,  # Optional
-    data_collator=PackedTokenBatchLoader(...),
-)
-
-trainer.train()
+KilatTrainer(model=model, args=args, train_dataset=train_dataset, eval_dataset=eval_dataset).train()
 ```
 
-### 4. Run Inference
+### Run inference
 
-#### Generate Text (Single Prompt)
 ```bash
+# Single prompt
 python -m inference.inference \
-  --checkpoint /path/to/checkpoint \
+  --checkpoint ./checkpoints/best \
   --mode generate \
-  --prompt "Once upon a time" \
-  --max_new_tokens 128 \
-  --temperature 0.8
+  --prompt "Pada zaman dahulu" \
+  --max_new_tokens 128 --temperature 0.8
+
+# Interactive chat
+python -m inference.inference --checkpoint ./checkpoints/best --mode chat
+
+# Batch (prompts.txt → completions.json)
+python -m inference.inference --checkpoint ./checkpoints/best \
+  --mode batch --input_file prompts.txt --output_file completions.json
 ```
 
-#### Interactive Chat
-```bash
-python -m inference.inference \
-  --checkpoint /path/to/checkpoint \
-  --mode chat \
-  --system_prompt "You are a helpful assistant."
+---
+
+## Architecture
+
+### FFN modes
+
+Kilat supports three FFN modes, switchable via a single config field:
+
+| Mode | Description | When to use |
+|------|-------------|-------------|
+| `dense` | Standard SwiGLU FFN | Baselines, small models |
+| `moe` | Token routing to top-k experts | Parameter-efficient scaling |
+| `moe_shared` | DeepSeek-V2 style — shared + routed experts | MoE with stable training dynamics |
+
+---
+
+### KilatAttention
+
+The attention module splits `n_head` heads into two specialised paths that run in
+parallel and merge via a learned gate. This hybrid design trades a fraction of
+precise-recall capacity for O(N) compute and dramatically reduced KV-cache memory.
+
+```
+                     Input x  [B, N, D]
+                          │
+          ┌───────────────┴────────────────┐
+          │                                │
+          ▼                                ▼
+  ╔═══════════════════╗           ╔════════════════════╗
+  ║   PATH 1          ║           ║   PATH 2           ║
+  ║   Global Decay    ║           ║   Latent MLA       ║
+  ║   (linear, O(N))  ║           ║   (softmax, O(N²)) ║
+  ╚═══════════════════╝           ╚════════════════════╝
+          │                                │
+          ▼                                ▼
+   ┌─────────────┐                 ┌──────────────────┐
+   │  v_proj     │                 │  q_a → LN → q_b  │
+   │  (values)   │                 │  kv_a → LN → kv_b│
+   └──────┬──────┘                 └────────┬─────────┘
+          │  [B, N, H_g·Dh]                 │  Q [B, H_r, N, Dh]
+          ▼                                 │  K,V from latent cache
+   ┌─────────────────┐                      ▼
+   │  λ = σ(log_λ)   │             ┌─────────────────────┐
+   │  per-head decay │             │  KV-cache in latent │
+   └──────┬──────────┘             │  space (B, N, L)    │
+          │                        │  4–8× smaller than  │
+          ▼                        │  full K,V matrices  │
+   ┌──────────────────────┐        └──────────┬──────────┘
+   │  Triton causal decay │                   │
+   │                      │                   ▼
+   │  full seq:           │        ┌─────────────────────┐
+   │    Σ λ^(i-j)·V[j]   │        │  SDPA (is_causal)   │
+   │    O(N) kernel       │        │  Q·Kᵀ/√Dh → V      │
+   │                      │        └──────────┬──────────┘
+   │  incremental:        │                   │
+   │    λ·state + V_new   │                   │
+   │    O(1) per step     │                   │
+   └──────────┬───────────┘                   │
+              │  out_global                   │  out_recall
+              │  [B, N, H_g·Dh]              │  [B, N, H_r·Dh]
+              └──────────────┬────────────────┘
+                             │
+                             ▼
+                  ┌─────────────────────┐
+                  │  cat along head dim │
+                  │  [B, N, D]          │
+                  └──────────┬──────────┘
+                             │
+              x (residual) ──┤
+                             ▼
+                  ┌─────────────────────────────┐
+                  │  γ_net([x, out_combined])    │
+                  │                             │
+                  │  Linear → ReLU → Linear → σ │
+                  │  gate ∈ (0,1)^D, elem-wise  │
+                  └──────────┬──────────────────┘
+                             │  out * gate
+                             ▼
+                  ┌─────────────────────┐
+                  │  c_proj             │
+                  │  Linear(D → D)      │
+                  └──────────┬──────────┘
+                             │
+                     output [B, N, D]
+                   + cache (optional)
 ```
 
-#### Batch Processing
-```bash
-python -m inference.inference \
-  --checkpoint /path/to/checkpoint \
-  --mode batch \
-  --input_file prompts.txt \
-  --output_file completions.json
+**Cache structure** during autoregressive generation:
+
 ```
+past_key_values = (
+    global_state,   # (B, H_g, Dh)  — 1 state vector per head, entire history
+    latent_kv,      # (B, total_len, latent_dim)  — compressed, not full K,V
+)
+```
+
+**Head allocation** is controlled by `recall_ratio` in `KilatConfig`:
+
+```
+recall_ratio = 0.0  →  all global-decay heads  (fastest, least precise)
+recall_ratio = 0.5  →  50/50 split             (default)
+recall_ratio = 1.0  →  all latent MLA heads    (most precise)
+```
+
+---
+
+### KV-cache memory comparison
+
+For a 1024-token sequence with `n_embd=1024`, `n_recall_heads=8`, `head_dim=128`, `latent_dim=256`:
+
+```
+Standard attention KV-cache:  2 × 8 × 128 × 1024  =  2,097,152 floats
+Kilat latent KV-cache:              256 × 1024     =    262,144 floats
+                                                       ─────────────────
+                                                            8× reduction
+```
+
+---
 
 ## Project Structure
 
 ```
 kilat/
-├── arc/                      # Core transformer architecture
-│   ├── model.py             # KilatTransformer
-│   ├── blocks.py            # Transformer blocks
-│   ├── attention.py         # Attention mechanisms
-│   ├── ffn.py               # Feed-forward networks (dense + MoE)
-│   └── triton_ops.py        # Optional Triton kernels
-├── data/                     # Data loading and processing
-│   ├── dataset.py           # KilatDataset (Parquet, JSON, etc.)
-│   ├── collator.py          # Batch collation
-│   └── tokens/              # Tokenizer and pre-tokenized data
-├── training/                 # Training infrastructure
-│   ├── trainer.py           # KilatTrainer
-│   ├── arguments.py         # TrainingArguments config
-│   ├── checkpointing.py     # Checkpoint save/load
-│   ├── early_stopping.py    # Early stopping callback
-│   └── optim_utils.py       # Optimizer & scheduler setup
-├── inference/               # Inference pipelines
-│   ├── inference.py         # CLI entry point
-│   ├── generator.py         # KilatGenerator
-│   ├── model_loader.py      # Model loading utilities
-│   └── chat_session.py      # Interactive chat
-├── utils/                    # Utilities
-│   ├── config.py            # KilatConfig, TrainingConfig
-│   └── sanity_check.py      # Tensor validation
-├── configs/                  # Example YAML configs
-│   ├── small_dense.yaml     # Small dense config
-│   └── moe_standard.yaml    # Standard MoE config
-├── pyproject.toml           # Package metadata
-├── setup.py                 # Installation script
-└── README.md               # This file
+├── arc/               # Model architecture
+│   ├── model.py       # KilatTransformer
+│   ├── blocks.py      # Transformer blocks
+│   ├── attention.py   # KilatAttention (hybrid global-decay + latent MLA)
+│   ├── ffn.py         # Dense / MoE / MoE-shared FFN
+│   └── triton_ops.py  # Triton causal decay kernel
+├── data/              # Data pipeline
+│   ├── dataset.py     # Parquet, JSON, in-memory
+│   └── collator.py    # PackedTokenBatchLoader
+├── training/          # Training infrastructure
+│   ├── trainer.py     # KilatTrainer
+│   ├── arguments.py   # TrainingArguments
+│   ├── checkpointing.py
+│   ├── early_stopping.py
+│   └── optim_utils.py
+├── inference/         # Inference & CLI
+│   ├── inference.py   # CLI entry point
+│   ├── generator.py   # KilatGenerator
+│   └── chat_session.py
+├── utils/
+│   ├── config.py      # KilatConfig (YAML export/load)
+│   └── sanity_check.py
+└── configs/           # Example YAML configs
+    ├── small_dense.yaml
+    └── moe_standard.yaml
 ```
+
+---
 
 ## Configuration
 
-Models and training are configured via `KilatConfig` and `TrainingArguments`. Export/load as YAML:
+Everything is a dataclass, exportable as YAML:
 
 ```python
 from utils.config import KilatConfig
 
-# Create config
-config = KilatConfig(vocab_size=50000, n_embd=768, n_layer=12)
+config = KilatConfig(
+    vocab_size=50_000,
+    n_embd=768,
+    n_layer=12,
+    n_head=12,
+    ffn_mode="moe",
+    recall_ratio=0.5,   # 50% latent MLA, 50% global decay
+    latent_dim=192,     # KV compression dim (default: n_embd // 4)
+)
+config.to_yaml("configs/my_model.yaml")
 
-# Save as human-readable YAML
-config.to_yaml("my_config.yaml")
-
-# Load from YAML
-loaded_config = KilatConfig.from_yaml("my_config.yaml")
+# Resume later
+config = KilatConfig.from_yaml("configs/my_model.yaml")
 ```
 
-See `configs/` for example YAML files.
+See `configs/` for ready-made examples.
 
-## Tech Stack
-
-- **Deep Learning**: PyTorch 2.0+
-- **Model Hub Integration**: HuggingFace Transformers
-- **Data Processing**: PyArrow, Parquet, JSONL
-- **Optimization**: Custom AMP, GradScaler, AdamW
-- **Experiment Tracking**: Weights & Biases (optional)
-- **Tokenization**: SentencePiece
+---
 
 ## Roadmap
 
-- [x] Dense transformer architecture
-- [x] Standard MoE implementation
-- [x] DeepSeek-V2 style MoE with shared experts
-- [x] KV-cache support for efficient generation
-- [x] Multi-format data loading (Parquet, JSON, JSONL)
-- [ ] Flash Attention integration
-- [ ] Multi-GPU distributed training
-- [ ] Model quantization & export (ONNX, TorchScript)
-- [ ] Additional generation sampling strategies
+- [x] Dense / MoE / MoE-shared architectures
+- [x] Hybrid attention (global decay + latent MLA)
+- [x] KV-cache generation
+- [x] Mixed precision (FP16, BF16, FP32)
+- [x] Parquet + JSON/JSONL streaming
+- [x] WandB integration
+- [ ] Flash Attention 2 integration
+- [ ] Multi-GPU (DDP / FSDP)
+- [ ] ONNX / TorchScript export
+- [ ] Additional sampling strategies (beam search, contrastive decoding)
+
+---
+
+## Related Work
+
+This toolkit was developed alongside active research in efficient sequence modeling for low-resource languages. See also:
+
+- [`AiRukua/GAWA`](https://huggingface.co/AiRukua/GAWA) — custom architecture (CausalWaveConv + dual-path attention) used to train Kilat's first Indonesian LM
+- [`AiRukua/IndoCleanCorpus`](https://huggingface.co/datasets/AiRukua/IndoCleanCorpus) — 13.4M row Indonesian sentence corpus used for pre-training
+- [`AiRukua/Geser_Indo_En`](https://huggingface.co/datasets/AiRukua/Geser_Indo_En) — Indonesian–Geser parallel corpus for low-resource NMT
+
+---
 
 ## Contributing
 
-We welcome contributions! To get started:
+PRs are welcome. Useful areas:
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/my-feature`)
-3. Commit changes (`git commit -m 'Add my feature'`)
-4. Push to branch (`git push origin feature/my-feature`)
-5. Open a Pull Request
-
-**Areas we're looking for help:**
-- Example training scripts for common datasets
-- Performance optimizations & kernel fusion
+- Triton kernel optimizations
+- Distributed training (DDP/FSDP)
 - Additional sampling strategies
-- Documentation improvements
-- Bug reports and fixes
+- Training scripts for common public datasets
+- Documentation
+
+```bash
+git checkout -b feature/your-feature
+# make changes
+git commit -m "feat: describe what you did"
+git push origin feature/your-feature
+# open a PR
+```
+
+---
 
 ## Citation
 
-If you use Kilat in your research, please cite:
+If Kilat helps your research, please cite:
 
 ```bibtex
 @software{kilat2024,
-  author = {Your Name},
-  title = {Kilat: Lightweight Transformer Training & Inference Toolkit},
-  year = {2024},
-  url = {https://github.com/your-username/kilat}
+  author  = {Abdul Wahid Rukua},
+  title   = {Kilat: Lightweight Transformer Training \& Inference Toolkit},
+  year    = {2024},
+  url     = {https://github.com/Airukua/kilat}
 }
 ```
 
-## License
-
-This project is licensed under the MIT License—see [LICENSE](LICENSE) for details.
+---
 
 ## Author
 
-**Your Name** — [GitHub](https://github.com/your-username) | [Email](mailto:your-email@example.com)
+**Abdul Wahid Rukua** — AI/ML Engineer & Researcher
+
+MSc Artificial Intelligence · University of Southampton  
+Focus: efficient sequence modeling, Indonesian NLP, low-resource language technology
+
+[![HuggingFace](https://img.shields.io/badge/🤗%20HuggingFace-AiRukua-FFD21E?style=flat-square)](https://huggingface.co/AiRukua)
+[![LinkedIn](https://img.shields.io/badge/LinkedIn-abdul--wahid--rukua-0A66C2?style=flat-square&logo=linkedin&logoColor=white)](https://www.linkedin.com/in/abdul-wahid-rukua/)
+[![GitHub](https://img.shields.io/badge/GitHub-Airukua-181717?style=flat-square&logo=github)](https://github.com/Airukua)
 
 ---
 
-## FAQ
-
-**Q: Can I use Kilat for production inference?**  
-A: Yes. The inference pipeline is optimized for latency with KV-cache support. For high-throughput serving, consider adding batching or integrating with vLLM.
-
-**Q: What's the difference between dense and MoE modes?**  
-A: Dense mode uses a single SwiGLU FFN per block. MoE mode routes tokens to a subset of experts. MoE is more parameter-efficient but introduces training complexity (load balancing).
-
-**Q: Can I resume training from a checkpoint?**  
-A: Yes. Set `resume_from_checkpoint` in `TrainingArguments` with the checkpoint directory path.
-
-**Q: Does it support distributed training?**  
-A: Not yet. This is on the roadmap. For now, single-GPU training is supported.
-
----
-
-**Questions or Issues?** Open a [GitHub Issue](https://github.com/your-username/kilat/issues) or start a [Discussion](https://github.com/your-username/kilat/discussions).
+*Licensed under MIT. See [LICENSE](LICENSE) for details.*
