@@ -163,6 +163,7 @@ class KilatConfig(PretrainedConfig):
         self._use_cache = use_cache
         self._attn_implementation = None
         self._attn_implementation_internal = None
+        self._experts_implementation_internal = None
 
         # Initialize HuggingFace parent class with standard token config
         super().__init__(
