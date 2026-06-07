@@ -333,7 +333,7 @@ print(health.pretty())
 
 ## Roadmap
 
-- [x] Dense / MoE / MoE-shared architectures
+- [x] Dense / MoE-shared architectures
 - [x] Hybrid attention (global decay + latent MLA)
 - [x] KV-cache generation
 - [x] Mixed precision (FP16, BF16, FP32)
