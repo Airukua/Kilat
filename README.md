@@ -1,8 +1,8 @@
 <div align="center">
 
-# ⚡ Kilat : Kernelized Lightweight Attention
+# ⚡ Kilat 
 
-**Lightweight Transformer Training & Inference Toolkit**
+** Kernelized Lightweight Lightweight Transformer Training & Inference Toolkit**
 
 *Built for researchers who care about what's under the hood.*
 
