@@ -323,7 +323,7 @@ Before launching a real run, you can do:
 from utils.vram_check import check_vram_fit
 from utils.health_check import run_health_check
 
-report = check_vram_fit(model, args, train_dataset=train_dataset, data_collator=collator)
+report = check_vram_fit(model, train_args, train_dataset=train_dataset, data_collator=collator)
 print(report.pretty())
 
 health = run_health_check(model, train_dataset, eval_dataset=eval_dataset, data_collator=collator)
