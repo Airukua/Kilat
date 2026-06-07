@@ -31,7 +31,7 @@ print(f"{sum(p.numel() for p in model.parameters()) / 1e6:.1f}M parameters")
 ```
 
 ---
-
+<!-- 
 ## Why Kilat?
 
 Most training frameworks give you either too much magic (HuggingFace Trainer) or too little structure (raw PyTorch scripts). Kilat sits in between: a clean, hackable codebase with the production features you'd otherwise rebuild yourself.
@@ -44,7 +44,7 @@ Most training frameworks give you either too much magic (HuggingFace Trainer) or
 - **No framework lock-in** — build configs in code or export them as YAML; checkpoints are plain PyTorch state dicts
 - **Preflight checks** — empirical VRAM probing and end-to-end health checks before real training starts
 
----
+--- -->
 
 ## Quick Start
 
@@ -106,6 +106,40 @@ print(health_report.pretty())
 
 KilatTrainer(model=model, args=args, train_dataset=train_dataset, eval_dataset=eval_dataset).train()
 ```
+
+### Data format and collator
+
+`KilatDataset` accepts these training inputs:
+
+- a Parquet file: `*.parquet` or `*.parq`
+- a directory of Parquet shards
+- a JSON file: `*.json`
+- a JSONL file: `*.jsonl`
+- an in-memory `list` of dictionaries
+
+Each sample should contain token IDs under a key such as `input_ids`:
+
+```python
+{"input_ids": [101, 2023, 2003, 1037, 3978]}
+```
+
+For normal training, pass a `KilatDataCollator`:
+
+```python
+from data.collator import KilatDataCollator
+
+collator = KilatDataCollator(
+    pad_token_id=0,
+    max_length=512,
+    ignore_index=-100,
+)
+```
+
+- It pads variable-length sequences into one batch tensor.
+- It truncates long samples to `max_length`.
+- It creates `labels` for causal language modeling.
+
+Use `collator=None` only when you are using streaming datasets that already yield ready-to-train `(input_ids, labels)` batches. In that mode, the trainer skips the normal collator path.
 
 ### Run inference
 
