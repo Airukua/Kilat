@@ -197,7 +197,7 @@ class KilatConfig(PretrainedConfig):
         self.use_cache = use_cache
         self.initializer_range = initializer_range
 
-    def __post_init__(self):
+    def __post_init__(self, **kwargs):
         """
         Validate configuration after construction and deserialization.
 
@@ -205,6 +205,9 @@ class KilatConfig(PretrainedConfig):
         loading from checkpoints, ensuring that both freshly created and
         loaded configurations are validated.
         """
+        # Newer Hugging Face dataclass wrappers may forward token kwargs here.
+        # We only need them to be accepted, because PretrainedConfig already
+        # stores the standard token IDs during ``super().__init__``.
         self._validate()
 
     def _validate(self):
