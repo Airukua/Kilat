@@ -14,6 +14,8 @@ from data.collator import KilatDataCollator
 from data.dataset import KilatDataset
 import torch
 from torchinfo import summary
+import os
+os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -30,7 +32,7 @@ config = MainConfig.from_yaml("./configs/small_dense.yaml")
 # TRADEOFF: Streaming reduces memory at the cost of random access and slightly slower per-epoch iteration.
 
 # Training dataset - streaming from parquet instead of loading all tokens into memory
-train_parquet_path = "./data/tokens/train/tokens/tokenized.parquet"
+train_parquet_path = "./experiments/tinystories/train.parquet"
 train_dataset = KilatDataset(
     file_or_data=train_parquet_path, 
     key_name="input_ids",                    # Column name in parquet storing token sequences
@@ -45,7 +47,7 @@ train_dataset = KilatDataset(
 )
 
 # Validation dataset - same streaming pattern but no shuffling to maintain deterministic evaluation
-val_parquet_path = "./data/tokens/validation/tokens/tokenized.parquet"
+val_parquet_path = "./experiments/tinystories/validation.parquet"
 val_dataset = KilatDataset(
     file_or_data=val_parquet_path, 
     key_name="input_ids",
@@ -59,20 +61,20 @@ val_dataset = KilatDataset(
     read_batch_size=32,
 )
 
-# Test dataset - unseen data for final evaluation post-training
-test_parquet_path = "./data/tokens/test/tokens/tokenized.parquet"
-test_dataset = KilatDataset(
-    file_or_data=test_parquet_path, 
-    key_name="input_ids",
-    streaming=True,
-    batch_size=8,
-    sequence_length=512,
-    pad_token_id=0,
-    shuffle=False,
-    drop_last=False,
-    seed=42,
-    read_batch_size=32,
-)
+# # Test dataset - unseen data for final evaluation post-training
+# test_parquet_path = "./data/tokens/test/tokens/tokenized.parquet"
+# test_dataset = KilatDataset(
+#     file_or_data=test_parquet_path, 
+#     key_name="input_ids",
+#     streaming=True,
+#     batch_size=8,
+#     sequence_length=512,
+#     pad_token_id=0,
+#     shuffle=False,
+#     drop_last=False,
+#     seed=42,
+#     read_batch_size=32,
+# )
 
 # ============================================================================
 # COLLATION & MODEL INITIALIZATION

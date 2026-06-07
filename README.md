@@ -110,7 +110,6 @@ Kilat supports three FFN modes, switchable via a single config field:
 | Mode | Description | When to use |
 |------|-------------|-------------|
 | `dense` | Standard SwiGLU FFN | Baselines, small models |
-| `moe` | Token routing to top-k experts | Parameter-efficient scaling |
 | `moe_shared` | DeepSeek-V2 style — shared + routed experts | MoE with stable training dynamics |
 
 ---
