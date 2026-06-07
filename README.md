@@ -6,14 +6,14 @@
 
 *Built for researchers who care about what's under the hood.*
 
-<p align="center">
-  <img src="images/illustration.png" alt="Kilat illustration" width="720" />
-</p>
-
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue?style=flat-square)](https://www.python.org/downloads/)
 [![PyTorch 2.0+](https://img.shields.io/badge/PyTorch-2.0%2B-EE4C2C?style=flat-square&logo=pytorch&logoColor=white)](https://pytorch.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](LICENSE)
 [![HuggingFace](https://img.shields.io/badge/🤗-AiRukua-FFD21E?style=flat-square)](https://huggingface.co/AiRukua)
+
+<p align="center">
+  <img src="images/illustration.png" alt="Kilat illustration" width="720" />
+</p>
 
 </div>
 
