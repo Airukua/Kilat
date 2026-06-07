@@ -156,6 +156,14 @@ class KilatConfig(PretrainedConfig):
         **kwargs : dict
             Additional arguments passed to ``PretrainedConfig.__init__``.
         """
+        # Hugging Face class validators may run before this initializer fully
+        # returns, so seed the internal config flags they expect up front.
+        self._output_attentions = False
+        self._output_hidden_states = False
+        self._use_cache = use_cache
+        self._attn_implementation = None
+        self._attn_implementation_internal = None
+
         # Initialize HuggingFace parent class with standard token config
         super().__init__(
             pad_token_id=pad_token_id,
