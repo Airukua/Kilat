@@ -3,6 +3,8 @@ from dataclasses import dataclass
 import math
 from typing import Any, Optional
 import torch
+import torch.nn.functional as F
+from torch.utils.data import default_collate
 
 
 @dataclass(frozen=True)
@@ -154,36 +156,119 @@ def _get_available_vram_bytes(device: torch.device) -> Optional[int]:
     return int(free_bytes)
 
 
-def _estimate_activation_bytes(
-    *,
+def _extract_probe_input(batch: Any) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
+    if isinstance(batch, dict):
+        input_ids = batch["input_ids"]
+        labels = batch.get("labels")
+        return input_ids, labels
+    if isinstance(batch, (tuple, list)):
+        if len(batch) == 1:
+            return batch[0], None
+        return batch[0], batch[1]
+    return batch, None
+
+
+def _move_batch_to_device(batch: Any, device: torch.device) -> Any:
+    if isinstance(batch, dict):
+        return {
+            key: value.to(device, non_blocking=True) if hasattr(value, "to") else value
+            for key, value in batch.items()
+        }
+    if isinstance(batch, (tuple, list)):
+        return type(batch)(
+            value.to(device, non_blocking=True) if hasattr(value, "to") else value
+            for value in batch
+        )
+    return batch.to(device, non_blocking=True) if hasattr(batch, "to") else batch
+
+
+def _build_probe_batch(
+    train_dataset: Any,
+    data_collator: Any | None,
     batch_size: int,
-    sequence_length: int,
-    hidden_size: int,
-    num_layers: int,
+) -> Any:
+    if train_dataset is None:
+        raise ValueError("train_dataset is required for empirical VRAM probing.")
+
+    samples: list[Any] = []
+
+    if getattr(train_dataset, "streaming", False) or not hasattr(train_dataset, "__getitem__"):
+        iterator = iter(train_dataset)
+        for _ in range(batch_size):
+            samples.append(next(iterator))
+        if len(samples) == 1:
+            return samples[0]
+        return data_collator(samples) if data_collator is not None else default_collate(samples)
+
+    if not hasattr(train_dataset, "__len__"):
+        raise ValueError("Dataset must be indexable or iterable for VRAM probing.")
+
+    limit = min(batch_size, len(train_dataset))
+    for index in range(limit):
+        samples.append(train_dataset[index])
+
+    if len(samples) == 1:
+        return samples[0]
+
+    return data_collator(samples) if data_collator is not None else default_collate(samples)
+
+
+def _probe_peak_bytes(
+    model: torch.nn.Module,
+    batch: Any,
+    device: torch.device,
     precision: str,
-    ffn_mode: str,
 ) -> int:
-    """
-    Conservative activation memory estimator.
+    was_training = model.training
+    model.train(True)
+    model.zero_grad(set_to_none=True)
 
-    WHY: Exact activation memory depends on many runtime factors (attention
-    implementation, gradient checkpointing, recompute schedule). We use a
-    safe multiplier (10x) of the naive per‑token footprint to cover
-    attention intermediates, residual connections, MLP activations, and
-    autograd metadata.
+    torch.cuda.empty_cache()
+    torch.cuda.reset_peak_memory_stats(device)
+    torch.cuda.synchronize(device)
 
-    Trade‑off: This overestimates for models with heavy recomputation but
-    underestimates for very deep or MoE models. We add a MoE bump (1.2×)
-    because experts multiply activations.
-    """
-    # Each element uses 2 bytes for fp16/bf16, 4 bytes for fp32
-    activation_dtype_bytes = 2 if precision in {"fp16", "bf16"} else 4
-    base = batch_size * sequence_length * hidden_size * num_layers
-    multiplier = 10.0
-    if ffn_mode == "moe":
-        # Mixture of Experts tends to keep multiple expert activations alive
-        multiplier *= 1.2
-    return int(base * activation_dtype_bytes * multiplier)
+    batch_on_device = _move_batch_to_device(batch, device)
+    autocast_enabled = precision in {"fp16", "bf16"}
+    autocast_dtype = torch.float16 if precision == "fp16" else torch.bfloat16
+
+    try:
+        with torch.amp.autocast(
+            device_type="cuda",
+            dtype=autocast_dtype,
+            enabled=autocast_enabled,
+        ):
+            if isinstance(batch_on_device, dict):
+                outputs = model(**batch_on_device, return_dict=True)
+                loss = outputs.loss
+                if loss is None:
+                    logits = outputs.logits
+                    labels = batch_on_device.get("labels")
+                    if labels is None:
+                        raise RuntimeError(
+                            "Model output has no loss and batch has no labels."
+                        )
+                    loss = F.cross_entropy(
+                        logits[:, :-1, :].contiguous().view(-1, logits.size(-1)),
+                        labels[:, 1:].contiguous().view(-1),
+                        ignore_index=-100,
+                    )
+            elif isinstance(batch_on_device, (tuple, list)):
+                outputs = model(*batch_on_device, return_dict=True)
+                loss = outputs.loss
+                if loss is None:
+                    raise RuntimeError("Model output has no loss for tuple batch.")
+            else:
+                outputs = model(batch_on_device, return_dict=True)
+                loss = outputs.loss
+                if loss is None:
+                    raise RuntimeError("Model output has no loss for tensor batch.")
+
+        loss.backward()
+        torch.cuda.synchronize(device)
+        return int(torch.cuda.max_memory_allocated(device))
+    finally:
+        model.zero_grad(set_to_none=True)
+        model.train(was_training)
 
 
 def estimate_training_vram_bytes(
@@ -202,40 +287,17 @@ def estimate_training_vram_bytes(
     - Mixed precision (AMP) only affects activations and compute, not weights/grads/opt.
     """
     config = getattr(model, "config", None)
-    # Support both GPT‑style (n_embd, n_layer) and HF transformers (hidden_size, num_hidden_layers)
-    hidden_size = int(getattr(config, "n_embd", getattr(config, "hidden_size", 0)))
-    num_layers = int(getattr(config, "n_layer", getattr(config, "num_hidden_layers", 0)))
-    ffn_mode = str(getattr(config, "ffn_mode", "dense"))
-
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     total_params = sum(p.numel() for p in model.parameters())
 
-    # Model weights remain in fp32 in standard training loops; AMP only changes
-    # forward/backward compute dtype, not parameter storage.
     parameter_bytes = int(total_params * 4)
     gradient_bytes = int(trainable_params * 4)
-    # AdamW stores two moving averages per parameter → 2 * 4 bytes each = 8 bytes/param
     optimizer_bytes = int(trainable_params * 8)
-    activation_bytes = _estimate_activation_bytes(
-        batch_size=int(args.per_device_train_batch_size),
-        sequence_length=sequence_length,
-        hidden_size=hidden_size,
-        num_layers=num_layers,
-        precision=str(getattr(args, "precision", "fp32")),
-        ffn_mode=ffn_mode,
-    )
-
-    # Reserve 10% extra for PyTorch internal buffers, kernel launches, and fragmentation
-    overhead_bytes = int(
-        0.10 * (parameter_bytes + gradient_bytes + optimizer_bytes + activation_bytes)
-    )
 
     return {
         "parameters": parameter_bytes,
         "gradients": gradient_bytes,
         "optimizer": optimizer_bytes,
-        "activations": activation_bytes,
-        "overhead": overhead_bytes,
     }
 
 
@@ -275,22 +337,113 @@ def check_vram_fit(
         data_collator,
         sequence_length,
     )
-    breakdown = estimate_training_vram_bytes(
-        model,
-        args,
-        sequence_length=inferred_sequence_length,
-    )
-    estimated_total = sum(breakdown.values())
     available_bytes = _get_available_vram_bytes(device)
 
-    fits = True
-    notes: list[str] = [
-        "Estimate is conservative and includes model weights, gradients, AdamW state, and activations.",
-    ]
+    notes: list[str] = []
+    train_batch_size = int(getattr(args, "per_device_train_batch_size", 1))
+    precision = str(getattr(args, "precision", "fp32"))
+    estimated_total = 0
+    breakdown: dict[str, int] = {}
 
-    if available_bytes is None:
-        notes.append("CUDA not available, so the checker is reporting a theoretical estimate only.")
+    if available_bytes is not None and train_dataset is not None:
+        try:
+            probe_1 = _build_probe_batch(train_dataset, data_collator, 1)
+            probe_2 = _build_probe_batch(train_dataset, data_collator, 2)
+
+            # Temporarily move model to GPU for a real training-memory probe.
+            was_on_device = next(model.parameters()).device
+            model.to(device)
+
+            peak_1 = _probe_peak_bytes(model, probe_1, device, precision)
+            peak_2 = _probe_peak_bytes(model, probe_2, device, precision)
+
+            # Linear fit from real model behavior.
+            marginal_per_sample = max(0, peak_2 - peak_1)
+            estimated_total = int(peak_1 + max(0, train_batch_size - 1) * marginal_per_sample)
+            breakdown = {
+                "probe_batch_1_peak": int(peak_1),
+                "probe_batch_2_peak": int(peak_2),
+                "marginal_per_sample": int(marginal_per_sample),
+            }
+            notes.append(
+                "Empirical estimate from actual forward/backward passes on batches of size 1 and 2."
+            )
+            notes.append(f"Sequence length used for probing: {inferred_sequence_length}.")
+            model.to(was_on_device)
+        except Exception as exc:
+            notes.append(
+                f"Empirical probe failed ({type(exc).__name__}); falling back to analytical estimate."
+            )
+            breakdown = estimate_training_vram_bytes(
+                model,
+                args,
+                sequence_length=inferred_sequence_length,
+            )
+            # Conservative fallback: use analytical model if probing fails.
+            activation_bytes = int(
+                train_batch_size
+                * inferred_sequence_length
+                * max(
+                    1,
+                    int(
+                        getattr(
+                            model.config,
+                            "n_embd",
+                            getattr(model.config, "hidden_size", 1),
+                        )
+                    ),
+                )
+                * max(
+                    1,
+                    int(
+                        getattr(
+                            model.config,
+                            "n_layer",
+                            getattr(model.config, "num_hidden_layers", 1),
+                        )
+                    ),
+                )
+                * (2 if precision in {"fp16", "bf16"} else 4)
+            )
+            estimated_total = sum(breakdown.values()) + activation_bytes
+            breakdown["activations_fallback"] = activation_bytes
     else:
+        breakdown = estimate_training_vram_bytes(
+            model,
+            args,
+            sequence_length=inferred_sequence_length,
+        )
+        activation_bytes = int(
+            train_batch_size
+            * inferred_sequence_length
+            * max(
+                1,
+                int(
+                    getattr(
+                        model.config,
+                        "n_embd",
+                        getattr(model.config, "hidden_size", 1),
+                    )
+                ),
+            )
+            * max(
+                1,
+                int(
+                    getattr(
+                        model.config,
+                        "n_layer",
+                        getattr(model.config, "num_hidden_layers", 1),
+                    )
+                ),
+            )
+            * (2 if precision in {"fp16", "bf16"} else 4)
+        )
+        estimated_total = sum(breakdown.values()) + activation_bytes
+        breakdown["activations_fallback"] = activation_bytes
+        notes.append("CUDA unavailable or dataset missing; using analytical fallback only.")
+
+    fits = True
+    if available_bytes is not None:
         budget = int(available_bytes * safety_margin)
         fits = estimated_total <= budget
         notes.append(
@@ -302,12 +455,14 @@ def check_vram_fit(
                 "or switch to a smaller model / bf16."
             )
 
-    train_batch_size = int(getattr(args, "per_device_train_batch_size", 1))
     recommended_batch_size = train_batch_size
     if available_bytes is not None:
-        # Avoid division by zero if activation estimate is zero (unlikely)
-        per_batch_bytes = max(1, breakdown["activations"] // max(1, train_batch_size))
-        fixed_bytes = estimated_total - breakdown["activations"]
+        if "marginal_per_sample" in breakdown:
+            per_batch_bytes = max(1, breakdown["marginal_per_sample"])
+            fixed_bytes = int(breakdown["probe_batch_1_peak"] - per_batch_bytes)
+        else:
+            per_batch_bytes = max(1, breakdown["activations_fallback"] // max(1, train_batch_size))
+            fixed_bytes = estimated_total - breakdown["activations_fallback"]
         budget = int(available_bytes * safety_margin)
         if budget > fixed_bytes:
             recommended_batch_size = max(

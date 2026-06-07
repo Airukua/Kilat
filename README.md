@@ -59,7 +59,7 @@ Verify:
 python -c "from arc.model import KilatTransformer; print('✓ Kilat ready')"
 ```
 
-### Train a model in ~20 lines
+### Train a model in ~20 linesg, TrainingConfig, MainConfig
 
 ```python
 from arc.model import KilatTransformer
