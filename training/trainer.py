@@ -394,13 +394,70 @@ class KilatTrainer:
 
         return self._prompt_decoder.decode(token_ids.tolist())
 
+    def _trim_trailing_padding(self, token_ids: torch.Tensor) -> torch.Tensor:
+        """Remove trailing padding tokens from a 1D prompt tensor."""
+        if token_ids.dim() != 1:
+            token_ids = token_ids.view(-1)
+
+        pad_token_id = getattr(self.model.config, "pad_token_id", None)
+        if pad_token_id is None:
+            return token_ids
+
+        non_pad_positions = (token_ids != pad_token_id).nonzero(as_tuple=False)
+        if non_pad_positions.numel() == 0:
+            return token_ids[:1]
+
+        last_non_pad_index = int(non_pad_positions[-1].item())
+        return token_ids[: last_non_pad_index + 1]
+
+    def _sample_next_token(
+        self,
+        logits: torch.Tensor,
+        temperature: float = 0.8,
+        top_k: int = 0,
+        top_p: float = 0.9,
+    ) -> torch.Tensor:
+        """Sample next tokens from logits with temperature, top-k, and top-p filtering."""
+        if temperature > 0:
+            logits = logits / temperature
+
+        if top_k > 0:
+            top_k = min(top_k, logits.size(-1))
+            topk_values = torch.topk(logits, top_k, dim=-1).values
+            min_topk_value = topk_values[:, -1].unsqueeze(-1)
+            logits = torch.where(
+                logits < min_topk_value,
+                torch.full_like(logits, float("-inf")),
+                logits,
+            )
+
+        probabilities = torch.softmax(logits, dim=-1)
+
+        if top_p < 1.0:
+            sorted_probabilities, sorted_indices = torch.sort(
+                probabilities, descending=True, dim=-1
+            )
+            cumulative_probabilities = torch.cumsum(sorted_probabilities, dim=-1)
+            nucleus_mask = cumulative_probabilities > top_p
+            nucleus_mask[:, 0] = False
+            sorted_probabilities = torch.where(
+                nucleus_mask,
+                torch.zeros_like(sorted_probabilities),
+                sorted_probabilities,
+            )
+            probabilities = torch.zeros_like(probabilities).scatter_(
+                -1, sorted_indices, sorted_probabilities
+            )
+
+        probabilities = probabilities / probabilities.sum(dim=-1, keepdim=True).clamp_min(1e-12)
+        return torch.multinomial(probabilities, num_samples=1).squeeze(-1)
+
     def _generate_sample(self, prompt_ids: torch.Tensor, max_new_tokens: int = 50) -> str:
         """
         Generate text continuation from a prompt to show model capability during eval.
         
-        Uses the model's generate method (standard HuggingFace interface) with
-        nucleus sampling (top_p=0.9) and temperature=0.8 for diverse but coherent output.
-        Falls back gracefully to an error message if generation fails.
+        Uses the model's forward pass directly with cached decoding because
+        KilatTransformer does not implement Hugging Face's `generate()` API.
         
         Args:
             prompt_ids: Token IDs tensor with shape (1, seq_len) — single prompt
@@ -410,21 +467,67 @@ class KilatTrainer:
             Decoded text string containing the full generated sequence (prompt + continuation)
         """
         self.model.eval()
-        
+
         with torch.inference_mode():
             try:
-                # Use model's generate method — standard HuggingFace interface
-                # Pad token ID is assumed to be 0; adjust if using a different tokenizer
-                generated_ids = self.model.generate(
-                    input_ids=prompt_ids.to(self.device),
-                    max_new_tokens=max_new_tokens,
-                    do_sample=True,
-                    temperature=0.8,
-                    top_p=0.9,
-                    pad_token_id=0,
+                if prompt_ids.dim() == 1:
+                    prompt_ids = prompt_ids.unsqueeze(0)
+
+                prompt_ids = prompt_ids.to(self.device)
+                generated_ids = prompt_ids.clone()
+                pad_token_id = getattr(self.model.config, "pad_token_id", 0)
+                eos_token_id = getattr(self.model.config, "eos_token_id", None)
+
+                outputs = self.model(
+                    input_ids=generated_ids,
+                    use_cache=True,
+                    past_key_values=None,
+                    return_dict=True,
                 )
-                
-                generated_text = self._decode_prompt(generated_ids[0])
+                logits = outputs.logits[:, -1, :]
+                past_key_values = outputs.past_key_values
+
+                unfinished = torch.ones(
+                    generated_ids.size(0), dtype=torch.bool, device=self.device
+                )
+
+                for step in range(max_new_tokens):
+                    if not unfinished.any():
+                        break
+
+                    next_tokens = self._sample_next_token(
+                        logits,
+                        temperature=0.8,
+                        top_k=0,
+                        top_p=0.9,
+                    )
+
+                    next_tokens = torch.where(
+                        unfinished,
+                        next_tokens,
+                        torch.full_like(next_tokens, pad_token_id),
+                    )
+                    generated_ids = torch.cat(
+                        [generated_ids, next_tokens.unsqueeze(-1)], dim=-1
+                    )
+
+                    if eos_token_id is not None:
+                        eos_reached = next_tokens == eos_token_id
+                        unfinished = unfinished & ~eos_reached
+
+                    if not unfinished.any():
+                        break
+
+                    outputs = self.model(
+                        input_ids=next_tokens.unsqueeze(-1),
+                        past_key_values=past_key_values,
+                        use_cache=True,
+                        return_dict=True,
+                    )
+                    logits = outputs.logits[:, -1, :]
+                    past_key_values = outputs.past_key_values
+
+                generated_text = self._decode_prompt(generated_ids[0].detach().cpu())
                 return generated_text
             except Exception as e:
                 # Graceful fallback if generate() is unavailable or fails
@@ -919,13 +1022,21 @@ class KilatTrainer:
         avg_eval_loss = eval_loss / max(1, num_eval_batches)
         eval_ppl = math.exp(avg_eval_loss) if avg_eval_loss < 100 else float("inf")
 
-        # # Display sampled prompt and generated continuation for qualitative assessment
-        # if selected_prompt is not None:
-        #     prompt_text = self._decode_prompt(selected_prompt)
-        #     print(f"\n[Eval sample prompt] {prompt_text}")
-            
-        #     generated_text = self._generate_sample(selected_prompt.unsqueeze(0))
-        #     print(f"[Eval sample generated] {generated_text}")
+        # Display a sampled prompt and generated continuation for qualitative assessment.
+        # We use a prefix of the selected validation sequence as the prompt so the
+        # model generates a continuation rather than simply echoing the entire item.
+        if selected_prompt is not None:
+            selected_prompt = self._trim_trailing_padding(selected_prompt)
+            if selected_prompt.numel() > 1:
+                prompt_length = min(selected_prompt.numel() - 1, max(8, selected_prompt.numel() // 2))
+                prompt_length = max(1, prompt_length)
+                prompt_ids = selected_prompt[:prompt_length]
+
+                prompt_text = self._decode_prompt(prompt_ids.detach().cpu())
+                print(f"\n[Eval sample prompt] {prompt_text}")
+
+                generated_text = self._generate_sample(prompt_ids.unsqueeze(0))
+                print(f"[Eval sample generated] {generated_text}")
 
         log_eval_summary(
             avg_eval_loss,

@@ -5,7 +5,7 @@ experiment:
 
 model:
   # Core architecture
-  vocab_size: 50000
+  vocab_size: 50257
   n_embd: 640     
   n_layer: 8
   n_head: 10
