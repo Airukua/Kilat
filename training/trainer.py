@@ -265,15 +265,30 @@ class KilatTrainer:
             self.early_stopping = None
             self._eval_is_streaming = False
 
-        # Check memory budget before moving the model to GPU.
-        self.vram_report = check_vram_fit(
-            self.model,
-            self.args,
-            train_dataset=self.train_dataset,
-            data_collator=self.data_collator,
-            device=self.device,
-            raise_on_fail=True,
-        )
+        # VRAM check is advisory only: it should warn, not block training.
+        # Actual OOM behavior is still handled by CUDA/PyTorch at runtime.
+        self.vram_report = None
+        try:
+            self.vram_report = check_vram_fit(
+                self.model,
+                self.args,
+                train_dataset=self.train_dataset,
+                data_collator=self.data_collator,
+                device=self.device,
+                raise_on_fail=False,
+            )
+            if not self.vram_report.fits:
+                print(
+                    "\n[VRAM warning] Proposed batch size may exceed GPU headroom.\n"
+                    f"{self.vram_report.pretty()}\n"
+                    "Training will continue anyway.\n"
+                )
+        except Exception as exc:
+            print(
+                "\n[VRAM warning] VRAM check could not be completed safely.\n"
+                f"{type(exc).__name__}: {exc}\n"
+                "Training will continue anyway.\n"
+            )
 
         self.model.to(self.device)
 

@@ -42,7 +42,7 @@ Most training frameworks give you either too much magic (HuggingFace Trainer) or
 - **KV-cache inference** — autoregressive generation with temperature / top-k / top-p / repetition penalty
 - **Flexible data** — stream from Parquet, JSON/JSONL, or in-memory lists; efficient batch packing for long sequences
 - **No framework lock-in** — build configs in code or export them as YAML; checkpoints are plain PyTorch state dicts
-- **Preflight checks** — VRAM estimation and end-to-end health checks before real training starts
+- **Preflight checks** — empirical VRAM probing and end-to-end health checks before real training starts
 
 ---
 
@@ -59,7 +59,7 @@ Verify:
 python -c "from arc.model import KilatTransformer; print('✓ Kilat ready')"
 ```
 
-### Train a model in ~20 linesg, TrainingConfig, MainConfig
+### Train a model in ~20 lines
 
 ```python
 from arc.model import KilatTransformer
@@ -268,7 +268,7 @@ kilat/
 │   └── chat_session.py
 ├── utils/
 │   ├── config.py      # KilatConfig / TrainingConfig / MainConfig
-│   ├── vram_check.py  # GPU memory estimation before training
+│   ├── vram_check.py  # empirical GPU memory probing before training
 │   ├── health_check.py# smoke test for train + checkpoint + resume
 │   └── sanity_check.py
 └── configs/           # Example YAML configs
@@ -330,7 +330,7 @@ health = run_health_check(model, train_dataset, eval_dataset=eval_dataset, data_
 print(health.pretty())
 ```
 
-- `check_vram_fit(...)` estimates whether the current model + batch size + sequence length should fit on the available GPU.
+- `check_vram_fit(...)` probes the real model on actual batches and reports the largest batch size that fits before OOM.
 - `run_health_check(...)` uses a tiny subset of data to verify that forward/backward, checkpoint save, and checkpoint resume all work.
 
 ---

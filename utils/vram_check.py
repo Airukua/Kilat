@@ -1,48 +1,50 @@
 from __future__ import annotations
+
 from dataclasses import dataclass
-import math
 from typing import Any, Optional
+
 import torch
-import torch.nn.functional as F
-from torch.utils.data import default_collate
+from torch.utils.data import Dataset, IterableDataset, default_collate
 
 
 @dataclass(frozen=True)
 class VRAMCheckReport:
     """
-    Immutable container for VRAM estimation results.
+    Empirical VRAM probe report based on actual forward/backward runs.
 
-    The report includes not only a fit/no-fit verdict but also actionable
-    recommendations (batch size, sequence length) and a breakdown of where
-    memory is consumed. This structure is meant to be consumed both by
-    automated scripts and by humans via the `pretty()` method.
+    WHY: Theoretical estimators (like the previous module) are useful but often
+    miss framework overheads, kernel launches, and data‑dependent peaks.
+    This report runs real batches through the model to measure true peak memory.
     """
     fits: bool
     device: str
+    requested_train_batch_size: int
+    max_fit_train_batch_size: int
+    overflow_train_batch_size: int
+    spare_train_batch_size: int
     available_bytes: Optional[int]
-    estimated_bytes: int
-    estimated_breakdown: dict[str, int]
-    recommended_train_batch_size: int
-    recommended_sequence_length: int
+    peak_bytes_at_requested: Optional[int]
+    peak_bytes_at_max_fit: Optional[int]
     notes: tuple[str, ...]
 
     def pretty(self) -> str:
-        """Return a human‑readable multi‑line string of the report."""
+        """Human‑readable console output for the health check."""
+        status = "OK" if self.fits else "OOM risk"
         lines = [
-            f"VRAM check on {self.device}: {'OK' if self.fits else 'OOM risk'}",
-            f"Estimated usage: {_format_bytes(self.estimated_bytes)}",
+            f"VRAM check on {self.device}: {status}",
+            f"Requested batch size: {self.requested_train_batch_size}",
+            f"Max fit batch size:   {self.max_fit_train_batch_size}",
+            f"Overflow batch size:   {self.overflow_train_batch_size}",
+            f"Spare batch size:      {self.spare_train_batch_size}",
         ]
         if self.available_bytes is not None:
-            lines.append(f"Available VRAM:  {_format_bytes(self.available_bytes)}")
-        lines.append("Breakdown:")
-        for name, value in self.estimated_breakdown.items():
-            lines.append(f"  - {name}: {_format_bytes(value)}")
-        lines.append(
-            f"Recommended batch size: {self.recommended_train_batch_size}"
-        )
-        lines.append(
-            f"Recommended seq length: {self.recommended_sequence_length}"
-        )
+            lines.append(f"Available VRAM:       {_format_bytes(self.available_bytes)}")
+        if self.peak_bytes_at_requested is not None:
+            lines.append(
+                f"Peak at requested:    {_format_bytes(self.peak_bytes_at_requested)}"
+            )
+        if self.peak_bytes_at_max_fit is not None:
+            lines.append(f"Peak at max fit:      {_format_bytes(self.peak_bytes_at_max_fit)}")
         if self.notes:
             lines.append("Notes:")
             lines.extend(f"  - {note}" for note in self.notes)
@@ -50,255 +52,290 @@ class VRAMCheckReport:
 
 
 def _format_bytes(num_bytes: int) -> str:
-    """Convert bytes to human readable form (B/KB/MB/GB/TB)."""
+    """Convert integer bytes to human readable string (B/KB/MB/GB/TB)."""
     units = ["B", "KB", "MB", "GB", "TB"]
     value = float(num_bytes)
     for unit in units:
         if value < 1024.0 or unit == units[-1]:
             return f"{value:.2f} {unit}"
         value /= 1024.0
-    return f"{num_bytes} B"  # fallback (never reached in practice)
-
-
-def _infer_sequence_length(
-    train_dataset: Any | None,
-    data_collator: Any | None,
-    sequence_length: Optional[int],
-) -> int:
-    """
-    Determine sequence length from user input, dataset, or collator.
-
-    WHY: Users often forget to pass `sequence_length` explicitly. We try to
-    infer it from common attributes or by peeking at the first sample.
-    This reduces boilerplate and avoids silent misconfiguration.
-
-    Decision order:
-    1. Explicit `sequence_length` argument (most reliable).
-    2. `train_dataset.sequence_length` attribute.
-    3. `data_collator.max_length` attribute.
-    4. Sample inspection via `__getitem__` (heuristic, may fail).
-    """
-    if sequence_length is not None:
-        if sequence_length <= 0:
-            raise ValueError(
-                f"sequence_length must be > 0, got {sequence_length}."
-            )
-        return sequence_length
-
-    dataset_sequence_length = getattr(train_dataset, "sequence_length", None)
-    if isinstance(dataset_sequence_length, int) and dataset_sequence_length > 0:
-        return dataset_sequence_length
-
-    collator_max_length = getattr(data_collator, "max_length", None)
-    if isinstance(collator_max_length, int) and collator_max_length > 0:
-        return collator_max_length
-
-    if train_dataset is not None and hasattr(train_dataset, "__getitem__"):
-        # NOTE: Accessing index 0 may fail for iterable-style datasets or
-        # sharded data. We catch exceptions and fall back to error.
-        try:
-            sample = train_dataset[0]
-        except Exception:
-            sample = None
-        inferred = _infer_length_from_sample(sample)
-        if inferred is not None:
-            return inferred
-
-    raise ValueError(
-        "Could not infer sequence length. Pass `sequence_length=` explicitly "
-        "or expose `sequence_length` on the dataset/collator."
-    )
-
-
-def _infer_length_from_sample(sample: Any) -> Optional[int]:
-    """
-    Heuristic to extract sequence length from a single dataset sample.
-
-    WHY: Many HF datasets return dict with "input_ids" or a tuple of tensors.
-    We guess the length by looking at the last dimension of the first tensor‑like
-    object. This is not 100% reliable, but it's better than failing immediately.
-    """
-    if sample is None:
-        return None
-
-    if isinstance(sample, dict):
-        # Common HuggingFace pattern
-        input_ids = sample.get("input_ids")
-        if isinstance(input_ids, torch.Tensor) and input_ids.ndim >= 1:
-            return int(input_ids.shape[-1])
-        if isinstance(input_ids, (list, tuple)) and input_ids:
-            first_item = input_ids[0]
-            if isinstance(first_item, (list, tuple, torch.Tensor)):
-                return len(input_ids)   # list of tokens, each token is maybe scalar
-            return len(input_ids)
-        return None
-
-    # Fallback: sample is a tuple/list (e.g., (input_ids, attention_mask))
-    if isinstance(sample, (tuple, list)) and sample:
-        first = sample[0]
-        if isinstance(first, torch.Tensor) and first.ndim >= 1:
-            return int(first.shape[-1])
-        if isinstance(first, (list, tuple)):
-            return len(first)
-
-    # Single tensor case (e.g., sample is just the token ids)
-    if isinstance(sample, torch.Tensor) and sample.ndim >= 1:
-        return int(sample.shape[-1])
-
-    return None
+    return f"{num_bytes} B"  # fallback (never reached)
 
 
 def _get_available_vram_bytes(device: torch.device) -> Optional[int]:
-    """Return free VRAM in bytes for a CUDA device, or None if not CUDA."""
+    """Return free VRAM in bytes for a CUDA device, else None."""
     if device.type != "cuda" or not torch.cuda.is_available():
         return None
     free_bytes, _total_bytes = torch.cuda.mem_get_info(device)
     return int(free_bytes)
 
 
-def _extract_probe_input(batch: Any) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
-    if isinstance(batch, dict):
-        input_ids = batch["input_ids"]
-        labels = batch.get("labels")
-        return input_ids, labels
-    if isinstance(batch, (tuple, list)):
-        if len(batch) == 1:
-            return batch[0], None
-        return batch[0], batch[1]
-    return batch, None
+def _take_samples(dataset: Dataset | IterableDataset, count: int) -> list[Any]:
+    """
+    Extract `count` samples from a dataset, supporting both map‑style and streaming.
+
+    WHY: We need small batches for probing. Streaming datasets (e.g., web streams)
+    cannot be indexed, so we iterate. Map‑style datasets are indexed.
+    For safety with very small datasets, we wrap around using modulo.
+
+    Edge case: If dataset has length 0 → raise.
+    If dataset is iterable but not indexable, we just call `next()` repeatedly.
+    """
+    if count <= 0:
+        raise ValueError("count must be > 0.")
+
+    samples: list[Any] = []
+    # Streaming datasets or those without __getitem__ → use iterator
+    if getattr(dataset, "streaming", False) or not hasattr(dataset, "__getitem__"):
+        iterator = iter(dataset)
+        for _ in range(count):
+            samples.append(next(iterator))
+        return samples
+
+    # Map‑style dataset with __len__
+    if not hasattr(dataset, "__len__"):
+        raise ValueError("Dataset must be indexable or iterable.")
+
+    total = len(dataset)
+    if total == 0:
+        raise ValueError("Dataset is empty.")
+
+    # Modulo wrap‑around for tiny datasets (e.g., health check with 1 sample)
+    for index in range(count):
+        samples.append(dataset[index % total])
+    return samples
 
 
-def _move_batch_to_device(batch: Any, device: torch.device) -> Any:
+def _build_batch(
+    dataset: Dataset | IterableDataset,
+    data_collator: Any | None,
+    batch_size: int,
+) -> Any:
+    """
+    Create a single batch of `batch_size` samples, applying the data collator.
+
+    WHY: The trainer uses a data collator to assemble batches (padding, stacking).
+    We mimic that exactly to get realistic memory usage.
+    For batch_size == 1 we return the raw sample to avoid unnecessary collation overhead.
+    """
+    samples = _take_samples(dataset, batch_size)
+    if batch_size == 1:
+        return samples[0]
+    if data_collator is not None:
+        return data_collator(samples)
+    # Fallback to PyTorch default collate (works for tensors, nested structures)
+    return default_collate(samples)
+
+
+def _move_to_device(batch: Any, device: torch.device) -> Any:
+    """
+    Recursively move tensors in a batch to the specified device (non‑blocking).
+
+    WHY: Non‑blocking transfer overlaps CPU→GPU copy with compute,
+    but more importantly it matches the behaviour of the real training loop.
+    """
     if isinstance(batch, dict):
         return {
             key: value.to(device, non_blocking=True) if hasattr(value, "to") else value
             for key, value in batch.items()
         }
     if isinstance(batch, (tuple, list)):
+        # Preserve the original container type (list or tuple)
         return type(batch)(
             value.to(device, non_blocking=True) if hasattr(value, "to") else value
             for value in batch
         )
+    # Single tensor or object with .to() method
     return batch.to(device, non_blocking=True) if hasattr(batch, "to") else batch
 
 
-def _build_probe_batch(
-    train_dataset: Any,
-    data_collator: Any | None,
-    batch_size: int,
-) -> Any:
-    if train_dataset is None:
-        raise ValueError("train_dataset is required for empirical VRAM probing.")
-
-    samples: list[Any] = []
-
-    if getattr(train_dataset, "streaming", False) or not hasattr(train_dataset, "__getitem__"):
-        iterator = iter(train_dataset)
-        for _ in range(batch_size):
-            samples.append(next(iterator))
-        if len(samples) == 1:
-            return samples[0]
-        return data_collator(samples) if data_collator is not None else default_collate(samples)
-
-    if not hasattr(train_dataset, "__len__"):
-        raise ValueError("Dataset must be indexable or iterable for VRAM probing.")
-
-    limit = min(batch_size, len(train_dataset))
-    for index in range(limit):
-        samples.append(train_dataset[index])
-
-    if len(samples) == 1:
-        return samples[0]
-
-    return data_collator(samples) if data_collator is not None else default_collate(samples)
-
-
-def _probe_peak_bytes(
+def _run_probe(
     model: torch.nn.Module,
     batch: Any,
     device: torch.device,
     precision: str,
 ) -> int:
+    """
+    Perform a single forward+backward pass on the batch and return peak allocated memory.
+
+    WHY: This is the core empirical measurement. We reset peak stats, run
+    the model with autocast (if fp16/bf16), compute loss, backpropagate,
+    and finally read the peak memory. This catches both forward and
+    backward activation peaks.
+
+    TRADE‑OFFS:
+    - We do NOT update optimizers (just `loss.backward()`). This under‑estimates
+      memory by a few dozen MB (optimizer state is already allocated elsewhere),
+      but the peak during optimizer step is usually lower than backward peak.
+    - We zero gradients before and after to avoid accumulation across probes.
+    - The model is put in train mode; we restore original mode afterwards.
+
+    IMPORTANT: We assume the model returns a `loss` field when `return_dict=True`.
+    If not, the probe raises a clear error.
+    """
     was_training = model.training
     model.train(True)
     model.zero_grad(set_to_none=True)
 
+    # Clear caches and reset stats before measuring
     torch.cuda.empty_cache()
     torch.cuda.reset_peak_memory_stats(device)
     torch.cuda.synchronize(device)
 
-    batch_on_device = _move_batch_to_device(batch, device)
-    autocast_enabled = precision in {"fp16", "bf16"}
+    batch_on_device = _move_to_device(batch, device)
+    enabled = precision in {"fp16", "bf16"}
     autocast_dtype = torch.float16 if precision == "fp16" else torch.bfloat16
 
     try:
         with torch.amp.autocast(
             device_type="cuda",
             dtype=autocast_dtype,
-            enabled=autocast_enabled,
+            enabled=enabled,
         ):
+            # Support multiple batch formats: dict, (input_ids, labels), or single tensor
             if isinstance(batch_on_device, dict):
                 outputs = model(**batch_on_device, return_dict=True)
-                loss = outputs.loss
-                if loss is None:
-                    logits = outputs.logits
-                    labels = batch_on_device.get("labels")
-                    if labels is None:
-                        raise RuntimeError(
-                            "Model output has no loss and batch has no labels."
-                        )
-                    loss = F.cross_entropy(
-                        logits[:, :-1, :].contiguous().view(-1, logits.size(-1)),
-                        labels[:, 1:].contiguous().view(-1),
-                        ignore_index=-100,
-                    )
             elif isinstance(batch_on_device, (tuple, list)):
-                outputs = model(*batch_on_device, return_dict=True)
-                loss = outputs.loss
-                if loss is None:
-                    raise RuntimeError("Model output has no loss for tuple batch.")
+                if len(batch_on_device) >= 2:
+                    outputs = model(
+                        input_ids=batch_on_device[0],
+                        labels=batch_on_device[1],
+                        return_dict=True,
+                    )
+                else:
+                    outputs = model(batch_on_device[0], return_dict=True)
             else:
                 outputs = model(batch_on_device, return_dict=True)
-                loss = outputs.loss
-                if loss is None:
-                    raise RuntimeError("Model output has no loss for tensor batch.")
+
+            loss = getattr(outputs, "loss", None)
+            if loss is None:
+                raise RuntimeError(
+                    "Model did not return a loss for the probe batch."
+                )
 
         loss.backward()
         torch.cuda.synchronize(device)
         return int(torch.cuda.max_memory_allocated(device))
     finally:
+        # Clean up: zero gradients and restore train/eval mode
         model.zero_grad(set_to_none=True)
         model.train(was_training)
 
 
-def estimate_training_vram_bytes(
+def _binary_search_max_fit(
     model: torch.nn.Module,
-    args: Any,
-    *,
-    sequence_length: int,
-) -> dict[str, int]:
+    dataset: Dataset | IterableDataset,
+    data_collator: Any | None,
+    device: torch.device,
+    precision: str,
+    requested_batch_size: int,
+) -> tuple[int, Optional[int]]:
     """
-    Compute a detailed VRAM breakdown for a training configuration.
+    Find the largest batch size ≤ `requested_batch_size` that fits in VRAM.
 
-    Assumptions:
-    - We use AdamW optimizer (2 states per parameter → 8 bytes per trainable param).
-    - Gradients are stored in fp32.
-    - No gradient checkpointing is assumed (hence conservative activation estimate).
-    - Mixed precision (AMP) only affects activations and compute, not weights/grads/opt.
+    WHY: When the requested batch OOMs immediately, we need to search downwards
+    to find a safe size. Binary search is efficient (log N probes).
     """
-    config = getattr(model, "config", None)
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    total_params = sum(p.numel() for p in model.parameters())
+    low = 1
+    high = requested_batch_size
+    best_fit = 0
+    best_peak: Optional[int] = None
 
-    parameter_bytes = int(total_params * 4)
-    gradient_bytes = int(trainable_params * 4)
-    optimizer_bytes = int(trainable_params * 8)
+    while low <= high:
+        mid = (low + high) // 2
+        batch = _build_batch(dataset, data_collator, mid)
+        try:
+            peak = _run_probe(model, batch, device, precision)
+            best_fit = mid
+            best_peak = peak
+            low = mid + 1
+        except RuntimeError as exc:
+            # Only OOM errors are handled; others propagate.
+            if "out of memory" not in str(exc).lower():
+                raise
+            # Clean up after OOM and try smaller batch
+            torch.cuda.empty_cache()
+            high = mid - 1
 
-    return {
-        "parameters": parameter_bytes,
-        "gradients": gradient_bytes,
-        "optimizer": optimizer_bytes,
-    }
+    return best_fit, best_peak
+
+
+def _search_max_fit_above(
+    model: torch.nn.Module,
+    dataset: Dataset | IterableDataset,
+    data_collator: Any | None,
+    device: torch.device,
+    precision: str,
+    start_fit_batch_size: int,
+) -> tuple[int, Optional[int]]:
+    """
+    Find the maximum batch size that fits, starting from a known‑good size.
+
+    WHY: If the requested batch already fits, we want to see how much spare
+    capacity exists. We exponentially increase batch size to find an upper
+    bound, then binary search inside that interval.
+
+    TRADE‑OFFS:
+    - Exponential growth (×2) is fast but may overshoot; binary search then refines.
+    - Maximum probe size is capped at 4096 or 64×start_batch to avoid excessive runs.
+    """
+    best_fit = start_fit_batch_size
+    best_peak = _run_probe(
+        model,
+        _build_batch(dataset, data_collator, start_fit_batch_size),
+        device,
+        precision,
+    )
+
+    probe_size = max(start_fit_batch_size + 1, start_fit_batch_size * 2)
+    upper_fail: Optional[int] = None
+    # Cap at 4096 or 64× start (whichever is larger but reasonable)
+    max_probe_size = max(start_fit_batch_size * 64, start_fit_batch_size + 64, 4096)
+
+    while probe_size <= max_probe_size:
+        try:
+            peak = _run_probe(
+                model,
+                _build_batch(dataset, data_collator, probe_size),
+                device,
+                precision,
+            )
+            best_fit = probe_size
+            best_peak = peak
+            probe_size *= 2
+        except RuntimeError as exc:
+            if "out of memory" not in str(exc).lower():
+                raise
+            torch.cuda.empty_cache()
+            upper_fail = probe_size
+            break
+
+    if upper_fail is None:
+        # We never hit OOM up to max_probe_size → best_fit is the true max (within cap)
+        return best_fit, best_peak
+
+    # Binary search between last known good (best_fit) and first failing (upper_fail)
+    low = best_fit + 1
+    high = upper_fail - 1
+    while low <= high:
+        mid = (low + high) // 2
+        try:
+            peak = _run_probe(
+                model,
+                _build_batch(dataset, data_collator, mid),
+                device,
+                precision,
+            )
+            best_fit = mid
+            best_peak = peak
+            low = mid + 1
+        except RuntimeError as exc:
+            if "out of memory" not in str(exc).lower():
+                raise
+            torch.cuda.empty_cache()
+            high = mid - 1
+
+    return best_fit, best_peak
 
 
 def check_vram_fit(
@@ -313,175 +350,164 @@ def check_vram_fit(
     raise_on_fail: bool = True,
 ) -> VRAMCheckReport:
     """
-    Public entry point: estimate VRAM and optionally raise if it doesn't fit.
+    Empirically check if the model + batch configuration fits in GPU VRAM.
 
-    WHY: Many training scripts OOM half‑way through because they only test with
-    small batches. This checker runs before training and gives actionable advice.
+    WHAT IT DOES:
+    1. Moves model to GPU (if not already there).
+    2. Builds a batch of size `per_device_train_batch_size` from `train_dataset`.
+    3. Runs one forward+backward pass, measuring peak allocated memory.
+    4. If it fits, searches upward to find the maximum batch size that still fits.
+    5. If it OOMs, binary‑searches downward to find the largest fitting batch.
+    6. Returns a report with recommended max batch size, overflow, spare.
 
-    The safety margin leaves headroom for transient allocations (caching, temporary
-    tensors) and reduces false positives. 0.90 means "use at most 90% of free VRAM".
+    WHY EMPIRICAL OVER THEORETICAL:
+    - Theoretical estimators (like the previous module) miss framework overhead,
+      kernel launches, fragmentation, and data‑dependent peaks (e.g., variable
+      sequence lengths).
+    - Running an actual batch is the only way to be certain for production.
 
-    Decision to recommend batch size:
-    - Compute per‑sample activation cost by dividing total activation bytes by current batch size.
-    - Fixed cost = everything except activations.
-    - Then find max batch size such that fixed + batch * per_sample_activation ≤ budget.
+    ASSUMPTIONS:
+    - The model returns a `loss` when `return_dict=True` (standard HF pattern).
+    - The dataset is not enormous; we only take a small number of samples per probe.
+    - The model's forward/backward behaviour is deterministic enough that one probe
+      is representative (true for most decoder‑only models).
+    - The `args` object has `per_device_train_batch_size` and `precision` attributes.
+
+    LIMITATIONS (noted in report):
+    - Does not account for gradient accumulation (memory scales with batch size,
+      accumulation only affects update frequency, not peak).
+    - Does not account for activation checkpointing (if enabled, memory would be lower).
+    - The probe uses a single batch; if the dataset has highly variable sequence
+      lengths, the worst‑case batch may be larger.
+
+    EDGE CASES:
+    - CUDA unavailable → returns a dummy report with fits=True (no risk on CPU).
+    - Dataset empty → raises ValueError.
+    - Batch size 1 → no collation, just a single sample.
+    - OOM during probe → cleans up cache and continues search.
     """
-    if not 0.0 < safety_margin < 1.0:
-        raise ValueError("safety_margin must be between 0 and 1.")
+    if not 0.0 < safety_margin <= 1.0:
+        raise ValueError("safety_margin must be in (0, 1].")
 
-    device = device or torch.device(
-        "cuda" if torch.cuda.is_available() else "cpu"
-    )
-    inferred_sequence_length = _infer_sequence_length(
-        train_dataset,
-        data_collator,
-        sequence_length,
-    )
-    available_bytes = _get_available_vram_bytes(device)
-
-    notes: list[str] = []
-    train_batch_size = int(getattr(args, "per_device_train_batch_size", 1))
+    device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    requested_batch_size = int(getattr(args, "per_device_train_batch_size", 1))
     precision = str(getattr(args, "precision", "fp32"))
-    estimated_total = 0
-    breakdown: dict[str, int] = {}
+    notes: list[str] = []
 
-    if available_bytes is not None and train_dataset is not None:
+    # Non‑CUDA case: no empirical probing, just return a dummy report.
+    if device.type != "cuda" or not torch.cuda.is_available():
+        notes.append("CUDA is unavailable; skipped empirical GPU OOM probing.")
+        return VRAMCheckReport(
+            fits=True,
+            device=str(device),
+            requested_train_batch_size=requested_batch_size,
+            max_fit_train_batch_size=requested_batch_size,
+            overflow_train_batch_size=0,
+            spare_train_batch_size=0,
+            available_bytes=None,
+            peak_bytes_at_requested=None,
+            peak_bytes_at_max_fit=None,
+            notes=tuple(notes),
+        )
+
+    if train_dataset is None:
+        raise ValueError("train_dataset is required for empirical VRAM probing.")
+
+    if sequence_length is not None:
+        notes.append(f"sequence_length hint: {sequence_length}")
+
+    available_bytes = _get_available_vram_bytes(device)
+    peak_at_requested: Optional[int] = None
+    peak_at_max_fit: Optional[int] = None
+
+    # Remember original device to restore after probing.
+    original_device = next(model.parameters()).device
+    model.to(device)
+
+    try:
+        requested_batch = _build_batch(
+            train_dataset,
+            data_collator,
+            requested_batch_size,
+        )
         try:
-            probe_1 = _build_probe_batch(train_dataset, data_collator, 1)
-            probe_2 = _build_probe_batch(train_dataset, data_collator, 2)
-
-            # Temporarily move model to GPU for a real training-memory probe.
-            was_on_device = next(model.parameters()).device
-            model.to(device)
-
-            peak_1 = _probe_peak_bytes(model, probe_1, device, precision)
-            peak_2 = _probe_peak_bytes(model, probe_2, device, precision)
-
-            # Linear fit from real model behavior.
-            marginal_per_sample = max(0, peak_2 - peak_1)
-            estimated_total = int(peak_1 + max(0, train_batch_size - 1) * marginal_per_sample)
-            breakdown = {
-                "probe_batch_1_peak": int(peak_1),
-                "probe_batch_2_peak": int(peak_2),
-                "marginal_per_sample": int(marginal_per_sample),
-            }
-            notes.append(
-                "Empirical estimate from actual forward/backward passes on batches of size 1 and 2."
+            peak_at_requested = _run_probe(model, requested_batch, device, precision)
+            notes.append("Requested batch fits empirically on actual data.")
+            # It fits → try to see how much spare capacity we have.
+            max_fit_batch, peak_at_max_fit = _search_max_fit_above(
+                model=model,
+                dataset=train_dataset,
+                data_collator=data_collator,
+                device=device,
+                precision=precision,
+                start_fit_batch_size=requested_batch_size,
             )
-            notes.append(f"Sequence length used for probing: {inferred_sequence_length}.")
-            model.to(was_on_device)
-        except Exception as exc:
-            notes.append(
-                f"Empirical probe failed ({type(exc).__name__}); falling back to analytical estimate."
-            )
-            breakdown = estimate_training_vram_bytes(
-                model,
-                args,
-                sequence_length=inferred_sequence_length,
-            )
-            # Conservative fallback: use analytical model if probing fails.
-            activation_bytes = int(
-                train_batch_size
-                * inferred_sequence_length
-                * max(
-                    1,
-                    int(
-                        getattr(
-                            model.config,
-                            "n_embd",
-                            getattr(model.config, "hidden_size", 1),
-                        )
-                    ),
+            if max_fit_batch > requested_batch_size:
+                notes.append(
+                    f"Batch size can likely grow by +{max_fit_batch - requested_batch_size} more."
                 )
-                * max(
-                    1,
-                    int(
-                        getattr(
-                            model.config,
-                            "n_layer",
-                            getattr(model.config, "num_hidden_layers", 1),
-                        )
-                    ),
+        except RuntimeError as exc:
+            if "out of memory" not in str(exc).lower():
+                raise
+            torch.cuda.empty_cache()
+            notes.append(
+                "Requested batch OOMed on actual data; binary search is finding the largest fit."
+            )
+            if requested_batch_size <= 1:
+                max_fit_batch = 0
+                peak_at_max_fit = None
+            else:
+                # OOM → search downward from requested-1
+                max_fit_batch, peak_at_max_fit = _binary_search_max_fit(
+                    model=model,
+                    dataset=train_dataset,
+                    data_collator=data_collator,
+                    device=device,
+                    precision=precision,
+                    requested_batch_size=requested_batch_size - 1,
                 )
-                * (2 if precision in {"fp16", "bf16"} else 4)
-            )
-            estimated_total = sum(breakdown.values()) + activation_bytes
-            breakdown["activations_fallback"] = activation_bytes
-    else:
-        breakdown = estimate_training_vram_bytes(
-            model,
-            args,
-            sequence_length=inferred_sequence_length,
-        )
-        activation_bytes = int(
-            train_batch_size
-            * inferred_sequence_length
-            * max(
-                1,
-                int(
-                    getattr(
-                        model.config,
-                        "n_embd",
-                        getattr(model.config, "hidden_size", 1),
-                    )
-                ),
-            )
-            * max(
-                1,
-                int(
-                    getattr(
-                        model.config,
-                        "n_layer",
-                        getattr(model.config, "num_hidden_layers", 1),
-                    )
-                ),
-            )
-            * (2 if precision in {"fp16", "bf16"} else 4)
-        )
-        estimated_total = sum(breakdown.values()) + activation_bytes
-        breakdown["activations_fallback"] = activation_bytes
-        notes.append("CUDA unavailable or dataset missing; using analytical fallback only.")
+    finally:
+        # Restore model to its original device (important if the caller uses CPU offload)
+        model.to(original_device)
+        torch.cuda.empty_cache()
 
-    fits = True
+    overflow = max(0, requested_batch_size - max_fit_batch)
+    spare = max(0, max_fit_batch - requested_batch_size)
+    fits = overflow == 0
+
     if available_bytes is not None:
-        budget = int(available_bytes * safety_margin)
-        fits = estimated_total <= budget
         notes.append(
-            f"Safety margin keeps usable memory under {_format_bytes(budget)}."
+            f"Free VRAM at check time: {_format_bytes(int(available_bytes * safety_margin))} usable after safety margin."
         )
-        if not fits:
-            notes.append(
-                "Try lowering `per_device_train_batch_size`, `sequence_length`, "
-                "or switch to a smaller model / bf16."
-            )
-
-    recommended_batch_size = train_batch_size
-    if available_bytes is not None:
-        if "marginal_per_sample" in breakdown:
-            per_batch_bytes = max(1, breakdown["marginal_per_sample"])
-            fixed_bytes = int(breakdown["probe_batch_1_peak"] - per_batch_bytes)
-        else:
-            per_batch_bytes = max(1, breakdown["activations_fallback"] // max(1, train_batch_size))
-            fixed_bytes = estimated_total - breakdown["activations_fallback"]
-        budget = int(available_bytes * safety_margin)
-        if budget > fixed_bytes:
-            recommended_batch_size = max(
-                1, math.floor((budget - fixed_bytes) / per_batch_bytes)
-            )
+    if not fits:
+        notes.append(
+            f"Your requested batch is {overflow} sample(s) above the empirically safe maximum."
+        )
+        notes.append(
+            "Reduce batch size, shorten sequences, or use gradient accumulation."
+        )
+    elif spare > 0:
+        notes.append(
+            f"You still have room for +{spare} batch size (up to {max_fit_batch})."
+        )
 
     report = VRAMCheckReport(
         fits=fits,
         device=str(device),
+        requested_train_batch_size=requested_batch_size,
+        max_fit_train_batch_size=max_fit_batch,
+        overflow_train_batch_size=overflow,
+        spare_train_batch_size=spare,
         available_bytes=available_bytes,
-        estimated_bytes=estimated_total,
-        estimated_breakdown=breakdown,
-        recommended_train_batch_size=recommended_batch_size,
-        recommended_sequence_length=inferred_sequence_length,
+        peak_bytes_at_requested=peak_at_requested,
+        peak_bytes_at_max_fit=peak_at_max_fit,
         notes=tuple(notes),
     )
 
     if raise_on_fail and not fits:
-        # Immediate failure helps integration into training pipelines
         raise RuntimeError(report.pretty())
 
     return report
+
+
+    
