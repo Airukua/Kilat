@@ -34,6 +34,7 @@ from .checkpointing import (
     resume_from_checkpoint,
     prune_checkpoints,
 )
+from utils.vram_check import check_vram_fit
 
 
 def _iterable_from_dataset(ds: Dataset) -> IterableDataset:
@@ -180,7 +181,6 @@ class KilatTrainer:
 
         # Select available device
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model.to(self.device)
 
         # Resolve AMP dtype and settings based on chosen precision.
         # The resolution logic encapsulates hardware capability checks:
@@ -264,6 +264,18 @@ class KilatTrainer:
             self.eval_dataloader = None
             self.early_stopping = None
             self._eval_is_streaming = False
+
+        # Check memory budget before moving the model to GPU.
+        self.vram_report = check_vram_fit(
+            self.model,
+            self.args,
+            train_dataset=self.train_dataset,
+            data_collator=self.data_collator,
+            device=self.device,
+            raise_on_fail=True,
+        )
+
+        self.model.to(self.device)
 
         # Compute total steps for the scheduler.
         # In steps mode: directly uses max_steps (training budget is optimizer updates).

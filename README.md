@@ -33,11 +33,12 @@ print(f"{sum(p.numel() for p in model.parameters()) / 1e6:.1f}M parameters")
 Most training frameworks give you either too much magic (HuggingFace Trainer) or too little structure (raw PyTorch scripts). Kilat sits in between: a clean, hackable codebase with the production features you'd otherwise rebuild yourself.
 
 - **Real training loop** — gradient accumulation, AMP (FP16/BF16/FP32), early stopping, checkpointing, WandB integration
-- **Three FFN modes** — dense SwiGLU, standard MoE, or DeepSeek-V2 style MoE with shared experts
+- **Two FFN modes** — dense SwiGLU and DeepSeek-V2 style MoE with shared experts
 - **Hybrid attention** — linear global-decay heads + latent MLA heads, fused via learned gate
 - **KV-cache inference** — autoregressive generation with temperature / top-k / top-p / repetition penalty
 - **Flexible data** — stream from Parquet, JSON/JSONL, or in-memory lists; efficient batch packing for long sequences
-- **No framework lock-in** — configs export as YAML, checkpoints are plain PyTorch state dicts
+- **No framework lock-in** — build configs in code or export them as YAML; checkpoints are plain PyTorch state dicts
+- **Preflight checks** — VRAM estimation and end-to-end health checks before real training starts
 
 ---
 
@@ -59,6 +60,8 @@ python -c "from arc.model import KilatTransformer; print('✓ Kilat ready')"
 ```python
 from arc.model import KilatTransformer
 from utils.config import KilatConfig
+from utils.vram_check import check_vram_fit
+from utils.health_check import run_health_check
 from training.trainer import KilatTrainer
 from training.arguments import TrainingArguments
 from data.dataset import KilatDataset
@@ -77,6 +80,25 @@ args = TrainingArguments(
     learning_rate=5e-5,
     precision="bf16",
 )
+
+# Fail fast if the GPU budget is too small
+vram_report = check_vram_fit(
+    model,
+    args,
+    train_dataset=train_dataset,
+    data_collator=None,
+    raise_on_fail=False,
+)
+print(vram_report.pretty())
+
+# Optional: smoke-test 1 sample, training, checkpointing, and resume
+health_report = run_health_check(
+    model,
+    train_dataset,
+    eval_dataset=eval_dataset,
+    args=args,
+)
+print(health_report.pretty())
 
 KilatTrainer(model=model, args=args, train_dataset=train_dataset, eval_dataset=eval_dataset).train()
 ```
@@ -241,7 +263,9 @@ kilat/
 │   ├── generator.py   # KilatGenerator
 │   └── chat_session.py
 ├── utils/
-│   ├── config.py      # KilatConfig (YAML export/load)
+│   ├── config.py      # KilatConfig / TrainingConfig / MainConfig
+│   ├── vram_check.py  # GPU memory estimation before training
+│   ├── health_check.py# smoke test for train + checkpoint + resume
 │   └── sanity_check.py
 └── configs/           # Example YAML configs
     ├── small_dense.yaml
@@ -252,12 +276,14 @@ kilat/
 
 ## Configuration
 
-Everything is a dataclass, exportable as YAML:
+You can build configs directly in Python, then optionally export to YAML:
 
 ```python
-from utils.config import KilatConfig
+from arc.model import KilatTransformer
+from utils.config import KilatConfig, TrainingConfig, MainConfig
+from training.arguments import TrainingArguments
 
-config = KilatConfig(
+model_cfg = KilatConfig(
     vocab_size=50_000,
     n_embd=768,
     n_layer=12,
@@ -266,13 +292,42 @@ config = KilatConfig(
     recall_ratio=0.5,   # 50% latent MLA, 50% global decay
     latent_dim=192,     # KV compression dim (default: n_embd // 4)
 )
-config.to_yaml("configs/my_model.yaml")
 
-# Resume later
-config = KilatConfig.from_yaml("configs/my_model.yaml")
+train_cfg = TrainingConfig(
+    output_dir="./checkpoints",
+    training_mode="steps",
+    max_steps=100,
+    per_device_train_batch_size=1,
+    precision="bf16",
+    report_to="none",
+)
+
+config = MainConfig(model=model_cfg, training=train_cfg)
+config.to_yaml("configs/my_experiment.yaml")  # optional
+
+model = KilatTransformer(config.model)
+args = TrainingArguments(**config.training.to_dict())
 ```
 
-See `configs/` for ready-made examples.
+See `configs/` for ready-made examples, or keep everything in Python for Kaggle / Colab workflows.
+
+### Preflight checks
+
+Before launching a real run, you can do:
+
+```python
+from utils.vram_check import check_vram_fit
+from utils.health_check import run_health_check
+
+report = check_vram_fit(model, args, train_dataset=train_dataset, data_collator=collator)
+print(report.pretty())
+
+health = run_health_check(model, train_dataset, eval_dataset=eval_dataset, data_collator=collator)
+print(health.pretty())
+```
+
+- `check_vram_fit(...)` estimates whether the current model + batch size + sequence length should fit on the available GPU.
+- `run_health_check(...)` uses a tiny subset of data to verify that forward/backward, checkpoint save, and checkpoint resume all work.
 
 ---
 
