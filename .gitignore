@@ -20,6 +20,10 @@ ENV/
 data/tokens/
 data/tokens/**/*.parquet
 data/tokens/**/tokenizer/
+data/fine-web-edu/
+data/fine-web-edu/**/*.parquet
+data/fine-web-edu/**/tokenizer/
+
 
 # checkpoints and logs
 checkpoints/

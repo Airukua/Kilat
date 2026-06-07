@@ -201,13 +201,10 @@ class KilatTransformer(KilatPreTrainedModel):
         # so gradient updates to either affect both.
         self.wte.weight = self.lm_head.weight
 
-        # Required by transformers >= 4.46 for safe_serialization when tensors
-        # are shared across modules. Without this, save_pretrained raises:
-        # "shared tensors mismatching the transformers base configuration".
-        # The set contains the attribute names (not parameter names) that share
-        # storage, telling the serialization logic to handle them correctly
-        # during safetensor sharding.
-        self._dynamic_tied_weights_keys = {"lm_head.weight", "wte.weight"}
+        # Required by recent transformers releases for safe_serialization when
+        # tensors are shared across modules. The mapping tells the serializer
+        # that `lm_head.weight` is intentionally tied to `wte.weight`.
+        self._tied_weights_keys = {"lm_head.weight": "wte.weight"}
 
         # Initialise weights via Hugging Face post‑init.
         # This calls _init_weights on every submodule, then runs any
