@@ -2,7 +2,7 @@
 
 # ⚡ Kilat 
 
-** Kernelized Lightweight Lightweight Transformer Training & Inference Toolkit**
+**Kernelized Lightweight Lightweight Transformer Training & Inference Toolkit**
 
 *Built for researchers who care about what's under the hood.*
 
@@ -387,7 +387,7 @@ Focus: efficient sequence modeling, Indonesian NLP, low-resource language techno
 
 [![HuggingFace](https://img.shields.io/badge/🤗%20HuggingFace-AiRukua-FFD21E?style=flat-square)](https://huggingface.co/AiRukua)
 [![LinkedIn](https://img.shields.io/badge/LinkedIn-abdul--wahid--rukua-0A66C2?style=flat-square&logo=linkedin&logoColor=white)](https://www.linkedin.com/in/abdul-wahid-rukua/)
-[![GitHub](https://img.shields.io/badge/GitHub-Airukua-181717?style=flat-square&logo=github)](https://github.com/Airukua)
+<!-- [![GitHub](https://img.shields.io/badge/GitHub-Airukua-181717?style=flat-square&logo=github)](https://github.com/Airukua) -->
 
 ---
 
