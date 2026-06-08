@@ -50,17 +50,26 @@ python -c "from arc.model import KilatTransformer; print('✓ Kilat ready')"
 ```python
 from arc.model import KilatTransformer
 from utils.config import KilatConfig
-from utils.vram_check import check_vram_fit
-from utils.health_check import run_health_check
 from training.trainer import KilatTrainer
-from training.arguments import TrainingArguments
-from data.dataset import KilatDataset
+from training.args import TrainingArguments
+from data.dataset import PretrainingDataset
+from data.dataloader import build_train_dataloader, build_eval_dataloader
 
 config = KilatConfig(vocab_size=50_000, n_embd=640, n_layer=8, n_head=10, ffn_mode="dense")
 model  = KilatTransformer(config)
 
-train_dataset = KilatDataset("data/train.parquet", key_name="input_ids")
-eval_dataset  = KilatDataset("data/eval.parquet",  key_name="input_ids")
+train_dataset = PretrainingDataset("data/train.parquet", key_name="input_ids")
+eval_dataset  = PretrainingDataset("data/eval.parquet",  key_name="input_ids")
+train_loader = build_train_dataloader(
+    train_dataset,
+    batch_size=32,
+    pad_token_id=config.pad_token_id,
+)
+eval_loader = build_eval_dataloader(
+    eval_dataset,
+    batch_size=32,
+    pad_token_id=config.pad_token_id,
+)
 
 args = TrainingArguments(
     output_dir="./checkpoints",
@@ -71,26 +80,7 @@ args = TrainingArguments(
     precision="bf16",
 )
 
-# Fail fast if the GPU budget is too small
-vram_report = check_vram_fit(
-    model,
-    args,
-    train_dataset=train_dataset,
-    data_collator=None,
-    raise_on_fail=False,
-)
-print(vram_report.pretty())
-
-# Optional: smoke-test 1 sample, training, checkpointing, and resume
-health_report = run_health_check(
-    model,
-    train_dataset,
-    eval_dataset=eval_dataset,
-    args=args,
-)
-print(health_report.pretty())
-
-KilatTrainer(model=model, args=args, train_dataset=train_dataset, eval_dataset=eval_dataset).train()
+KilatTrainer(model=model, args=args, train_dataloader=train_loader, eval_dataloader=eval_loader).train()
 ```
 
 To continue a stopped run, point `resume_from_checkpoint` to the checkpoint
@@ -115,108 +105,40 @@ training:
 That restores model weights, optimizer, scheduler, scaler, and training
 counters so training continues from the exact saved state.
 
-### Distill a student from a teacher
+### Distillation
 
-Kilat also includes a separate distillation path under `distiliation/`. In this
-setup, the teacher is a frozen model that produces logits, while the student is
-the model you actually train.
+Coming soon.
 
-How to set them up:
+### Data pipeline
 
-1. Load or build a teacher backend with `load_teacher(...)`.
-2. Load or build a student backend with `load_student(...)` or `build_student(...)`.
-3. Make sure the teacher and student use the same vocabulary size.
-4. Choose a distillation loss, such as `vanilla`, `reverse`, or `adaptive`.
-5. Run `DistillTrainer` the same way you would run the regular trainer.
+The `data/` folder is split into four layers:
 
-The factories are backend-specific:
+- `data/converter.py` turns Parquet shards into flat `.npy` memmaps for fast training.
+- `data/dataset.py` provides the dataset primitives:
+  - `PretrainingDataset` for random access over memmap, Parquet, JSON, JSONL, or in-memory samples.
+  - `StreamingDataset` for large Parquet corpora that should be read sequentially.
+  - `PackedDataset` for bin-packing short sequences into fixed-length blocks.
+  - `ConcatDataset` for mixing multiple map-style datasets.
+- `data/collator.py` pads/truncates batches for causal language modeling.
+- `data/dataloader.py` builds train/eval `DataLoader` objects with sensible defaults.
 
-- `load_teacher("kilat", checkpoint_dir, ...)` loads a frozen Kilat checkpoint.
-- `load_teacher("huggingface", model_name_or_path, ...)` loads a Hugging Face model.
-- `load_student("kilat", checkpoint_dir, ...)` resumes a Kilat student checkpoint.
-- `build_student("kilat", vocab_size=..., n_embd=..., n_layer=..., n_head=...)`
-  creates a new smaller Kilat student from config.
-- `build_student("huggingface", model_name_or_path=...)` starts from a pretrained
-  Hugging Face model.
-
-If you want to train a student from scratch, use the `build_student(...)` path
-for Kilat models. For example:
+For a quick smoke test, you can use the included dummy Parquet file:
 
 ```python
-student = build_student(
-    "kilat",
-    vocab_size=50000,
-    n_embd=256,
-    n_layer=4,
-    n_head=4,
-    ffn_mode="dense",
-)
+from data.dataset import StreamingDataset
+
+ds = StreamingDataset("data/dummy_test.parquet", pad_token_id=0)
+print(ds._has_mask)
+print(next(iter(ds)))
 ```
 
-That creates a fresh student with random initialization, which is the usual
-choice when you want a smaller architecture than the teacher. If you are using
-Hugging Face as the student backend, you can also start from a pretrained model
-or use `HuggingFaceStudent.from_scratch(...)` directly with a model config.
+Recommended data formats:
 
-For Kilat-to-Kilat distillation, the student is usually a smaller model with the
-same tokenizer and vocabulary as the teacher.
-
-Minimal example:
-
-```python
-from distiliation import DistillTrainer, load_teacher, load_student, build_loss
-from training.arguments import TrainingArguments
-from data.dataset import KilatDataset
-
-teacher = load_teacher("kilat", "./checkpoints/teacher-best", device="cuda")
-student = load_student("kilat", "./checkpoints/student-init", device="cuda")
-
-train_dataset = KilatDataset("data/train.parquet", key_name="input_ids")
-eval_dataset = KilatDataset("data/eval.parquet", key_name="input_ids")
-
-args = TrainingArguments(
-    output_dir="./distill-runs",
-    training_mode="epochs",
-    num_train_epochs=3,
-    per_device_train_batch_size=16,
-    per_device_eval_batch_size=16,
-    learning_rate=5e-5,
-    precision="bf16",
-)
-
-loss_fn = build_loss("vanilla", temperature=4.0, alpha=0.5)
-
-trainer = DistillTrainer(
-    student=student,
-    teacher=teacher,
-    args=args,
-    train_dataset=train_dataset,
-    eval_dataset=eval_dataset,
-    loss_fn=loss_fn,
-)
-trainer.train()
-```
-
-If you prefer, you can also pass `loss_name="vanilla"` directly instead of
-creating `loss_fn` manually.
-
-Quick notes:
-- The teacher stays frozen and only produces logits.
-- The student must match the teacher's vocabulary size and output format.
-- `DistillTrainer` only needs a `forward()` that returns logits and a
-  `vocab_size` property.
-- Distillation checkpoints store extra state for losses with learnable
-  parameters, such as `adaptive`.
-
-### Data format and collator
-
-`KilatDataset` accepts these training inputs:
-
-- a Parquet file: `*.parquet` or `*.parq`
-- a directory of Parquet shards
-- a JSON file: `*.json`
-- a JSONL file: `*.jsonl`
-- an in-memory `list` of dictionaries
+- Parquet file: `*.parquet` or `*.parq`
+- Directory of Parquet shards
+- JSON file: `*.json`
+- JSONL file: `*.jsonl`
+- In-memory `list` of token dicts or token lists
 
 Each sample should contain token IDs under a key such as `input_ids`:
 
@@ -240,9 +162,28 @@ collator = KilatDataCollator(
 - It truncates long samples to `max_length`.
 - It creates `labels` for causal language modeling.
 
-Use `collator=None` only when you are using streaming datasets that already yield ready-to-train `(input_ids, labels)` batches. In that mode, the trainer skips the normal collator path.
+Use `collator=None` only when the dataset already yields ready-to-train batches or when you are using a custom streaming pipeline that performs collation itself.
+
+If you want a higher-level constructor, use the helpers in `data/dataloader.py`:
+
+```python
+from data.dataloader import build_train_dataloader
+from data.dataset import PretrainingDataset
+
+train_ds = PretrainingDataset("data/train.parquet", key_name="input_ids")
+train_loader = build_train_dataloader(train_ds, batch_size=8, pad_token_id=0)
+```
+
+For large corpora that start as Parquet, the usual path is:
+
+1. Convert Parquet to memmap with `data.converter.parquet_to_memmap(...)`.
+2. Load the resulting `.npy` with `PretrainingDataset`.
+3. Use `build_train_dataloader(...)` with `KilatDataCollator`.
 
 ### Run inference
+
+Inference reuses the shared tokenizer wrapper from `data/tokenizer.py`, so the
+checkpoint and preprocessing pipeline stay aligned.
 
 ```bash
 # Single prompt
@@ -446,15 +387,23 @@ kilat/
 
 ## Configuration
 
-You can build configs directly in Python, then optionally export to YAML:
+Kilat keeps configuration in four small objects:
 
-The tokenizer section is required and must match the tokenizer used to create
-the dataset, so evaluation prompts decode correctly.
+- `KilatConfig` for model architecture
+- `TokenizerConfig` for tokenization metadata
+- `TrainingConfig` for training hyperparameters and runtime settings
+- `MainConfig` for bundling the three together into one YAML file
+
+Build them directly in Python, then optionally export to YAML. The tokenizer
+section is required and must match the tokenizer used to create the dataset, so
+evaluation prompts decode correctly.
 
 ```python
 from arc.model import KilatTransformer
 from utils.config import KilatConfig, TokenizerConfig, TrainingConfig, MainConfig
-from training.arguments import TrainingArguments
+from training.args import TrainingArguments
+from data.dataset import PretrainingDataset
+from data.dataloader import build_train_dataloader, build_eval_dataloader
 
 model_cfg = KilatConfig(
     vocab_size=50_000,
@@ -471,6 +420,8 @@ train_cfg = TrainingConfig(
     training_mode="steps",
     max_steps=100,
     per_device_train_batch_size=1,
+    scheduler_type="cosine",
+    atomic_checkpoint=True,
     precision="bf16",
     report_to="none",
 )
@@ -486,13 +437,64 @@ config.to_yaml("configs/my_experiment.yaml")  # optional
 
 model = KilatTransformer(config.model)
 args = TrainingArguments(**config.training.to_dict())
+
+train_dataset = PretrainingDataset("data/train.parquet", key_name="input_ids")
+eval_dataset = PretrainingDataset("data/eval.parquet", key_name="input_ids")
+train_loader = build_train_dataloader(
+    train_dataset,
+    batch_size=config.training.per_device_train_batch_size,
+    pad_token_id=config.model.pad_token_id,
+)
+eval_loader = build_eval_dataloader(
+    eval_dataset,
+    batch_size=config.training.per_device_eval_batch_size,
+    pad_token_id=config.model.pad_token_id,
+)
+```
+
+`TrainingConfig.to_dict()` mirrors `TrainingArguments`, so the same YAML-backed
+configuration can be passed directly into the trainer:
+
+```python
+trainer = KilatTrainer(model=model, args=args, train_dataloader=train_loader, eval_dataloader=eval_loader)
 ```
 
 See `configs/` for ready-made examples, or keep everything in Python for Kaggle / Colab workflows.
 
+Minimal YAML shape:
+
+```yaml
+model:
+  vocab_size: 50000
+  n_embd: 768
+  n_layer: 12
+  n_head: 12
+tokenizer:
+  tokenizer_type: gpt2
+  tokenizer_name_or_path: gpt2
+training:
+  output_dir: ./checkpoints
+  training_mode: epochs
+  num_train_epochs: 3
+  per_device_train_batch_size: 8
+  precision: bf16
+```
+
+Notable training fields:
+
+- `resume_from_checkpoint` to continue from a saved run
+- `scheduler_type` and `scheduler_kwargs` to choose the LR schedule
+- `atomic_checkpoint` to write checkpoints safely via temp-directory rename
+- `report_to` to pick logging backends, including `["wandb", "tensorboard"]`
+- `metric_for_best_model` and `greater_is_better` to control early stopping and best-checkpoint selection
+- `per_device_train_batch_size` and `per_device_eval_batch_size` to size the loaders built by `data.dataloader`
+
 ### Tokenizer configuration
 
-Kilat supports two decode-time tokenizer styles through `TokenizerConfig`:
+Kilat keeps tokenizer handling centralized through `data/tokenizer.KilatTokenizer`
+while `TokenizerConfig` still documents how the tokenizer is resolved from config.
+
+Supported decode-time tokenizer styles:
 
 - `tokenizer_type: "auto"` — load any Hugging Face tokenizer via `AutoTokenizer.from_pretrained(...)`
 - `tokenizer_type: "sentencepiece"` — load a local SentencePiece model via `tokenizer_model_path`
@@ -536,26 +538,6 @@ tokenizer_cfg = TokenizerConfig(
 
 Important: the tokenizer used for decoding eval samples must match the tokenizer
 that produced the dataset, otherwise the printed prompt can look like garbled text.
-
-### Preflight checks
-
-Before launching a real run, you can do:
-
-```python
-from utils.vram_check import check_vram_fit
-from utils.health_check import run_health_check
-
-report = check_vram_fit(model, train_args, train_dataset=train_dataset, data_collator=collator)
-print(report.pretty())
-
-health = run_health_check(model, train_dataset, eval_dataset=eval_dataset, data_collator=collator)
-print(health.pretty())
-```
-
-- `check_vram_fit(...)` probes the real model on actual batches and reports the largest batch size that fits before OOM.
-- `run_health_check(...)` uses a tiny subset of data to verify that forward/backward, checkpoint save, and checkpoint resume all work.
-
----
 
 ## Roadmap
 

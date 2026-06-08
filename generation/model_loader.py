@@ -15,8 +15,8 @@ from pathlib import Path
 from typing import Optional, Tuple
 import warnings
 import torch
-from transformers import AutoTokenizer
 
+from data.tokenizer import KilatTokenizer
 from arc.model import KilatTransformer
 from utils.config import KilatConfig, MainConfig
 
@@ -25,7 +25,7 @@ def load_model_and_tokenizer(
     checkpoint_path: str,
     device: Optional[torch.device] = None,
     use_yaml_config: bool = False,
-) -> Tuple[KilatTransformer, AutoTokenizer]:
+) -> Tuple[KilatTransformer, KilatTokenizer]:
     """
     Load a KilatTransformer model and its tokenizer from a checkpoint.
 
@@ -53,21 +53,10 @@ def load_model_and_tokenizer(
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # --- Load tokenizer ---
-    # Tokenizer is always loaded from HF format (tokenizer.json, vocab.json, etc.)
-    # Design assumption: Tokenizer files co-locate with model weights or in parent
-    # directory. This handles both direct directory paths and paths pointing to
-    # config files (e.g., /path/to/config.yaml - use parent for tokenizer).
-    if checkpoint_path.is_dir():
-        tokenizer = AutoTokenizer.from_pretrained(str(checkpoint_path))
-    else:
-        tokenizer = AutoTokenizer.from_pretrained(str(checkpoint_path.parent))
-
-    # Critical: Many pretrained tokenizers (GPT-2, LLaMA) lack pad_token
-    # Without this, padding batches would use token 0 (often <unk>), corrupting
-    # attention. Using eos_token is safe because it's never used as padding
-    # for real tokens (EOS appears only at sequence ends).
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+    # Generation now uses the shared tokenizer wrapper from data/tokenizer.py so
+    # inference and preprocessing stay in sync.
+    tokenizer_path = checkpoint_path if checkpoint_path.is_dir() else checkpoint_path.parent
+    tokenizer = KilatTokenizer.from_pretrained(str(tokenizer_path))
 
     # --- Determine model configuration ---
     # Priority ordering supports development workflow: YAML for active tweaking,
@@ -110,7 +99,7 @@ def load_model_and_tokenizer(
     # Best-effort warning if tokenizer and model disagree on vocabulary size.
     # This is helpful when a checkpoint is paired with a different tokenizer
     # than the one used during training.
-    tokenizer_vocab_size = len(tokenizer)
+    tokenizer_vocab_size = tokenizer.vocab_size
     model_vocab_size = getattr(config, "vocab_size", None)
     if model_vocab_size is not None and tokenizer_vocab_size != model_vocab_size:
         warnings.warn(

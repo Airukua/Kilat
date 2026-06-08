@@ -7,7 +7,7 @@ from transformers import PreTrainedModel
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from .blocks import Block, RMSNorm
 from utils.config import KilatConfig
-from utils.sanity_check import (
+from utils.validators import (
     validate_finite_tensor,
     validate_tensor_rank,
 )

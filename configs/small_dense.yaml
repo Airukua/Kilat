@@ -1,84 +1,71 @@
+# Kilat experiment config: small dense baseline
 experiment:
-  name: "kilat-small-dense"
-  description: "Fine-tuning on downstream task with dense FFN"
-  tags: ["dense", "small"]
+  name: small-dense-baseline
+  description: Small dense baseline for quick smoke tests and local experiments.
+  tags: ["dense", "baseline", "smoke-test"]
 
 model:
-  # Core architecture
   vocab_size: 50257
-  n_embd: 640     
-  n_layer: 8
-  n_head: 10
-  
-  # Attention
-  recall_ratio: 0.6
-  latent_dim: 160 
-  attn_drop: 0.1
-  
-  # Feed-forward (dense)
+  n_embd: 768
+  n_layer: 12
+  n_head: 12
+  recall_ratio: 0.5
+  latent_dim: 192
+  attn_drop: 0.0
   ffn_mode: dense
-  ff_mult: 2.67
-  ffn_dropout: 0.1
-  
-  # Regularisation
-  embd_drop: 0.1
-  resid_drop: 0.1
-  
-  # Token IDs
+  ff_mult: 2.6666666667
+  ffn_dropout: 0.0
+  num_experts: 8
+  active_experts: 2
+  num_shared_experts: 0
+  fine_grained_factor: 1
+  aux_loss_coef: 0.01
+  device_balance_coef: 0.001
+  embd_drop: 0.0
+  resid_drop: 0.0
   pad_token_id: 0
   bos_token_id: 1
   eos_token_id: 2
-  
-  # Weight tying
   tie_word_embeddings: true
   use_cache: false
   initializer_range: 0.02
 
 tokenizer:
-  # Must match the tokenizer used to create the token IDs in the dataset.
-  tokenizer_type: gpt2
+  tokenizer_type: auto
   tokenizer_name_or_path: gpt2
   tokenizer_model_path: null
-  # use_fast: true
-  local_files_only: false
+  use_fast: true
+  local_files_only: true
 
 training:
-  # I/O
-  output_dir: "./checkpoints"
+  output_dir: ./checkpoints/small-dense
   resume_from_checkpoint: null
   save_checkpoints: true
-  
-  # Training mode (epoch-based for fine-tuning)
-  training_mode: steps
-  max_steps: 300000
-  
-  # Optimisation
-  learning_rate: 5.0e-05
-  per_device_train_batch_size: 2048
-  per_device_eval_batch_size: 2048
-  gradient_accumulation_steps: 2
+  atomic_checkpoint: true
+  training_mode: epochs
+  learning_rate: 5.0e-5
+  beta1: 0.9
+  beta2: 0.95
+  epsilon: 1.0e-8
+  per_device_train_batch_size: 8
+  per_device_eval_batch_size: 8
+  gradient_accumulation_steps: 1
   weight_decay: 0.01
   max_grad_norm: 1.0
-  
-  # Schedule
-  warmup_steps: 2000
-  
-  # Logging & evaluation
+  max_steps: -1
+  num_train_epochs: 3
+  warmup_steps: 0
+  scheduler_type: cosine
+  scheduler_kwargs: {}
   logging_steps: 100
-  eval_steps: 200
-  save_steps: 5000
-  save_total_limit: 5
-  
-  # Early stopping
+  eval_steps: 500
+  save_steps: 500
+  save_total_limit: 3
   early_stopping_patience: 3
   early_stopping_threshold: 0.0
-  
-  # Mixed precision
-  precision: bf16  # FP16 for GPU, fp32 for CPU
-  
-  # Reporting
+  metric_for_best_model: eval_loss
+  greater_is_better: null
+  precision: bf16
   report_to: "none"
-  run_name: "kilat-small-dense"
-  
-  # Reproducibility
+  run_name: small-dense-baseline
   seed: 42

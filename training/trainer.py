@@ -1,1144 +1,1059 @@
 from __future__ import annotations
+import contextlib
+import logging
 import math
 import os
 import random
 import time
-import warnings
-from typing import Any, Optional
-import sentencepiece as spm
+from typing import Any, Callable, Optional
+
+import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, Dataset, IterableDataset
-from tqdm import tqdm
-from transformers import AutoTokenizer, PreTrainedModel
+from torch.utils.data import DataLoader
+from tqdm.auto import tqdm
 
-from .arguments import TrainingArguments
-from .optim_utils import (
-    create_optimizer,
-    create_scheduler,
-    resolve_amp_dtype,
+from .args import TrainingArguments
+from .callbacks import (
+    CallbackHandler,
+    EarlyStoppingCallback,
+    TrainerControl,
+    TrainerState,
+)
+from .integration import DEFAULT_CALLBACKS, get_reporting_integration_callbacks
+from .optimizer import create_optimizer, resolve_amp_dtype
+from .scheduler import get_scheduler
+from .trainer_utils import (
+    clip_grad_norm_,
     compute_total_steps,
-)
-from .logging_utils import (
-    init_wandb,
-    log_training_metrics,
-    log_eval_summary,
-    log_final_summary,
-    print_training_header,
-    finish_wandb,
-)
-from .checkpointing import (
-    save_checkpoint,
-    resume_from_checkpoint,
+    get_current_lr,
+    get_device,
+    get_latest_checkpoint,
+    load_checkpoint,
     prune_checkpoints,
+    save_checkpoint,
+    should_evaluate,
+    should_log,
+    should_save,
 )
-from utils.callback import CallbackHandler, EarlyStoppingCallback
-from utils.config import TokenizerConfig
 
-
-def _iterable_from_dataset(ds: Dataset) -> IterableDataset:
-    """Wrap a Dataset with an IterableDataset that delegates iteration.
-
-    This forces DataLoader to use the dataset's __iter__ implementation
-    (required for streaming mode where __getitem__ is not supported).
-    
-    Streaming datasets typically implement __iter__ but not __getitem__,
-    making them incompatible with DataLoader's default map-style iteration.
-    This wrapper bridges that gap by wrapping the dataset in an IterableDataset
-    that simply delegates to the underlying iterator.
-    """
-
-    class _Wrapper(IterableDataset):
-        def __init__(self, inner: Dataset):
-            self._inner = inner
-
-        def __iter__(self):
-            return iter(self._inner)
-
-    return _Wrapper(ds)
+logger = logging.getLogger(__name__)
 
 
 class KilatTrainer:
     """
-    Custom training loop with step-based or epoch-based scheduling,
-    AMP (FP16/BF16/FP32), tqdm progress bars, WandB logging, and early stopping.
+    Production‑grade training loop for Kilat and compatible HuggingFace‑style models.
 
-    Design Philosophy
-    ----------------
-    This trainer exists because HuggingFace's default Trainer abstracts away too many
-    training loop details, making it difficult to:
-    1. Implement step-based training for large-scale pretraining where epoch boundaries
-       are meaningless (datasets may be infinite or too large for single-pass).
-    2. Have fine-grained control over gradient accumulation timing and loss averaging.
-    3. Support modern PyTorch AMP API (torch.amp >= 2.3) with proper device-type handling.
-    
-    The dual training mode (steps vs epochs) is intentional:
-    - Steps mode: Used when training on massive datasets (e.g., web-scale pretraining)
-      where you define training duration by optimizer steps rather than data passes.
-      This avoids arbitrary epoch boundaries and allows precise training budgets.
-    - Epochs mode: Used for fine-tuning on fixed-size datasets where you want to
-      control the number of full passes through the data.
-    
-    Key features
-    ------------
-    * Real-time progress bars via tqdm with live metrics (loss, PPL, LR, step).
-    * Perplexity (PPL) computed as ``exp(loss)`` and displayed alongside loss.
-      PPL is more interpretable than raw loss for language modeling tasks and
-      serves as an intuitive quality metric (lower is better).
-    * Mixed precision via ``torch.amp`` (PyTorch >= 2.3 API):
-        - ``fp16`` -- GradScaler active for numerical stability. Required because
-          FP16 has limited dynamic range and gradients can underflow/overflow.
-        - ``bf16`` -- GradScaler disabled. BF16 has the same exponent range as FP32
-          (8 bits), so it doesn't need loss scaling. Only available on Ampere+ GPUs.
-        - ``fp32`` -- no casting, suitable for debugging or CPU training.
-    * Two selectable training modes via ``TrainingArguments.training_mode``:
-        - ``"steps"``  -- progress measured in optimizer steps; ideal for
-          large-scale pretraining where dataset size exceeds one epoch.
-        - ``"epochs"`` -- progress measured in epochs; ideal for fine-tuning
-          on a fixed-size dataset.
-    * Cosine learning-rate schedule with linear warmup following standard practice
-      from the GPT/LLM literature (warmup prevents early gradient explosions).
-    * Gradient accumulation and gradient clipping to simulate larger batch sizes
-      and prevent gradient explosions, respectively.
-    * Periodic evaluation + early stopping (when an eval dataset is provided).
-    * Checkpoint saving compatible with ``model.save_pretrained`` for
-      HuggingFace ecosystem integration.
-    * Optional resume from any checkpoint (restores optimizer, scheduler, scaler state)
-      to support preemption recovery in long-running jobs.
-    * Optional Weights & Biases logging for experiment tracking.
-    * Graceful handling of KeyboardInterrupt (saves checkpoint before exit)
-      to prevent losing progress in interactive/research settings.
+    WHY THIS CLASS EXISTS
+        Training a neural network involves many subtle decisions: gradient
+        accumulation, mixed precision, distributed synchronisation, checkpoint
+        management, early stopping, and integration with logging backends.
+        This class encapsulates all those concerns so users only need to provide
+        a model, data, and configuration. It is designed to be robust, observable,
+        and resumable – the three pillars of industrial training.
 
-    Parameters
-    ----------
-    model : PreTrainedModel
-        HuggingFace model instance to train. Must have standard HF interface
-        (forward with input_ids/labels, return_dict=True).
-    args : TrainingArguments
-        Hyperparameter configuration via :class:`TrainingArguments`.
-    train_dataset : Dataset
-        PyTorch Dataset for training. Expected to yield dicts with
-        'input_ids' and 'labels' keys.
-    eval_dataset : Optional[Dataset]
-        Optional PyTorch Dataset for validation. If ``None``, evaluation and
-        early stopping are disabled.
-    data_collator : Optional[Any]
-        Optional collate function passed to ``DataLoader``. If None, uses
-        default PyTorch collation (expects samples to be directly stackable).
-    tokenizer_model_path : Optional[str]
-        Path to SentencePiece model file for decoding generated text samples
-        during evaluation. If None, falls back to default path or raw token IDs.
+    ARCHITECTURE OVERVIEW
+        KilatTrainer composes five subsystems that each handle a distinct
+        responsibility:
 
-    Example
-    -------
-    Step-based with BF16 (for Ampere+ pretraining):
+        1. **Optimisation** – AdamW with decoupled weight decay (parameter groups
+           for biases & norms) paired with any scheduler from the `SchedulerType`
+           registry (cosine, linear, polynomial, inverse sqrt, WSD, REX, etc.).
+           Created via `create_optimizer` and `get_scheduler`.
 
-    >>> args = TrainingArguments(
-    ...     output_dir="./ckpts",
-    ...     training_mode="steps",
-    ...     max_steps=50_000,
-    ...     precision="bf16",
-    ... )
-    >>> trainer = KilatTrainer(model, args, train_ds, eval_ds, collator)
-    >>> trainer.train()
+        2. **Mixed Precision** – `torch.autocast` wraps forward passes.
+           A `GradScaler` is used **only** for FP16 (because FP16 has limited
+           dynamic range). BF16 uses the same exponent range as FP32 and does
+           not need a scaler. Precision is resolved from `TrainingArguments.precision`
+           via `resolve_amp_dtype`.
 
-    Epoch-based with FP16 (for fine-tuning):
+        3. **Callback System** – `CallbackHandler` dispatches lifecycle events
+           (`on_train_begin`, `on_step_end`, `on_evaluate`, …) to all registered
+           callbacks in order. This enables early stopping, logging to W&B/TensorBoard,
+           progress bars, and custom user hooks. The return values (TrainerControl
+           flags) are OR‑merged: if any callback requests training stop, training stops.
 
-    >>> args = TrainingArguments(
-    ...     output_dir="./ckpts",
-    ...     training_mode="epochs",
-    ...     num_train_epochs=5,
-    ...     precision="fp16",
-    ... )
-    >>> trainer = KilatTrainer(model, args, train_ds, eval_ds, collator)
-    >>> trainer.train()
+        4. **Checkpointing** – Atomic (rename‑based) HuggingFace‑format checkpoints
+           that contain model weights (via `save_pretrained`) and a separate
+           `training_state.pt` with optimizer, scheduler, scaler, callback states,
+           and TrainerState. `load_checkpoint` can resume from any checkpoint,
+           and `prune_checkpoints` enforces `save_total_limit` by deleting oldest
+           periodic (numbered) checkpoints while preserving tagged ones (best, final).
+
+        5. **Progress Reporting** – `tqdm.auto` provides rich, environment‑aware
+           progress bars both in notebooks and plain terminals. It wraps the epoch
+           loop and the per‑epoch step loop, showing loss, learning rate, and step count.
+
+    TRAINING MODES
+        Two orthogonal modes determine the stopping condition:
+
+        - **Epoch mode** (`training_mode="epochs"`): Loops exactly `num_train_epochs`
+          full passes over the training DataLoader. The scheduler’s total steps are
+          computed as `steps_per_epoch * num_train_epochs`. This is natural for
+          fine‑tuning where dataset size is fixed and you want to see metrics at
+          each epoch boundary.
+
+        - **Step mode** (`training_mode="steps"`): Runs exactly `max_steps` optimizer
+          steps, cycling the DataLoader as needed (i.e., when an epoch ends, the
+          dataloader is re‑created from the beginning). Useful for large‑scale
+          pre‑training where the dataset is effectively infinite or when you want
+          a fixed compute budget independent of dataset size.
+
+    GRADIENT ACCUMULATION
+        When `gradient_accumulation_steps > 1`, the optimizer step is deferred
+        until N micro‑batches have been processed. This effectively multiplies
+        the batch size without additional GPU memory. The loss is divided by
+        the accumulation count **before** backward so that the gradient magnitude
+        is independent of the accumulation factor (standard practice). Logged
+        losses are averaged over the accumulation window for meaningful reporting.
+
+    AMP (AUTOMATIC MIXED PRECISION)
+        - `fp16`: Use `torch.autocast` + `GradScaler`. The scaler dynamically
+          adjusts the loss scale to prevent underflow. Must have CUDA.
+        - `bf16`: Use only `torch.autocast` (no scaler). BF16 preserves the same
+          exponent range as FP32, so underflow is not a problem. Works on Ampere+
+          GPUs and on CPU with PyTorch ≥ 2.1 (using AMX instructions).
+        - `fp32`: No autocast, no scaler. Used for CPU training or when mixed
+          precision causes stability issues.
+
+    DISTRIBUTED TRAINING
+        KilatTrainer **does not** initialise torch.distributed automatically.
+        That responsibility belongs to the launcher (e.g., `torchrun`). However,
+        the trainer respects the `is_world_process_zero` flag in `TrainerState`.
+        All file I/O (checkpoints, logs, progress bars) is gated on this flag so
+        that only rank 0 writes files, preventing corruption and duplication.
+        Users must set `state.is_world_process_zero = (rank == 0)` before calling
+        `train()` in distributed environments.
+
+    EVALUATION
+        The trainer calls evaluation:
+        - At step‑based intervals (when `global_step % eval_steps == 0`)
+        - At the end of every epoch **if in epoch mode**
+        - The user can provide a custom `eval_fn`. If none is given, a default
+          loop computes `eval_loss` by averaging the loss over the eval dataloader.
+        - The resulting metrics dict is passed to `on_evaluate` callbacks, which
+          includes `EarlyStoppingCallback` (updates patience counter) and logging
+          integrations (W&B summary, etc.).
+        - If the monitored metric improves, the best metric and best checkpoint
+          are updated, and a `checkpoint-best` is saved.
+
+    EARLY STOPPING
+        Wired through `EarlyStoppingCallback`. It monitors the metric specified
+        by `metric_for_best_model` (default `"eval_loss"`). Patience and threshold
+        are configurable. When the metric does not improve for `patience`
+        consecutive evaluations, `control.should_training_stop = True` stops the
+        loop. The callback’s state (best metric, patience counter) is saved in
+        checkpoints, so a resumed run continues with the exact same patience.
+
+    CHECKPOINT TAGGING & PRUNING
+        - **Numbered**: `checkpoint-1000` – created at `save_steps` intervals.
+          These are prunable – the oldest ones are deleted when `save_total_limit`
+          is exceeded.
+        - **Tagged**: `checkpoint-best`, `checkpoint-final`, `checkpoint-epoch-3`.
+          These are never pruned. They represent important milestones.
+        - Atomic saving: a temporary directory is written first, then renamed to
+          the final path. This prevents corrupted half‑written checkpoints.
+
+    PERFORMANCE CONSIDERATIONS
+        - `_forward_backward` uses `model.no_sync()` when available (DDP) to
+          defer gradient all‑reduction until the last accumulation step. This
+          reduces communication overhead by O(grad_acc) times.
+        - `_batch_to_device` is recursive but small; tensors are moved to device
+          once per batch. No unnecessary copies.
+        - `tqdm` updates are disabled for non‑rank‑0 processes to avoid cluttered
+          logs.
+        - The main loop avoids recomputing `total_steps` multiple times; it is
+          computed once in `train()`.
+
+    EDGE CASES & ASSUMPTIONS
+        - Dataloaders must be finite. For step mode, the trainer cycles the loader
+          by catching `StopIteration` and restarting.
+        - The model must either:
+          a) Accept a dict and return an object with a `.loss` attribute (HF style)
+          b) Accept a tensor/tuple and return a scalar tensor
+          c) A custom `compute_loss_fn` can override this.
+        - If `eval_dataloader` is None, evaluation is silently skipped (no warnings).
+        - `load_checkpoint` may return a **new** model instance (when falling back
+          to `from_pretrained`). The trainer updates its `self.model` accordingly.
+        - Early stopping callbacks are added automatically even if you don't want
+          them; you can disable early stopping by setting `early_stopping_patience=0`
+          (the callback will still be present but will never stop).
+        - `scheduler_type` strings are case‑insensitive; the factory normalises.
+
+    EXAMPLE USAGE
+    -------------
+        >>> from kilat.training import KilatTrainer, TrainingArguments
+        >>> args = TrainingArguments(
+        ...     output_dir="./checkpoints",
+        ...     training_mode="epochs",
+        ...     num_train_epochs=3,
+        ...     precision="bf16",
+        ...     scheduler_type="cosine",
+        ...     report_to="wandb",
+        ... )
+        >>> trainer = KilatTrainer(model, args, train_dl, eval_dl)
+        >>> final_state = trainer.train()
     """
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Construction
+    # ─────────────────────────────────────────────────────────────────────────
 
     def __init__(
         self,
-        model: PreTrainedModel,
+        model: nn.Module,
         args: TrainingArguments,
-        train_dataset: Dataset,
-        eval_dataset: Optional[Dataset] = None,
-        data_collator: Optional[Any] = None,
-        tokenizer_config: Optional[TokenizerConfig] = None,
-        tokenizer_model_path: Optional[str] = None,
+        train_dataloader: DataLoader,
+        eval_dataloader: Optional[DataLoader] = None,
+        eval_fn: Optional[Callable] = None,
+        compute_loss_fn: Optional[Callable] = None,
+        callbacks: Optional[list] = None,
     ) -> None:
+        """
+        Initialise the trainer without starting the training loop.
+
+        WHY: Separation of construction and execution allows the user to inspect
+        or modify the trainer before calling `.train()`. It also ensures that
+        the trainer is fully set up even if the user wants to load a checkpoint
+        manually.
+
+        NOTE: The scheduler is NOT created here because it depends on total_steps,
+        which requires the dataloader length. That creation is deferred to
+        `train()` after we compute total steps.
+
+        Parameters
+        ----------
+        model : nn.Module
+            Model to train. It will be moved to the appropriate device (CUDA/CPU).
+        args : TrainingArguments
+            All hyperparameters and configuration.
+        train_dataloader : DataLoader
+            Training data loader. Must be finite (has __len__).
+        eval_dataloader : Optional[DataLoader]
+            Validation data loader. If None, evaluation is disabled.
+        eval_fn : Optional[Callable]
+            Custom evaluation function: `eval_fn(model, dataloader, device) -> dict[str, float]`.
+            If None, a default loop that averages model loss is used.
+        compute_loss_fn : Optional[Callable]
+            Custom loss extraction: `compute_loss_fn(model, batch) -> torch.Tensor` (scalar).
+            If None, the trainer assumes `model(**batch).loss` for dict batches,
+            or `model(batch)` returning a scalar tensor for other batch types.
+        callbacks : Optional[list]
+            Additional `TrainerCallback` instances. They are appended after the
+            automatic callbacks (integrations, early stopping) but before the
+            default `ProgressCallback`.
+        """
         self.model = model
         self.args = args
-        self.train_dataset = train_dataset
-        self.eval_dataset = eval_dataset
-        self.data_collator = data_collator
-        self._prompt_decoder = self._load_prompt_decoder(
-            tokenizer_config=tokenizer_config,
-            tokenizer_model_path=tokenizer_model_path,
+        self.train_dataloader = train_dataloader
+        self.eval_dataloader = eval_dataloader
+        self.eval_fn = eval_fn
+        self.compute_loss_fn = compute_loss_fn
+
+        self.device = get_device(model)
+
+        # Reproducibility – set all random seeds early
+        self._set_seed(args.seed)
+
+        # Mixed precision setup
+        self.amp_dtype: Optional[torch.dtype] = resolve_amp_dtype(args.precision)
+        self.scaler: Optional[torch.cuda.amp.GradScaler] = (
+            torch.cuda.amp.GradScaler() if args.use_grad_scaler else None
         )
 
-        # Reproducibility: Set seed before any initialization to ensure
-        # consistent parameter initialization, data shuffling, and dropout patterns.
-        # Using args.seed instead of a hardcoded value allows users to control
-        # experiment reproducibility across different runs.
-        torch.manual_seed(args.seed)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(args.seed)
-
-        # Select available device
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-        # Resolve AMP dtype and settings based on chosen precision.
-        # The resolution logic encapsulates hardware capability checks:
-        # - bf16: only available on CUDA 11+ and Ampere+ GPUs
-        # - fp16: universally available on CUDA
-        # - fp32: always available (no AMP)
-        self._amp_dtype: Optional[torch.dtype] = resolve_amp_dtype(args.precision)
-        self._amp_enabled: bool = self._amp_dtype is not None
-        
-        # GradScaler is only enabled for FP16 because BF16 has sufficient
-        # dynamic range (8-bit exponent like FP32) to handle gradient values
-        # without scaling. Using GradScaler with BF16 would add unnecessary
-        # overhead and can actually degrade performance.
-        self._scaler_enabled: bool = args.precision == "fp16"
-
-        # Determine device_type for torch.amp.autocast context manager.
-        # 'cuda' string is used for dispatch to the correct backend.
-        # CPU AMP is not supported for training workflows.
-        self._autocast_device: str = "cuda" if torch.cuda.is_available() else "cpu"
-
-        # Training DataLoader: shuffle=True for training to prevent the model
-        # from learning dataset order patterns. pin_memory speeds up CPU->GPU
-        # transfers by using pinned (page-locked) memory.
-        # Streaming datasets require special handling: they use __iter__ instead
-        # of __getitem__, so we must either wrap them or configure DataLoader
-        # with batch_size=None to accept pre-collated batches directly.
-        is_streaming = getattr(self.train_dataset, 'streaming', False)
-        self._train_is_streaming = is_streaming
-
-        if is_streaming:
-            # For streaming datasets, we wrap the dataset to force DataLoader
-            # to use __iter__. batch_size=None tells DataLoader to yield elements
-            # directly (the dataset already yields collated batches).
-            ds_for_loader = _iterable_from_dataset(self.train_dataset)
-            self.train_dataloader = DataLoader(
-                ds_for_loader,
-                batch_size=None,
-                shuffle=False,  # Shuffling is handled by the streaming dataset itself
-                collate_fn=None,  # Data is already collated by the streaming dataset
-                pin_memory=torch.cuda.is_available(),
-            )
-        else:
-            self.train_dataloader = DataLoader(
-                self.train_dataset,
-                batch_size=self.args.per_device_train_batch_size,
-                shuffle=True,
-                collate_fn=self.data_collator,
-                pin_memory=torch.cuda.is_available(),
-            )
-
-        # Evaluation DataLoader (optional) + early stopping callback
-        # Early stopping uses a patience-based approach: training stops if
-        # eval loss doesn't improve for 'patience' consecutive evaluations.
-        # Threshold prevents stopping on negligible improvements (< threshold)
-        # that could be attributed to noise rather than genuine overfitting.
-        if self.eval_dataset is not None:
-            is_streaming_eval = getattr(self.eval_dataset, "streaming", False)
-            self._eval_is_streaming = is_streaming_eval
-            if is_streaming_eval:
-                eval_ds_for_loader = _iterable_from_dataset(self.eval_dataset)
-                self.eval_dataloader: Optional[DataLoader] = DataLoader(
-                    eval_ds_for_loader,
-                    batch_size=None,
-                    shuffle=False,  # Deterministic evaluation order
-                    collate_fn=None,
-                    pin_memory=torch.cuda.is_available(),
-                )
-            else:
-                self.eval_dataloader: Optional[DataLoader] = DataLoader(
-                    self.eval_dataset,
-                    batch_size=self.args.per_device_eval_batch_size,
-                    shuffle=False,  # Deterministic results for reproducibility
-                    collate_fn=self.data_collator,
-                    pin_memory=torch.cuda.is_available(),
-                )
-            self.early_stopping: Optional[EarlyStoppingCallback] = EarlyStoppingCallback(
-                patience=args.early_stopping_patience,
-                threshold=args.early_stopping_threshold,
-            )
-        else:
-            self.eval_dataloader = None
-            self.early_stopping = None
-            self._eval_is_streaming = False
-
-        self.callbacks = CallbackHandler(
-            [self.early_stopping] if self.early_stopping is not None else []
-        )
-
-        self.model.to(self.device)
-
-        # Compute total steps for the scheduler.
-        # In steps mode: directly uses max_steps (training budget is optimizer updates).
-        # In epochs mode: calculates steps as num_epochs * batches_per_epoch / accumulation_steps
-        #   because optimizer only steps after accumulation windows are complete.
-        # For streaming datasets, we use dataset length if available; otherwise default to 1
-        # (the actual iteration will be controlled by max_steps).
-        if self._train_is_streaming:
-            dataloader_len = len(self.train_dataset) if hasattr(self.train_dataset, '__len__') else 1
-        else:
-            dataloader_len = len(self.train_dataloader)
-
-        self.total_steps = compute_total_steps(
-            args.training_mode,
-            args.max_steps,
-            args.num_train_epochs,
-            dataloader_len,
-            args.gradient_accumulation_steps,
-        )
-
-        # Optimizer and scheduler setup.
-        # AdamW is used for decoupled weight decay (Loshchilov & Hutter, 2019),
-        # which separates weight decay from gradient-based updates, improving
-        # generalization compared to L2 regularization in Adam.
+        # Optimizer – independent of scheduler
         self.optimizer = create_optimizer(
-            self.model,
-            args.learning_rate,
-            args.weight_decay,
-        )
-        
-        # Cosine schedule with linear warmup: warmup prevents early training
-        # instability when the model is far from optimum by gradually increasing LR.
-        # Cosine decay then provides smooth LR reduction following the "SGDR" paper
-        # approach (Loshchilov & Hutter, 2017), which has become standard for LLM training.
-        self.scheduler = create_scheduler(
-            self.optimizer,
-            self.total_steps,
-            args.warmup_steps,
+            model,
+            learning_rate=args.learning_rate,
+            weight_decay=args.weight_decay,
+            beta1=args.beta1,
+            beta2=args.beta2,
+            epsilon=args.epsilon,
         )
 
-        # GradScaler for FP16 training stability.
-        # The scaler multiplies loss by a dynamic scale factor before backward to prevent
-        # gradient underflow in FP16, then unscales gradients before optimizer step.
-        # 'cuda' device string is required even though the scaler is a no-op on CPU
-        # (it's needed for API consistency with torch.amp).
-        self.scaler = torch.amp.GradScaler(
-            device="cuda", enabled=self._scaler_enabled
+        # Scheduler is created later in train() after total steps are known
+        self.scheduler: Any = None
+
+        # TrainerState holds mutable progress; TrainerControl holds request flags.
+        # Initially, max_steps may be 0 (epoch mode) – will be updated after compute.
+        self.state = TrainerState(
+            num_train_epochs=args.num_train_epochs,
+            max_steps=args.max_steps if args.training_mode == "steps" else 0,
+        )
+        self.control = TrainerControl()
+
+        # ─── Callback setup ──────────────────────────────────────────────
+        # Order matters: integrations first (so logging captures the start),
+        # then early stopping, then user callbacks, and finally the mandatory
+        # progress callback (which always logs to console).
+        integration_cbs = get_reporting_integration_callbacks(args.report_to)
+        early_stopping_cb = EarlyStoppingCallback(
+            early_stopping_patience=args.early_stopping_patience,
+            early_stopping_threshold=args.early_stopping_threshold,
+            metric_for_best_model=args.metric_for_best_model,
+            greater_is_better=args.greater_is_better,
+        )
+        self.early_stopping = early_stopping_cb
+
+        all_callbacks = (
+            integration_cbs
+            + [early_stopping_cb]
+            + (callbacks or [])
+            + list(DEFAULT_CALLBACKS)
+        )
+        self.callback_handler = CallbackHandler(
+            callbacks=all_callbacks,
+            args=args,
         )
 
-        # Global training state — these track progress and can be restored from checkpoint.
-        # Initial values represent a fresh training start; resume_from_checkpoint
-        # will override them if a checkpoint path is provided.
-        self.global_step: int = 0
-        self.current_epoch: int = 0
-        self.best_eval_loss: float = float("inf")  # Lower is better; tracks best model
-        self.start_time: float = time.time()  # Used for throughput calculations
+        self.callback_handler.on_init_end(self.state, self.control)
+        logger.info("KilatTrainer initialised | device=%s | precision=%s", self.device, args.precision)
 
-        # Resume from checkpoint if specified.
-        # This enables preemption recovery: if a job is killed (common in SLURM/cluster
-        # environments), the trainer can resume from the last checkpoint, restoring
-        # model weights, optimizer state, scheduler state, AMP scaler state, and
-        # early stopping counters — all necessary for exact training resumption.
+    # ─────────────────────────────────────────────────────────────────────────
+    # Public API
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def train(self) -> TrainerState:
+        """
+        Execute the full training loop and return the final state.
+
+        Steps performed:
+        1. Compute total optimizer steps (depending on mode) and create scheduler.
+        2. If `resume_from_checkpoint` is set, load checkpoint (or auto‑find latest).
+        3. Dispatch `on_train_begin` to all callbacks.
+        4. Run the training loop (epochs or steps) with internal loop methods.
+        5. After normal exit, save a final checkpoint tagged "final".
+        6. Dispatch `on_train_end` to all callbacks.
+        7. Return the final TrainerState (contains best metric, best checkpoint, etc.)
+
+        Returns
+        -------
+        TrainerState
+            Final state after training, including `global_step`, `best_metric`,
+            `best_model_checkpoint`, and full `log_history`.
+
+        Raises
+        ------
+        RuntimeError
+            If evaluation is required but `eval_dataloader` is None and no `eval_fn`
+            was provided (the trainer will log a warning and skip evaluation).
+        """
+        args = self.args
+        os.makedirs(args.output_dir, exist_ok=True)
+
+        # ─── Compute total steps and create scheduler ────────────────────
+        total_steps = compute_total_steps(
+            training_mode=args.training_mode,
+            max_steps=args.max_steps,
+            num_train_epochs=args.num_train_epochs,
+            dataloader_len=len(self.train_dataloader),
+            gradient_accumulation_steps=args.gradient_accumulation_steps,
+        )
+        self.state.max_steps = total_steps
+
+        # Resolve warmup steps (warmup_ratio overrides warmup_steps)
+        warmup_steps = args.get_warmup_steps(total_steps) if hasattr(args, "get_warmup_steps") else args.warmup_steps
+
+        self.scheduler = get_scheduler(
+            name=args.scheduler_type,
+            optimizer=self.optimizer,
+            num_warmup_steps=warmup_steps,
+            num_training_steps=total_steps,
+            **args.scheduler_kwargs,
+        )
+
+        # ─── Resume from checkpoint if requested ─────────────────────────
         if args.resume_from_checkpoint is not None:
-            self.global_step, self.current_epoch, self.best_eval_loss = resume_from_checkpoint(
-                self.model,
-                self.optimizer,
-                self.scheduler,
-                self.scaler,
-                self.early_stopping,
-                args.resume_from_checkpoint,
-                self.device,
-            )
+            resume_path = args.resume_from_checkpoint
+            if resume_path == "latest":
+                resume_path = get_latest_checkpoint(args.output_dir)
+                if resume_path is None:
+                    logger.warning("resume_from_checkpoint='latest' but no checkpoint found in %s", args.output_dir)
+            if resume_path:
+                self.model = load_checkpoint(
+                    model=self.model,
+                    optimizer=self.optimizer,
+                    scheduler=self.scheduler,
+                    scaler=self.scaler,
+                    state=self.state,
+                    callback_handler=self.callback_handler,
+                    checkpoint_path=resume_path,
+                    device=self.device,
+                    early_stopping=self.early_stopping,
+                )
+                # Keep the newly computed step budget from the current args.
+                # load_checkpoint restores TrainerState from disk, including the
+                # old max_steps, but resume should follow the current run config.
+                self.state.max_steps = total_steps
+                # If load_checkpoint returned a new model, we replace it.
+                # Otherwise, the original model was modified in place.
 
-        # Initialize WandB logging if configured.
-        # We pass model_config to capture architecture details automatically
-        # for experiment tracking and reproducibility across runs.
-        init_wandb(
-            args.report_to,
-            args.run_name,
-            {
-                "learning_rate": args.learning_rate,
-                "weight_decay": args.weight_decay,
-                "batch_size": args.per_device_train_batch_size,
-                "gradient_accumulation_steps": args.gradient_accumulation_steps,
-                "total_steps": self.total_steps,
-                "training_mode": args.training_mode,
-                "precision": args.precision,
-            },
-            self.model.config.to_dict(),
+        # ─── Notify callbacks that training is about to start ─────────────
+        self.callback_handler.on_train_begin(
+            self.state, self.control, model=self.model
         )
 
-    def _load_prompt_decoder(
-        self,
-        tokenizer_config: Optional[TokenizerConfig],
-        tokenizer_model_path: Optional[str],
-    ) -> Optional[Any]:
-        """Load the tokenizer used for decoding validation prompts.
+        # ─── Main training loop (mode‑specific) ──────────────────────────
+        train_start = time.monotonic()
 
-        Preference order:
-        1. Explicit ``tokenizer_config`` from experiment config.
-        2. Backward-compatible SentencePiece path.
-        3. Legacy default SentencePiece path in the repo.
-        """
-        if tokenizer_config is not None:
-            if tokenizer_config.tokenizer_type == "sentencepiece":
-                decoder_path = tokenizer_config.tokenizer_model_path or tokenizer_config.tokenizer_name_or_path
-                if os.path.exists(decoder_path):
-                    decoder = spm.SentencePieceProcessor()
-                    decoder.load(decoder_path)
-                    return decoder
-                return None
+        if args.training_mode == "epochs":
+            self._train_by_epochs()
+        else:
+            self._train_by_steps()
 
-            try:
-                return AutoTokenizer.from_pretrained(
-                    tokenizer_config.tokenizer_name_or_path,
-                    use_fast=tokenizer_config.use_fast,
-                    local_files_only=tokenizer_config.local_files_only,
-                )
-            except Exception as exc:
-                warnings.warn(
-                    "Failed to load decode tokenizer from tokenizer_config "
-                    f"(type={tokenizer_config.tokenizer_type}, "
-                    f"name_or_path={tokenizer_config.tokenizer_name_or_path}, "
-                    f"local_files_only={tokenizer_config.local_files_only}): {exc}. "
-                    "Eval samples will fall back to raw token IDs.",
-                    UserWarning,
-                    stacklevel=2,
-                )
-                return None
+        # ─── Final checkpoint (always saved, tagged as "final") ───────────
+        if args.save_checkpoints:
+            self._save("final")
 
-        if tokenizer_model_path is not None and os.path.exists(tokenizer_model_path):
-            decoder = spm.SentencePieceProcessor()
-            decoder.load(tokenizer_model_path)
-            return decoder
+        # ─── Notify callbacks that training has finished ─────────────────
+        self.callback_handler.on_train_end(self.state, self.control)
 
-        # Fallback to a conventional path within the project structure
-        default_path = os.path.join(
-            os.getcwd(),
-            "data",
-            "tokens",
-            "train",
-            "tokenizer",
-            "sp_tokenizer.model",
+        elapsed = time.monotonic() - train_start
+        logger.info(
+            "Training finished | steps=%d | elapsed=%.1fs | best_%s=%s",
+            self.state.global_step,
+            elapsed,
+            args.metric_for_best_model,
+            f"{self.state.best_metric:.6f}" if self.state.best_metric is not None else "n/a",
         )
-        if os.path.exists(default_path):
-            decoder = spm.SentencePieceProcessor()
-            decoder.load(default_path)
-            return decoder
+        return self.state
 
-        return None
-
-    def _decode_prompt(self, token_ids: torch.Tensor) -> str:
-        """Decode token IDs to human-readable text for evaluation display.
-        
-        Falls back to displaying raw token IDs if no SentencePiece model is loaded,
-        which still allows inspection but is less interpretable.
-        """
-        if self._prompt_decoder is None:
-            text = " ".join(str(int(tok)) for tok in token_ids.tolist())
-            return f"[token ids] {text}"
-
-        token_list = token_ids.tolist()
-        if hasattr(self._prompt_decoder, "decode") and not isinstance(self._prompt_decoder, spm.SentencePieceProcessor):
-            return self._prompt_decoder.decode(token_list, skip_special_tokens=True)
-
-        return self._prompt_decoder.decode(token_list)
-
-    def _trim_trailing_padding(self, token_ids: torch.Tensor) -> torch.Tensor:
-        """Remove trailing padding tokens from a 1D prompt tensor."""
-        if token_ids.dim() != 1:
-            token_ids = token_ids.view(-1)
-
-        pad_token_id = getattr(self.model.config, "pad_token_id", None)
-        if pad_token_id is None:
-            return token_ids
-
-        non_pad_positions = (token_ids != pad_token_id).nonzero(as_tuple=False)
-        if non_pad_positions.numel() == 0:
-            return token_ids[:1]
-
-        last_non_pad_index = int(non_pad_positions[-1].item())
-        return token_ids[: last_non_pad_index + 1]
-
-    def _sample_next_token(
-        self,
-        logits: torch.Tensor,
-        temperature: float = 0.8,
-        top_k: int = 0,
-        top_p: float = 0.9,
-    ) -> torch.Tensor:
-        """Sample next tokens from logits with temperature, top-k, and top-p filtering."""
-        if temperature > 0:
-            logits = logits / temperature
-
-        if top_k > 0:
-            top_k = min(top_k, logits.size(-1))
-            topk_values = torch.topk(logits, top_k, dim=-1).values
-            min_topk_value = topk_values[:, -1].unsqueeze(-1)
-            logits = torch.where(
-                logits < min_topk_value,
-                torch.full_like(logits, float("-inf")),
-                logits,
-            )
-
-        probabilities = torch.softmax(logits, dim=-1)
-
-        if top_p < 1.0:
-            sorted_probabilities, sorted_indices = torch.sort(
-                probabilities, descending=True, dim=-1
-            )
-            cumulative_probabilities = torch.cumsum(sorted_probabilities, dim=-1)
-            nucleus_mask = cumulative_probabilities > top_p
-            nucleus_mask[:, 0] = False
-            sorted_probabilities = torch.where(
-                nucleus_mask,
-                torch.zeros_like(sorted_probabilities),
-                sorted_probabilities,
-            )
-            probabilities = torch.zeros_like(probabilities).scatter_(
-                -1, sorted_indices, sorted_probabilities
-            )
-
-        probabilities = probabilities / probabilities.sum(dim=-1, keepdim=True).clamp_min(1e-12)
-        return torch.multinomial(probabilities, num_samples=1).squeeze(-1)
-
-    def _generate_sample(self, prompt_ids: torch.Tensor, max_new_tokens: int = 50) -> str:
-        """
-        Generate text continuation from a prompt to show model capability during eval.
-        
-        Uses the model's forward pass directly with cached decoding because
-        KilatTransformer does not implement Hugging Face's `generate()` API.
-        
-        Args:
-            prompt_ids: Token IDs tensor with shape (1, seq_len) — single prompt
-            max_new_tokens: Maximum number of tokens to generate beyond the prompt
-        
-        Returns:
-            Decoded text string containing only the generated continuation
-        """
-        self.model.eval()
-
-        with torch.inference_mode():
-            try:
-                if prompt_ids.dim() == 1:
-                    prompt_ids = prompt_ids.unsqueeze(0)
-
-                prompt_ids = prompt_ids.to(self.device)
-                prompt_length = prompt_ids.size(-1)
-                generated_ids = prompt_ids.clone()
-                pad_token_id = getattr(self.model.config, "pad_token_id", 0)
-                eos_token_id = getattr(self.model.config, "eos_token_id", None)
-
-                outputs = self.model(
-                    input_ids=generated_ids,
-                    use_cache=True,
-                    past_key_values=None,
-                    return_dict=True,
-                )
-                logits = outputs.logits[:, -1, :]
-                past_key_values = outputs.past_key_values
-
-                unfinished = torch.ones(
-                    generated_ids.size(0), dtype=torch.bool, device=self.device
-                )
-
-                for step in range(max_new_tokens):
-                    if not unfinished.any():
-                        break
-
-                    next_tokens = self._sample_next_token(
-                        logits,
-                        temperature=0.8,
-                        top_k=0,
-                        top_p=0.9,
-                    )
-
-                    next_tokens = torch.where(
-                        unfinished,
-                        next_tokens,
-                        torch.full_like(next_tokens, pad_token_id),
-                    )
-                    generated_ids = torch.cat(
-                        [generated_ids, next_tokens.unsqueeze(-1)], dim=-1
-                    )
-
-                    if eos_token_id is not None:
-                        eos_reached = next_tokens == eos_token_id
-                        unfinished = unfinished & ~eos_reached
-
-                    if not unfinished.any():
-                        break
-
-                    outputs = self.model(
-                        input_ids=next_tokens.unsqueeze(-1),
-                        past_key_values=past_key_values,
-                        use_cache=True,
-                        return_dict=True,
-                    )
-                    logits = outputs.logits[:, -1, :]
-                    past_key_values = outputs.past_key_values
-
-                continuation_ids = generated_ids[0].detach().cpu()[prompt_length:]
-                generated_text = self._decode_prompt(continuation_ids)
-                return generated_text
-            except Exception as e:
-                # Graceful fallback if generate() is unavailable or fails
-                return f"[generation failed: {str(e)}]"
-
-    # -------------------------------------------------------------------
-    # Main training loop — dispatcher
-    # -------------------------------------------------------------------
-
-    def train(self) -> None:
-        """
-        Run the training loop according to the selected ``training_mode``.
-        
-        Dispatches to either step-based or epoch-based training based on
-        TrainingArguments.training_mode. Both paths share the same evaluation,
-        checkpointing, and early stopping logic but differ in their outer loop
-        structure and termination conditions.
-        
-        Handles KeyboardInterrupt gracefully by saving a checkpoint before exit,
-        preserving all training state for later resumption.
-        """
-        print_training_header(
-            self.args.output_dir,
-            self.args.save_checkpoints,
-            self.args.training_mode,
-            self.total_steps,
-            self.args.num_train_epochs,
-            self.args.per_device_train_batch_size,
-            self.args.gradient_accumulation_steps,
-            self.args.learning_rate,
-            self.args.warmup_steps,
-            self.args.weight_decay,
-            self.args.max_grad_norm,
-            self.device,
-            self.args.precision,
-            self._scaler_enabled,
-            self.args.report_to,
-            self.args.seed,
-        )
-        self.model.train()
-        self.callbacks.on_train_begin(self)
-
-        try:
-            if self.args.training_mode == "steps":
-                self._train_by_steps()
-            else:
-                self._train_by_epochs()
-        except KeyboardInterrupt:
-            # Graceful interrupt handling: saves progress before re-raising.
-            # This is critical for interactive development/research where users
-            # may interrupt training to adjust hyperparameters or because of
-            # resource constraints. The checkpoint preserves all state so
-            # training can be resumed exactly where it left off.
-            print(f"\n{'='*60}")
-            print(f"Training interrupted by user at step {self.global_step}")
-            print(f"Saving checkpoint before exit...")
-            print(f"{'='*60}")
-            self._save_checkpoint(self.global_step, tag="interrupted")
-            self._finish()
-            raise
-
-    # -------------------------------------------------------------------
-    # Step-based training loop
-    # -------------------------------------------------------------------
-
-    def _train_by_steps(self) -> None:
-        """
-        Training loop that stops exactly after ``max_steps`` optimizer steps.
-        
-        Designed for large-scale pretraining where:
-        1. The dataset may be infinite (streaming) or too large for epoch counting
-        2. Training duration is measured in optimizer updates, not data passes
-        3. You want precise control over the total number of optimization steps
-        
-        The loop iterates through the dataloader indefinitely, cycling through
-        epochs as needed, until the step budget is exhausted. Loss averaging is
-        done over gradient accumulation windows (not epochs), giving a stable
-        metric that reflects the effective batch size.
-        """
-        progress_bar = tqdm(
-            total=self.total_steps,
-            initial=self.global_step,  # Start from checkpoint position if resuming
-            desc="Training (steps)",
-            dynamic_ncols=True,
-            unit="step",
-        )
-
-        step_within_accum: int = 0  # Counter for gradient accumulation window
-        running_loss: float = 0.0  # Accumulated loss for current accumulation window
-
-        # Start from the restored epoch (1 if fresh start, checkpoint value if resuming)
-        epoch = self.current_epoch or 1
-        while self.global_step < self.total_steps:
-            self.current_epoch = epoch
-
-            for batch in self.train_dataloader:
-                loss_val = self._forward_backward(batch)
-                running_loss += loss_val
-                step_within_accum += 1
-
-                # Only step the optimizer after accumulating enough gradients.
-                # This simulates larger batch sizes without increasing memory:
-                # e.g., batch_size=8 with accumulation_steps=4 gives effective batch of 32.
-                if step_within_accum == self.args.gradient_accumulation_steps:
-                    grad_norm = self._optimizer_step()
-                    self.global_step += 1
-                    step_within_accum = 0  # Reset for next accumulation window
-                    current_lr = self.scheduler.get_last_lr()[0]
-
-                    # Average loss over the accumulation window gives mean per-micro-batch loss
-                    avg_loss = running_loss / self.args.gradient_accumulation_steps
-                    
-                    # PPL = exp(loss) is standard for language modeling.
-                    # Capped at loss=100 to prevent overflow (exp(100) ≈ 2.7e43).
-                    # In practice, loss > 10 indicates catastrophic training failure.
-                    ppl = math.exp(avg_loss) if avg_loss < 100 else float("inf")
-
-                    progress_bar.update(1)
-                    progress_bar.set_postfix(
-                        {
-                            "loss": f"{avg_loss:.4f}",
-                            "ppl": f"{ppl:.1f}",
-                            "lr": f"{current_lr:.2e}",
-                        }
-                    )
-                    running_loss = 0.0
-
-                    # Periodic logging: Log at configurable intervals to avoid
-                    # overwhelming the logging backend while capturing training trajectory.
-                    if self.global_step % self.args.logging_steps == 0:
-                        log_training_metrics(
-                            self.global_step,
-                            self.total_steps,
-                            avg_loss,
-                            ppl,
-                            current_lr,
-                            grad_norm,
-                            self.current_epoch,
-                            self.start_time,
-                            self.args.report_to,
-                        )
-
-                    # Periodic evaluation: Only runs when eval dataset exists and at
-                    # specified intervals. Evaluation is expensive (full pass through
-                    # eval set), so we don't do it too frequently.
-                    if (
-                        self.eval_dataloader is not None
-                        and self.global_step % self.args.eval_steps == 0
-                    ):
-                        should_stop = self._run_eval_and_check_stopping()
-                        if should_stop:
-                            progress_bar.close()
-                            return
-
-                    # Periodic checkpointing for fault tolerance and model selection
-                    if self.args.save_checkpoints and self.global_step % self.args.save_steps == 0:
-                        self._save_checkpoint(self.global_step)
-
-                    # Check termination: placed after optimizer step (not before)
-                    # to ensure we complete the current optimization before stopping.
-                    if self.global_step >= self.total_steps:
-                        print(f"\n{'='*60}")
-                        print(f"Training complete ({self.total_steps:,} steps)")
-                        print(f"{'='*60}")
-                        if self.args.save_checkpoints:
-                            self._save_checkpoint(self.global_step, tag="final")
-                        progress_bar.close()
-                        self._finish()
-                        return
-
-            epoch += 1
-
-        progress_bar.close()
-
-    # -------------------------------------------------------------------
-    # Epoch-based training loop
-    # -------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────────────────
+    # Training loops (internal)
+    # ─────────────────────────────────────────────────────────────────────────
 
     def _train_by_epochs(self) -> None:
         """
-        Training loop that stops after ``num_train_epochs`` full epochs.
-        
-        Designed for fine-tuning and smaller datasets where:
-        1. The dataset size is known and fixed
-        2. You want to control the number of full passes through the data
-        3. Each epoch represents a complete pass through the training set
-        
-        Key difference from steps mode: The outer loop is epoch-based for clarity,
-        though total_steps is still computed for the scheduler. Evaluation and
-        checkpointing occur at step intervals within epochs (not just epoch boundaries)
-        to provide timely feedback on large datasets.
+        Epoch‑based loop: iterate over epochs, run one epoch per inner loop.
+
+        WHY: Separating the epoch loop from the step loop improves readability
+        and allows epoch‑level hooks (on_epoch_begin/end) to be called exactly
+        once per epoch. It also simplifies handling of `should_epoch_stop`.
+
+        Edge Cases:
+        - If resuming from a checkpoint that was saved mid‑epoch, we need to
+          start at the correct epoch. This is handled by reading `self.state.epoch`
+          (which is a float, e.g., 2.5). We take the integer part as the starting
+          epoch and run the remaining fraction of the epoch? Actually, the trainer
+          does NOT support mid‑epoch resume because step counters are precise.
+          Instead, `self.state.global_step` is the authority. Epoch loops start
+          from `epoch = int(self.state.epoch)` and the step loop resumes from the
+          exact step. The epoch progress bar shows steps, not batches.
         """
-        start_epoch = self.current_epoch or 1
+        args = self.args
+        num_epochs = args.num_train_epochs
+        resume_epoch = int(self.state.epoch)   # floor because we are at the beginning of an epoch
 
-        for epoch in range(start_epoch, self.args.num_train_epochs + 1):
-            self.current_epoch = epoch
-
-            # Each epoch gets its own progress bar for cleaner visualization.
-            # 'leave=True' keeps completed epoch bars visible for reference.
-            # For streaming datasets, we try to get dataset length; otherwise
-            # the progress bar shows no total (unknown length).
-            if self._train_is_streaming:
-                total_batches = len(self.train_dataset) if hasattr(self.train_dataset, '__len__') else None
-            else:
-                total_batches = len(self.train_dataloader)
-
-            progress_bar = tqdm(
-                enumerate(self.train_dataloader),
-                total=total_batches,
-                desc=f"Epoch {epoch}/{self.args.num_train_epochs}",
-                dynamic_ncols=True,
-                unit="batch",
-                leave=True,
-            )
-
-            epoch_loss: float = 0.0  # Running loss for logging intervals within epoch
-            step_within_accum: int = 0
-
-            for batch_idx, batch in progress_bar:
-                loss_val = self._forward_backward(batch)
-                epoch_loss += loss_val
-                step_within_accum += 1
-
-                if step_within_accum == self.args.gradient_accumulation_steps:
-                    grad_norm = self._optimizer_step()
-                    self.global_step += 1
-                    step_within_accum = 0
-
-                    current_lr = self.scheduler.get_last_lr()[0]
-                    
-                    # Average loss over all batches processed so far in this epoch
-                    avg_loss = epoch_loss / (batch_idx + 1)
-                    ppl = math.exp(avg_loss) if avg_loss < 100 else float("inf")
-
-                    progress_bar.set_postfix(
-                        {
-                            "loss": f"{avg_loss:.4f}",
-                            "ppl": f"{ppl:.1f}",
-                            "lr": f"{current_lr:.2e}",
-                            "step": self.global_step,
-                        }
-                    )
-
-                    # Periodic logging within epoch (same logic as steps mode)
-                    if self.global_step % self.args.logging_steps == 0:
-                        log_training_metrics(
-                            self.global_step,
-                            self.total_steps,
-                            avg_loss,
-                            ppl,
-                            current_lr,
-                            grad_norm,
-                            self.current_epoch,
-                            self.start_time,
-                            self.args.report_to,
-                        )
-                        epoch_loss = 0.0  # Reset for next logging interval
-
-                    # Periodic evaluation within epoch
-                    if (
-                        self.eval_dataloader is not None
-                        and self.global_step % self.args.eval_steps == 0
-                    ):
-                        should_stop = self._run_eval_and_check_stopping()
-                        if should_stop:
-                            return
-
-                    # Periodic checkpoint within epoch
-                    if self.args.save_checkpoints and self.global_step % self.args.save_steps == 0:
-                        self._save_checkpoint(self.global_step)
-
-            # End of epoch: Always evaluate at epoch boundaries to get
-            # a complete picture of model performance on the full dataset.
-            print(f"\n[Epoch {epoch}] Complete.")
-
-            if self.eval_dataloader is not None:
-                should_stop = self._run_eval_and_check_stopping()
-                if should_stop:
-                    return
-
-            if self.args.save_checkpoints:
-                self._save_checkpoint(self.global_step, tag=f"epoch-{epoch}")
-
-        # All epochs complete
-        print(f"\n{'='*60}")
-        print(f"Training complete ({self.args.num_train_epochs} epochs, {self.global_step:,} steps)")
-        print(f"{'='*60}")
-        if self.args.save_checkpoints:
-            self._save_checkpoint(self.global_step, tag="final")
-        self._finish()
-
-
-    def _forward_backward(self, batch: Any) -> float:
-        """
-        Run a single forward + backward pass with AMP autocast.
-        
-        Returns the loss value BEFORE scaling and accumulation division,
-        so callers can accumulate it properly. The returned loss is
-        multiplied by gradient_accumulation_steps to recover the original
-        (pre-normalization) per-batch loss.
-        
-        Key design decisions:
-        - Loss is divided by gradient_accumulation_steps BEFORE backward.
-          This ensures the accumulated gradient is the mean of micro-batch
-          gradients, not the sum, which is equivalent to training with a
-          proportionally larger batch size.
-        - non_blocking=True for device transfers overlaps data movement
-          with computation, hiding CPU->GPU transfer latency.
-        - autocast handles mixed precision conversion automatically based
-          on the configured dtype and device type.
-        
-        Supports both dict-style batches (from DataLoader with collator)
-        and tuple-style batches (from streaming IterableDatasets).
-        """
-        # Support both mapping batches (dict with 'input_ids'/'labels')
-        # and streaming IterableDatasets that return (inputs, labels) tuples.
-        if isinstance(batch, (tuple, list)):
-            input_ids, labels = batch
-            # DataLoader may add a leading batch dimension when using
-            # batch_size=1 for streaming. Squeeze that dim if present.
-            if isinstance(input_ids, torch.Tensor) and input_ids.dim() == 3:
-                input_ids = input_ids.squeeze(0)
-                labels = labels.squeeze(0)
-        else:
-            input_ids = batch["input_ids"]
-            labels = batch["labels"]
-
-        input_ids = input_ids.to(self.device, non_blocking=True)
-        labels = labels.to(self.device, non_blocking=True)
-
-        # AMP autocast context: Casts operations to the specified precision
-        # where beneficial (e.g., matmul in FP16/BF16) while keeping sensitive
-        # operations (e.g., softmax, layernorm) in FP32 for numerical stability.
-        # This follows the "Mixed Precision Training" paper (Micikevicius et al., 2018).
-        with torch.amp.autocast(
-            device_type=self._autocast_device,
-            dtype=self._amp_dtype,
-            enabled=self._amp_enabled,
-        ):
-            outputs = self.model(input_ids=input_ids, labels=labels, return_dict=True)
-            # Normalize loss by gradient accumulation steps to get mean gradient
-            loss = outputs.loss / self.args.gradient_accumulation_steps
-
-        # Scale the loss before backward for FP16 training stability.
-        # In BF16/FP32 modes, scaler.scale is a no-op.
-        self.scaler.scale(loss).backward()
-
-        # Return the original (unscaled) loss for logging/metrics.
-        # Multiplying by accumulation steps recovers the true per-batch loss.
-        return loss.item() * self.args.gradient_accumulation_steps
-
-    def _optimizer_step(self) -> torch.Tensor:
-        """
-        Execute a single optimizer step: unscale gradients, clip, update weights.
-        
-        Returns the gradient norm BEFORE clipping for monitoring purposes.
-        This helps detect gradient explosion issues during training.
-        
-        The step sequence follows the prescribed order for AMP training:
-        1. unscale_: Reverses loss scaling to recover true gradients
-        2. clip_grad_norm_: Prevents gradient explosion (common in transformers)
-        3. scaler.step: Updates weights (may skip if gradients contain infs/nans)
-        4. scaler.update: Adjusts loss scale for next iteration
-        5. scheduler.step: Updates learning rate
-        6. zero_grad(set_to_none=True): Releases gradient memory entirely
-           rather than filling with zeros, which is more memory-efficient
-        """
-        self.scaler.unscale_(self.optimizer)
-        grad_norm = nn.utils.clip_grad_norm_(
-            self.model.parameters(), max_norm=self.args.max_grad_norm
+        epoch_bar = tqdm(
+            range(resume_epoch, num_epochs),
+            desc="Epochs",
+            unit="epoch",
+            disable=not self.state.is_world_process_zero,
+            dynamic_ncols=True,
         )
 
-        self.scaler.step(self.optimizer)
-        self.scaler.update()
+        for epoch in epoch_bar:
+            self.state.epoch = float(epoch)
+            self.callback_handler.on_epoch_begin(self.state, self.control)
+
+            self._run_epoch(epoch, num_epochs)
+
+            self.state.epoch = float(epoch + 1)
+            self.callback_handler.on_epoch_end(self.state, self.control)
+
+            # Epoch‑end evaluation (only in epoch mode, always performed)
+            if self.eval_dataloader is not None:
+                metrics = self._evaluate()
+                self._handle_evaluation(metrics)
+
+            # Epoch‑end checkpoint (tagged with epoch number)
+            if args.save_checkpoints:
+                self._save(f"epoch-{epoch + 1}")
+                prune_checkpoints(args.output_dir, args.save_total_limit)
+
+            epoch_bar.set_postfix(
+                step=self.state.global_step,
+                best=f"{self.state.best_metric:.4f}" if self.state.best_metric is not None else "n/a",
+            )
+
+            if self.control.should_training_stop:
+                logger.info("Early stopping triggered at epoch %d.", epoch + 1)
+                break
+
+    def _train_by_steps(self) -> None:
+        """
+        Step‑budget loop: run until `global_step` reaches `max_steps`.
+
+        This loop does not respect epoch boundaries; it only cares about the total
+        number of optimizer steps. The dataloader is cycled indefinitely: when it
+        is exhausted, a new iterator is created and `on_epoch_end/begin` callbacks
+        are still fired so that metrics like epoch number increase correctly.
+
+        WHY: Step mode is essential for pre‑training where the dataset is huge
+        and we want to stop after a fixed compute budget, not after a fixed number
+        of dataset passes.
+        """
+        args = self.args
+        total_steps = self.state.max_steps
+        resume_step = self.state.global_step
+
+        step_bar = tqdm(
+            total=total_steps,
+            initial=resume_step,
+            desc="Training",
+            unit="step",
+            disable=not self.state.is_world_process_zero,
+            dynamic_ncols=True,
+        )
+
+        self.model.train()
+        acc_loss = 0.0
+        acc_steps = 0
+        grad_acc = args.gradient_accumulation_steps
+
+        data_iter = iter(self.train_dataloader)
+
+        # Notify callbacks that we are starting an epoch (even though we may not
+        # finish it). This keeps the epoch counter moving forward.
+        self.callback_handler.on_epoch_begin(self.state, self.control)
+
+        while self.state.global_step < total_steps:
+            # Refill iterator if exhausted
+            try:
+                batch = next(data_iter)
+            except StopIteration:
+                self.callback_handler.on_epoch_end(self.state, self.control)
+                self.state.epoch += 1.0
+                self.callback_handler.on_epoch_begin(self.state, self.control)
+                data_iter = iter(self.train_dataloader)
+                batch = next(data_iter)
+
+            self.callback_handler.on_step_begin(self.state, self.control)
+
+            loss = self._forward_backward(batch, is_last_accumulation_step=(acc_steps + 1) >= grad_acc)
+            acc_loss += loss
+            acc_steps += 1
+
+            self.callback_handler.on_substep_end(self.state, self.control)
+
+            if acc_steps >= grad_acc:
+                self._optimizer_step()
+                self.state.global_step += 1
+                avg_loss = acc_loss / grad_acc
+                acc_loss = 0.0
+                acc_steps = 0
+
+                step_bar.update(1)
+                step_bar.set_postfix(loss=f"{avg_loss:.4f}", lr=f"{get_current_lr(self.optimizer):.2e}")
+
+                self.callback_handler.on_step_end(self.state, self.control)
+                self._handle_step_end(avg_loss)
+
+                if self.control.should_training_stop:
+                    break
+
+        step_bar.close()
+
+    def _run_epoch(self, epoch: int, num_epochs: int) -> None:
+        """
+        Run one full pass over the training DataLoader.
+
+        This method is called by `_train_by_epochs` for each epoch. It handles
+        gradient accumulation, AMP, gradient clipping, step‑based logging,
+        evaluation, and checkpointing that are triggered based on `global_step`.
+
+        WHY: Splitting the inner loop allows reuse in both epoch mode (called once
+        per epoch) and step mode (where it is not used). It keeps the epoch mode
+        code clean.
+
+        Parameters
+        ----------
+        epoch : int
+            Current epoch index (0‑based).
+        num_epochs : int
+            Total number of epochs for display in tqdm.
+        """
+        args = self.args
+        self.model.train()
+
+        steps_in_epoch = len(self.train_dataloader)
+        grad_acc = args.gradient_accumulation_steps
+        denom = max(1, steps_in_epoch)
+
+        step_bar = tqdm(
+            self.train_dataloader,
+            desc=f"Epoch {epoch + 1}/{num_epochs}",
+            unit="batch",
+            leave=False,
+            disable=not self.state.is_world_process_zero,
+            dynamic_ncols=True,
+        )
+
+        acc_loss = 0.0
+        acc_steps = 0
+
+        for local_step, batch in enumerate(step_bar):
+            # Keep epoch progress fractional so checkpoints can resume from the
+            # exact point where training stopped instead of repeating the whole
+            # epoch after an early stop.
+            self.state.epoch = float(epoch) + float(local_step + 1) / float(denom)
+
+            is_last_acc_step = (
+                (local_step + 1) % grad_acc == 0
+                or (local_step + 1) == steps_in_epoch
+            )
+
+            self.callback_handler.on_step_begin(self.state, self.control)
+
+            loss = self._forward_backward(batch, is_last_accumulation_step=is_last_acc_step)
+            acc_loss += loss
+            acc_steps += 1
+
+            self.callback_handler.on_substep_end(self.state, self.control)
+
+            if is_last_acc_step:
+                self._optimizer_step()
+                self.state.global_step += 1
+                avg_loss = acc_loss / acc_steps
+                acc_loss = 0.0
+                acc_steps = 0
+
+                step_bar.set_postfix(
+                    loss=f"{avg_loss:.4f}",
+                    lr=f"{get_current_lr(self.optimizer):.2e}",
+                )
+
+                self.callback_handler.on_step_end(self.state, self.control)
+                self._handle_step_end(avg_loss)
+
+                if self.control.should_training_stop or self.control.should_epoch_stop:
+                    break
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Core compute primitives
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _forward_backward(self, batch: Any, is_last_accumulation_step: bool) -> float:
+        """
+        Run one forward + backward pass for a single micro‑batch.
+
+        This method is the heart of the training step. It handles:
+        - Moving batch to device.
+        - DDP gradient synchronisation control (`no_sync` on non‑last steps).
+        - Autocast for mixed precision.
+        - Loss computation (via user function or default).
+        - Scaling the loss (for FP16) and calling `backward`.
+
+        WHY `is_last_accumulation_step` matters: In DistributedDataParallel, all‑reduce
+        of gradients is expensive. By using `model.no_sync()` on all but the last
+        accumulation step, we reduce communication overhead by a factor of
+        `gradient_accumulation_steps`.
+
+        Parameters
+        ----------
+        batch : Any
+            A batch from the dataloader. Typically a dict (for HF models) or tensor.
+        is_last_accumulation_step : bool
+            If True, this micro‑batch completes the accumulation window, so we
+            should allow DDP to synchronise gradients. If False and the model
+            supports `no_sync`, we use that context to defer all‑reduce.
+
+        Returns
+        -------
+        float
+            The scalar loss value (detached, CPU) **before** division by
+            accumulation steps. This value is used for logging only.
+        """
+        batch = self._batch_to_device(batch)
+
+        # DDP gradient sync only on the last accumulation step.
+        # This context manager is a no‑op when not in DDP or when it's the last step.
+        sync_ctx = (
+            contextlib.nullcontext()
+            if is_last_accumulation_step or not hasattr(self.model, "no_sync")
+            else self.model.no_sync()
+        )
+
+        with sync_ctx:
+            with self._autocast():
+                loss = self._compute_loss(batch)
+
+            # Normalise loss across accumulation steps. This ensures that the final
+            # gradient magnitude is independent of grad_acc, and that the effective
+            # batch size behaves as expected.
+            scaled_loss = loss / self.args.gradient_accumulation_steps
+
+            if self.scaler is not None:
+                self.scaler.scale(scaled_loss).backward()
+            else:
+                scaled_loss.backward()
+
+        return loss.detach().item()
+
+    def _optimizer_step(self) -> None:
+        """
+        Perform the optimizer step after a full accumulation window.
+
+        Steps:
+        1. If using a GradScaler (FP16), unscale the gradients.
+        2. Clip gradients (if `max_grad_norm > 0`).
+        3. Step the optimizer (either via scaler or directly).
+        4. Update the scaler (if used).
+        5. Step the scheduler (always after optimizer step).
+        6. Zero out gradients (setting to None saves memory).
+
+        WHY order: Unscale before clipping because clipping should operate on
+        the actual gradient values, not the scaled ones. Step scaler after
+        optimizer step so it can update its scale factor based on the overflow
+        status.
+        """
+        if self.scaler is not None:
+            self.scaler.unscale_(self.optimizer)
+
+        if self.args.max_grad_norm > 0:
+            clip_grad_norm_(self.model, self.args.max_grad_norm)
+
+        if self.scaler is not None:
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+        else:
+            self.optimizer.step()
+
         self.scheduler.step()
         self.optimizer.zero_grad(set_to_none=True)
 
-        return grad_norm
-
-    def _run_eval_and_check_stopping(self) -> bool:
+    def _compute_loss(self, batch: Any) -> torch.Tensor:
         """
-        Run evaluation, update best checkpoint, and check early stopping.
-        
-        Returns True if early stopping triggered and training should stop.
-        
-        Side effects:
-        - Updates self.best_eval_loss if current eval loss improves
-        - Saves best checkpoint when a new best is found
-        - Logs early stopping message and saves final checkpoint if triggered
-        - CRITICAL: Restores model to training mode after evaluation
-          (evaluate() sets model.eval(), which disables dropout/batch norm)
+        Extract a scalar loss tensor from the model given a batch.
+
+        Resolution order (first match wins):
+        1. User‑supplied `compute_loss_fn(model, batch)`
+        2. If batch is a dict: `model(**batch).loss` (HuggingFace style)
+        3. If batch is not a dict: `model(batch)` (expects a scalar tensor)
+        4. If the model output is a tensor, use it directly.
+        5. Otherwise, raise a descriptive error.
+
+        WHY: This flexibility allows the trainer to work with both HuggingFace
+        models (which return a `CausalLMOutput` with a `.loss` attribute) and
+        custom PyTorch modules that return a scalar tensor directly.
+
+        Returns
+        -------
+        torch.Tensor
+            A scalar tensor (still on the device, possibly with gradients attached).
         """
-        eval_loss, eval_ppl = self.evaluate()
-        
-        # Restore training mode — evaluate() disables dropout/batch norm.
-        # Forgetting this would silently degrade training quality.
-        self.model.train()
+        if self.compute_loss_fn is not None:
+            return self.compute_loss_fn(self.model, batch)
 
-        # Track best model: Only save checkpoint when we find a new best
-        # to prevent checkpoint bloat while preserving the best-performing state.
-        if eval_loss < self.best_eval_loss:
-            self.best_eval_loss = eval_loss
-            if self.args.save_checkpoints:
-                self._save_checkpoint(self.global_step, tag="best")
+        if isinstance(batch, dict):
+            outputs = self.model(**batch)
+        else:
+            outputs = self.model(batch)
 
-        # Early stopping: Uses patience-based approach to prevent stopping
-        # on temporary loss spikes while still catching genuine overfitting.
-        # The callback tracks consecutive evaluations without improvement
-        # and signals stop when patience is exhausted.
-        if self.callbacks.on_evaluate_end(self, eval_loss, eval_ppl):
-            print(f"\n{'='*60}")
-            print(f"Early stopping triggered at step {self.global_step}")
-            print(f"{'='*60}")
-            if self.args.save_checkpoints:
-                self._save_checkpoint(self.global_step, tag="early-stopped")
-            self._finish()
-            return True
-        return False
+        if isinstance(outputs, torch.Tensor):
+            return outputs
+        # HuggingFace style: assume output has a .loss attribute
+        if hasattr(outputs, "loss"):
+            return outputs.loss
+        raise TypeError(
+            f"Model output type {type(outputs)} not supported. "
+            "Either implement compute_loss_fn or ensure your model returns a tensor or an object with .loss."
+        )
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # Evaluation
+    # ─────────────────────────────────────────────────────────────────────────
 
-    @torch.inference_mode()
-    def evaluate(self) -> tuple[float, float]:
+    def _evaluate(self) -> dict[str, float]:
         """
-        Run full evaluation pass over the eval dataset.
-        
-        Uses inference_mode() instead of no_grad() because inference_mode()
-        provides additional optimizations by disabling autograd version tracking
-        entirely (~5-10% speedup vs no_grad).
-        
-        Also selects a random prompt from the eval set and generates a sample
-        continuation to provide qualitative assessment of model capability.
-        
-        Returns (average_loss, perplexity) tuple.
+        Run evaluation and return a dictionary of metrics.
+
+        If `eval_fn` is provided, it is used directly. Otherwise, a default loop
+        runs over `eval_dataloader` and averages the loss from `_compute_loss`.
+
+        The model is set to eval mode before evaluation and restored to train mode
+        after evaluation, regardless of whether the evaluation succeeds.
+
+        Returns
+        -------
+        dict[str, float]
+            Metrics dictionary, at least containing `"eval_loss"` if default loop
+            was used. For custom eval_fn, the keys are user-defined.
+
+        Edge Cases:
+        - If `eval_dataloader` is None, returns empty dict (no evaluation).
+        - If evaluation fails (e.g., model returns None), logs error and returns empty dict.
         """
+        if self.eval_dataloader is None:
+            return {}
+
         self.model.eval()
-        eval_loss: float = 0.0
 
-        eval_progress = tqdm(
+        if self.eval_fn is not None:
+            try:
+                metrics = self.eval_fn(self.model, self.eval_dataloader, self.device)
+            except Exception as e:
+                logger.error("Custom eval_fn failed: %s", e, exc_info=True)
+                metrics = {}
+        else:
+            metrics = self._default_eval_loop()
+
+        self.model.train()
+        return metrics
+
+    def _default_eval_loop(self) -> dict[str, float]:
+        """
+        Default evaluation loop: average the loss over the entire eval dataloader.
+
+        This method does not use gradient accumulation and does not modify model
+        state. It is intended to be fast and simple.
+
+        Returns
+        -------
+        dict[str, float]
+            Contains a single key `"eval_loss"` with the average loss.
+
+        Performance: O(N) forward passes, no backward. The loop uses tqdm only
+        when the process is rank 0.
+        """
+        total_loss = 0.0
+        num_batches = 0
+
+        eval_bar = tqdm(
             self.eval_dataloader,
             desc="Evaluating",
-            dynamic_ncols=True,
             unit="batch",
-            leave=False,  # Don't leave progress bar after completion
+            leave=False,
+            disable=not self.state.is_world_process_zero,
+            dynamic_ncols=True,
         )
 
-        # Reservoir sampling: uniformly select one random prompt from the eval set
-        # to display for qualitative inspection. This gives a representative sample
-        # without biasing toward early or late batches.
-        selected_prompt: Optional[torch.Tensor] = None
-        selected_count = 0
+        with torch.no_grad():
+            for batch in eval_bar:
+                batch = self._batch_to_device(batch)
+                with self._autocast():
+                    loss = self._compute_loss(batch)
+                total_loss += loss.item()
+                num_batches += 1
 
-        for batch in eval_progress:
-            # Support both dict batches and (inputs, labels) tuples from streaming datasets
-            if isinstance(batch, (tuple, list)):
-                input_ids, labels = batch
-                if isinstance(input_ids, torch.Tensor) and input_ids.dim() == 3:
-                    input_ids = input_ids.squeeze(0)
-                    labels = labels.squeeze(0)
-            else:
-                input_ids = batch["input_ids"]
-                labels = batch["labels"]
+        eval_loss = total_loss / max(1, num_batches)
+        return {"eval_loss": eval_loss}
 
-            # Reservoir sampling: each sequence has 1/count chance of being selected
-            if isinstance(input_ids, torch.Tensor) and input_ids.dim() == 1:
-                input_ids = input_ids.unsqueeze(0)
+    def _handle_evaluation(self, metrics: dict[str, float]) -> None:
+        """
+        Post‑evaluation bookkeeping: update best metric, save best checkpoint,
+        dispatch `on_evaluate` callbacks.
 
-            for seq in input_ids.detach().cpu():
-                selected_count += 1
-                if random.randrange(selected_count) == 0:
-                    selected_prompt = seq
+        This method is called after each evaluation (step‑based or epoch‑end).
+        It modifies `self.state.best_metric` and `self.state.best_model_checkpoint`
+        if the monitored metric improves.
 
-            input_ids = input_ids.to(self.device, non_blocking=True)
-            labels = labels.to(self.device, non_blocking=True)
+        Parameters
+        ----------
+        metrics : dict[str, float]
+            Metrics dictionary returned by `_evaluate`.
 
-            with torch.amp.autocast(
-                device_type=self._autocast_device,
-                dtype=self._amp_dtype,
-                enabled=self._amp_enabled,
-            ):
-                outputs = self.model(input_ids=input_ids, labels=labels, return_dict=True)
-                eval_loss += outputs.loss.item()
+        WHY: Centralising this logic ensures that both step‑based and epoch‑based
+        evaluation use the same improvement logic and callback dispatching.
+        """
+        args = self.args
+        metric_value = metrics.get(args.metric_for_best_model)
 
-            # Update progress bar with current loss for real-time monitoring
-            eval_progress.set_postfix({"loss": f"{outputs.loss.item():.4f}"})
+        if metric_value is not None:
+            is_better = self._is_better_metric(metric_value)
+            if is_better:
+                self.state.best_metric = metric_value
+                if args.save_checkpoints:
+                    self._save("best")
+                    self.state.best_model_checkpoint = os.path.join(
+                        args.output_dir, "checkpoint-best"
+                    )
+                logger.info(
+                    "New best %s = %.6f → checkpoint-best",
+                    args.metric_for_best_model,
+                    metric_value,
+                )
 
-        # Compute average loss across all batches.
-        # max(1, ...) prevents division by zero for empty dataloader edge case.
-        if self._eval_is_streaming:
-            num_eval_batches = len(self.eval_dataset) if self.eval_dataset is not None and hasattr(self.eval_dataset, '__len__') else 1
-        else:
-            num_eval_batches = len(self.eval_dataloader)
+        # Always log evaluation metrics (even if no improvement)
+        self._log(metrics)
 
-        avg_eval_loss = eval_loss / max(1, num_eval_batches)
-        eval_ppl = math.exp(avg_eval_loss) if avg_eval_loss < 100 else float("inf")
-
-        # Display only a sampled generated continuation for qualitative assessment.
-        if selected_prompt is not None:
-            selected_prompt = self._trim_trailing_padding(selected_prompt)
-            if selected_prompt.numel() > 1:
-                prompt_length = min(selected_prompt.numel() - 1, max(8, selected_prompt.numel() // 2))
-                prompt_length = max(1, prompt_length)
-                prompt_ids = selected_prompt[:prompt_length]
-
-                generated_text = self._generate_sample(prompt_ids.unsqueeze(0))
-                print(f"[Eval sample generated] {generated_text}")
-
-        log_eval_summary(
-            avg_eval_loss,
-            eval_ppl,
-            self.global_step,
-            self.best_eval_loss,
-            self.args.report_to,
+        self.callback_handler.on_evaluate(
+            self.state, self.control, metrics=metrics
         )
 
-        return avg_eval_loss, eval_ppl
+    # ─────────────────────────────────────────────────────────────────────────
+    # Step‑level side‑effects (logging, evaluation, saving)
+    # ─────────────────────────────────────────────────────────────────────────
 
-    def _save_checkpoint(self, step: int, tag: Optional[str] = None) -> None:
+    def _handle_step_end(self, avg_loss: float) -> None:
         """
-        Save training checkpoint with automatic pruning of old checkpoints.
-        
-        The pruning mechanism (save_total_limit) prevents unbounded disk usage
-        by keeping only the N most recent checkpoints. This is critical for
-        long-running training where each checkpoint can be gigabytes.
-        
-        Checkpoint contents include:
-        - Model weights (via save_pretrained for HuggingFace compatibility)
-        - Optimizer state (for exact training resumption)
-        - Scheduler state (to continue LR schedule from same point)
-        - AMP scaler state (for FP16 stability continuity across restarts)
-        - Training metrics (global_step, epoch, best_loss)
-        - Early stopping state (for correct patience counting across restarts)
-        """
-        if not self.args.save_checkpoints:
-            return
+        After each optimizer step (after gradient accumulation), handle:
+        - Logging (if step % logging_steps == 0)
+        - Step‑based evaluation (if step % eval_steps == 0)
+        - Step‑based checkpoint (if step % save_steps == 0)
 
+        Parameters
+        ----------
+        avg_loss : float
+            Average loss over the accumulation window (already divided by grad_acc).
+
+        WHY: This method is called only when an optimizer step actually occurs,
+        not on every micro‑batch. This is the right place to perform actions that
+        should happen once per global step.
+        """
+        args = self.args
+        state = self.state
+
+        # Logging
+        if should_log(state, args.logging_steps):
+            logs: dict[str, Any] = {
+                "loss": round(avg_loss, 4),
+                "lr": get_current_lr(self.optimizer),
+                "epoch": round(state.epoch, 2),
+            }
+            if self.scaler is not None:
+                logs["grad_scale"] = self.scaler.get_scale()
+
+            self._log(logs)
+
+        # Step‑based evaluation
+        if should_evaluate(state, args.eval_steps) and self.eval_dataloader is not None:
+            metrics = self._evaluate()
+            self._handle_evaluation(metrics)
+
+        # Step‑based checkpoint
+        if should_save(state, args.save_steps) and args.save_checkpoints:
+            self._save(step=state.global_step)
+            prune_checkpoints(args.output_dir, args.save_total_limit)
+
+    def _log(self, logs: dict[str, Any]) -> None:
+        """
+        Append `logs` to `state.log_history` and dispatch `on_log` callbacks.
+
+        This method resets `control.should_log` to False after dispatching,
+        because the trainer has already handled the request.
+        """
+        logs["step"] = self.state.global_step
+        self.state.log_history.append(logs)
+        self.control.should_log = False
+        self.callback_handler.on_log(self.state, self.control, logs=logs)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Checkpointing (thin wrapper over trainer_utils)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _save(
+        self,
+        tag: Optional[str] = None,
+        step: Optional[int] = None,
+    ) -> None:
+        """
+        Save a checkpoint using the `trainer_utils.save_checkpoint` function.
+
+        This method also dispatches the `on_save` callback so that integrations
+        can react to checkpoint saving (e.g., log to W&B that a checkpoint was saved).
+
+        Parameters
+        ----------
+        tag : Optional[str]
+            Descriptive tag (e.g., "best", "final", "epoch-3"). If provided,
+            the checkpoint is saved as `checkpoint-<tag>` and is never pruned.
+        step : Optional[int]
+            Step number for numbered checkpoints (e.g., 1000). Used only when
+            `tag` is None. These checkpoints are prunable.
+        """
         save_checkpoint(
-            self.model,
-            self.optimizer,
-            self.scheduler,
-            self.scaler,
-            self.global_step,
-            self.current_epoch,
-            self.best_eval_loss,
-            self.early_stopping,
-            self.args.output_dir,
-            step,
-            tag,
+            model=self.model,
+            optimizer=self.optimizer,
+            scheduler=self.scheduler,
+            scaler=self.scaler,
+            state=self.state,
+            callback_handler=self.callback_handler,
+            output_dir=self.args.output_dir,
+            step=step,
+            tag=tag,
+            early_stopping=self.early_stopping,
+            training_args=self.args,
+            atomic=getattr(self.args, "atomic_checkpoint", True),
         )
-        prune_checkpoints(self.args.output_dir, self.args.save_total_limit)
+        self.callback_handler.on_save(self.state, self.control)
 
-    def _finish(self) -> None:
+    # ─────────────────────────────────────────────────────────────────────────
+    # Helper methods
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _autocast(self) -> contextlib.AbstractContextManager:
         """
-        Final cleanup: log summary metrics and close WandB connection.
-        
-        Called in all exit paths (normal completion, early stopping,
-        interruption) to ensure consistent logging and resource cleanup
-        regardless of how training terminates.
+        Return the appropriate autocast context manager based on precision.
+
+        If precision is "fp32" or AMP is disabled, returns a nullcontext.
+        For "fp16" and "bf16", returns `torch.autocast` with the correct dtype.
         """
-        log_final_summary(
-            self.global_step,
-            self.start_time,
-            self.best_eval_loss,
-            self.args.output_dir,
+        if self.amp_dtype is None:
+            return contextlib.nullcontext()
+        return torch.autocast(
+            device_type=self.device.type,
+            dtype=self.amp_dtype,
         )
-        self.callbacks.on_train_end(self)
-        finish_wandb(self.args.report_to)
+
+    def _batch_to_device(self, batch: Any) -> Any:
+        """
+        Recursively move tensors in a batch to the training device.
+
+        Supported structures: dict, list, tuple, and plain tensors.
+        Non‑tensor objects (e.g., strings, ints) are left unchanged.
+
+        WHY: Recursion is used to handle nested structures that some
+        datasets return (e.g., a tuple of (input_ids, attention_mask, labels)).
+        This is more robust than assuming a flat dict.
+        """
+        if isinstance(batch, dict):
+            return {
+                k: v.to(self.device) if isinstance(v, torch.Tensor) else v
+                for k, v in batch.items()
+            }
+        if isinstance(batch, torch.Tensor):
+            return batch.to(self.device)
+        if isinstance(batch, (list, tuple)):
+            moved = [v.to(self.device) if isinstance(v, torch.Tensor) else v for v in batch]
+            return type(batch)(moved)
+        return batch
+
+    def _is_better_metric(self, current: float) -> bool:
+        """
+        Determine whether `current` is better than the stored best metric.
+
+        Direction is inferred from `greater_is_better` if set; otherwise,
+        auto‑detect based on whether the metric name contains "loss"
+        (case‑insensitive). This matches the logic of `EarlyStoppingCallback`
+        so that improvement decisions are consistent.
+
+        Edge Cases:
+        - If `self.state.best_metric` is None (first evaluation), returns True.
+        """
+        if self.state.best_metric is None:
+            return True
+        args = self.args
+        greater = args.greater_is_better
+        if greater is None:
+            greater = "loss" not in args.metric_for_best_model.lower()
+        if greater:
+            return current > self.state.best_metric
+        else:
+            return current < self.state.best_metric
+
+    @staticmethod
+    def _set_seed(seed: int) -> None:
+        """
+        Set random seeds for Python, NumPy, and PyTorch (including CUDA).
+
+        WHY: Ensures reproducibility of data shuffling, dropout, and weight
+        initialisation across runs. Note that CUDA operations are not fully
+        deterministic unless `torch.backends.cudnn.deterministic = True` is also
+        set, which the user must do separately (because it can impact performance).
+        """
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)

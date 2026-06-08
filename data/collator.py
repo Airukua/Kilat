@@ -1,6 +1,6 @@
 import torch
 from typing import Dict, List, Any, Optional
-from utils.sanity_check import validate_positive_int
+from utils.validators import validate_positive_int
 
 class KilatDataCollator:
     """

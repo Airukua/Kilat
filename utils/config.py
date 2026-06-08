@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Optional, Literal
+from typing import Optional, Literal, Union
 import warnings
 from transformers import PretrainedConfig
 import yaml
@@ -537,10 +537,14 @@ class TrainingConfig:
         output_dir: str = "./results",
         resume_from_checkpoint: Optional[str] = None,
         save_checkpoints: bool = True,
+        atomic_checkpoint: bool = True,
         # ---- Training mode ----
         training_mode: Literal["steps", "epochs"] = "epochs",
         # ---- Optimisation ----
         learning_rate: float = 5e-5,
+        beta1: float = 0.9,
+        beta2: float = 0.95,
+        epsilon: float = 1e-8,
         per_device_train_batch_size: int = 8,
         per_device_eval_batch_size: int = 8,
         gradient_accumulation_steps: int = 1,
@@ -551,6 +555,8 @@ class TrainingConfig:
         # ---- Schedule (epoch-based) ----
         num_train_epochs: int = 3,
         warmup_steps: int = 0,
+        scheduler_type: str = "cosine",
+        scheduler_kwargs: Optional[dict] = None,
         # ---- Logging & evaluation ----
         logging_steps: int = 100,
         eval_steps: int = 500,
@@ -559,10 +565,12 @@ class TrainingConfig:
         # ---- Early stopping ----
         early_stopping_patience: int = 3,
         early_stopping_threshold: float = 0.0,
+        metric_for_best_model: str = "eval_loss",
+        greater_is_better: Optional[bool] = None,
         # ---- Mixed precision ----
         precision: Literal["fp32", "fp16", "bf16"] = "fp16",
         # ---- Reporting ----
-        report_to: str = "wandb",
+        report_to: Union[str, list[str]] = "none",
         run_name: Optional[str] = "kilat-run",
         # ---- Reproducibility ----
         seed: int = 42,
@@ -579,11 +587,20 @@ class TrainingConfig:
         save_checkpoints : bool
             Whether to save checkpoints during training. Set ``False`` for
             quick experiments or dry runs.
+        atomic_checkpoint : bool
+            If True, write checkpoints to a temp directory and rename them
+            into place atomically. Prevents partially written checkpoints.
         training_mode : Literal["steps", "epochs"]
             ``"steps"``: Stop after ``max_steps`` optimizer steps.
             ``"epochs"``: Stop after ``num_train_epochs`` full data passes.
         learning_rate : float
             Peak learning rate for AdamW optimizer.
+        beta1 : float
+            First moment decay rate for AdamW.
+        beta2 : float
+            Second moment decay rate for AdamW.
+        epsilon : float
+            Numerical stability term for AdamW.
         per_device_train_batch_size : int
             Micro‑batch size per device.
         per_device_eval_batch_size : int
@@ -603,6 +620,10 @@ class TrainingConfig:
             Ignored in ``"steps"`` mode.
         warmup_steps : int
             Linear warmup steps before cosine decay begins.
+        scheduler_type : str
+            Scheduler name understood by ``training.scheduler.get_scheduler``.
+        scheduler_kwargs : Optional[dict]
+            Extra scheduler keyword arguments forwarded to the scheduler factory.
         logging_steps : int
             Interval (in optimizer steps) for printing/reporting metrics.
         eval_steps : int
@@ -618,12 +639,16 @@ class TrainingConfig:
             Consecutive evaluations without improvement before stopping.
         early_stopping_threshold : float
             Minimum absolute decrease in eval loss to count as improvement.
+        metric_for_best_model : str
+            Metric tracked by early stopping and best-checkpoint selection.
+        greater_is_better : Optional[bool]
+            Override comparison direction for best-metric tracking.
         precision : Literal["fp32", "fp16", "bf16"]
             Mixed precision mode. ``"fp16"`` requires CUDA; ``"bf16"``
             requires Ampere+ GPU or PyTorch ≥ 2.1 CPU.
-        report_to : str
-            Metrics backend. ``"wandb"`` for Weights & Biases, ``"none"``
-            to disable external logging.
+        report_to : str | list[str]
+            Metrics backend(s). Accepts ``"none"``, ``"all"``, or a list of
+            backend names such as ``["wandb", "tensorboard"]``.
         run_name : Optional[str]
             Display name for the W&B run.
         seed : int
@@ -670,12 +695,16 @@ class TrainingConfig:
         self.output_dir = output_dir
         self.resume_from_checkpoint = resume_from_checkpoint
         self.save_checkpoints = save_checkpoints
+        self.atomic_checkpoint = atomic_checkpoint
         
         # Training mode
         self.training_mode = training_mode
         
         # Optimisation
         self.learning_rate = learning_rate
+        self.beta1 = beta1
+        self.beta2 = beta2
+        self.epsilon = epsilon
         self.per_device_train_batch_size = per_device_train_batch_size
         self.per_device_eval_batch_size = per_device_eval_batch_size
         self.gradient_accumulation_steps = gradient_accumulation_steps
@@ -686,22 +715,29 @@ class TrainingConfig:
         self.max_steps = max_steps
         self.num_train_epochs = num_train_epochs
         self.warmup_steps = warmup_steps
-        
+        self.scheduler_type = scheduler_type
+        self.scheduler_kwargs: dict = scheduler_kwargs or {}
+
         # Logging & evaluation
         self.logging_steps = logging_steps
         self.eval_steps = eval_steps
         self.save_steps = save_steps
         self.save_total_limit = save_total_limit
-        
+
         # Early stopping
         self.early_stopping_patience = early_stopping_patience
         self.early_stopping_threshold = early_stopping_threshold
-        
+        self.metric_for_best_model = metric_for_best_model
+        self.greater_is_better = greater_is_better
+
         # Mixed precision
         self.precision = precision
-        
+
         # Reporting
-        self.report_to = report_to
+        if isinstance(report_to, str):
+            self.report_to: list[str] = [report_to]
+        else:
+            self.report_to = list(report_to)
         self.run_name = run_name
         
         # Reproducibility
@@ -724,8 +760,12 @@ class TrainingConfig:
             "output_dir": self.output_dir,
             "resume_from_checkpoint": self.resume_from_checkpoint,
             "save_checkpoints": self.save_checkpoints,
+            "atomic_checkpoint": self.atomic_checkpoint,
             "training_mode": self.training_mode,
             "learning_rate": self.learning_rate,
+            "beta1": self.beta1,
+            "beta2": self.beta2,
+            "epsilon": self.epsilon,
             "per_device_train_batch_size": self.per_device_train_batch_size,
             "per_device_eval_batch_size": self.per_device_eval_batch_size,
             "gradient_accumulation_steps": self.gradient_accumulation_steps,
@@ -734,12 +774,16 @@ class TrainingConfig:
             "max_steps": self.max_steps,
             "num_train_epochs": self.num_train_epochs,
             "warmup_steps": self.warmup_steps,
+            "scheduler_type": self.scheduler_type,
+            "scheduler_kwargs": self.scheduler_kwargs,
             "logging_steps": self.logging_steps,
             "eval_steps": self.eval_steps,
             "save_steps": self.save_steps,
             "save_total_limit": self.save_total_limit,
             "early_stopping_patience": self.early_stopping_patience,
             "early_stopping_threshold": self.early_stopping_threshold,
+            "metric_for_best_model": self.metric_for_best_model,
+            "greater_is_better": self.greater_is_better,
             "precision": self.precision,
             "report_to": self.report_to,
             "run_name": self.run_name,

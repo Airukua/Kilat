@@ -1,736 +1,929 @@
-import os
+from __future__ import annotations
+import glob
 import json
 import math
+import os
 import random
-import torch
-from torch.utils.data import Dataset
-from typing import List, Dict, Union, Any, Optional, Iterator, Tuple
-import pyarrow.parquet as pq
+from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
+import numpy as np
 import pyarrow as pa
-import glob
+import pyarrow.parquet as pq
+import torch
+from torch.utils.data import Dataset, IterableDataset
 
 
-class KilatDataset(Dataset):
+# ---------------------------------------------------------------------------
+# Utilities
+# ---------------------------------------------------------------------------
+
+def _discover_parquet_files(path: str) -> List[str]:
     """
-    Dataset reader for KilatTransformer supporting multiple input formats.
+    Return a sorted list of all .parquet / .parq files under ``path``.
 
-    Supports:
-        - Apache Parquet files (``.parquet`` / ``.parq``) – memory‑mapped for
-          large‑scale training with zero‑copy reads and column‑wise access.
-        - Parquet directories – directory containing multiple ``.parquet`` files,
-          all files are automatically discovered and loaded.
-        - Streaming mode – memory‑efficient iteration for large datasets that
-          don't fit in RAM. Uses chunking and packing similar to PackedTokenBatchLoader.
-        - JSON Lines (``.jsonl``) – line‑delimited JSON for streaming datasets.
-        - Standard JSON (``.json``) containing a list of samples.
-        - In‑memory Python lists – for programmatic dataset creation and testing.
+    WHY: Both ParquetDataset and StreamingDataset need to locate all shards
+    in a directory. Sorting ensures deterministic order across runs when
+    shuffle=False, and consistent worker file distribution.
 
-    Every sample is expected to contain a key (default ``"input_ids"``) holding
-    a sequence of integer token IDs.
+    Edge Cases:
+    - If path is a single file, returns a one-element list.
+    - If directory contains no .parquet files, raises ValueError (fail fast)
+      rather than silently returning an empty iterator.
+    - Hidden files (starting with .) are ignored because glob does not match them.
 
-    Design Rationale
-    ---------------
-    This dataset class exists to provide a unified interface over multiple
-    storage backends commonly encountered in ML training pipelines, without
-    requiring users to pre‑convert their data to a specific format.
+    Performance: O(n) where n = number of files. Called once per dataset
+    construction, acceptable.
+    """
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Path does not exist: {path}")
+    if os.path.isfile(path):
+        return [path]
+    files = sorted(glob.glob(os.path.join(path, "*.parquet")))
+    files += sorted(glob.glob(os.path.join(path, "*.parq")))
+    if not files:
+        raise ValueError(f"No .parquet / .parq files found in: {path}")
+    return files
 
-    **Why Parquet as the primary large‑scale format?**
-    1. **Columnar storage**: The dataset reads only the ``key_name`` column,
-       ignoring other columns (metadata, auxiliary features). For datasets with
-       many columns, this can reduce I/O by 10‑100x.
-    2. **Memory‑mapped access**: Arrow/Parquet uses mmap for zero‑copy reads.
-       The OS page cache handles prefetching, meaning repeated epochs access
-       the same physical memory pages without re‑reading from disk.
-    3. **Random access**: Parquet's row‑group structure allows O(1) random
-       access by index, unlike JSONL which requires sequential scanning.
-    4. **Compression**: Column‑wise compression (Snappy, Zstd, LZ4) typically
-       achieves 3‑5x size reduction for integer sequences vs uncompressed JSON.
-    5. **Interoperability**: Parquet is the standard format for HuggingFace
-       datasets, Spark, and most data lakes — datasets can be consumed directly
-       without conversion.
 
-    **Why support Parquet directories?**
-    - Many data processing pipelines (Spark, Dask, HuggingFace datasets)
-      write Parquet data as sharded directories with multiple files.
-    - Processing these manually (iterating over files, concatenating tables)
-      is error‑prone and inefficient.
-    - The directory support automatically discovers and combines all
-      ``.parquet`` files in a directory, transparently presenting them as a
-      single contiguous dataset.
+def _to_list(token_ids: Any, idx: int) -> List[int]:
+    """
+    Normalise any token sequence type to a plain Python list.
 
-    **Why support streaming mode?**
-    - For extremely large datasets that exceed available RAM, loading all data
-      at once causes OOM (Out of Memory) errors.
-    - Streaming mode reads data in batches, processes chunks, and yields samples
-      on‑the‑fly without storing everything in memory.
-    - This is ideal for pretraining on web‑scale corpora (hundreds of GB).
-    - Memory usage becomes O(batch_size × sequence_length) instead of O(dataset_size).
+    WHY: The dataset may return token IDs as list, torch.Tensor, numpy array,
+    or even JAX array (if using interop). The collator expects standard Python
+    lists for easy batching and further processing. This helper centralises
+    the conversion and gives a clear error message when an unsupported type appears.
 
-    **Why support JSON/JSONL at all?**
-    - JSONL is ubiquitous for small‑medium datasets and easy to inspect/debug
-    - JSON files are common for evaluation sets and task‑specific data
-    - In‑memory lists enable programmatic dataset construction (e.g., synthetic
-      data generation, few‑shot prompt templates)
+    Edge Cases:
+    - Recursive conversion is NOT performed; only the top-level object is converted.
+    - For tensors, .tolist() copies data to Python ints – overhead is acceptable
+      because token sequences are small (e.g., 1024 ints) and this conversion
+      happens once per sample, not per batch.
 
-    **Normalization strategy**:
-    All backends normalize token sequences to Python lists in ``__getitem__``.
-    This ensures the data collator receives consistent types regardless of
-    backend (Arrow arrays → list, JSON lists → pass‑through, tensors → list).
-    The conversion is done lazily per‑sample to avoid memory overhead.
+    Raises:
+    - TypeError if token_ids is of an unsupported type.
+    """
+    if isinstance(token_ids, list):
+        return token_ids
+    if isinstance(token_ids, torch.Tensor):
+        return token_ids.tolist()
+    if hasattr(token_ids, "tolist"):          # numpy, jax, etc.
+        return token_ids.tolist()
+    raise TypeError(
+        f"Unsupported token sequence type at index {idx}: {type(token_ids)}"
+    )
 
-    **Parquet Directory Resolution**
-    --------------------------------
-    When a directory path is provided:
-    1. All files matching ``*.parquet`` or ``*.parq`` in the directory are
-       discovered (non‑recursive by design; recursive would risk loading
-       unintended files from nested subdirectories).
-    2. Files are loaded in sorted order for deterministic row indices.
-    3. Each file is read column‑selectively (only ``key_name`` column).
-    4. Tables are concatenated using PyArrow's efficient table concatenation
-       (zero‑copy row‑wise stacking).
-    5. The resulting table is stored as a single contiguous Arrow Table.
 
-    **Streaming Mode Details**
-    --------------------------
-    When ``streaming=True``, the dataset:
-    1. Does NOT load all data into memory at construction
-    2. Iterates through Parquet files in chunks (``read_batch_size`` rows at a time)
-    3. Extracts valid token sequences (using attention_mask)
-    4. Splits long sequences into chunks of ``sequence_length``
-    5. Packs chunks into batches of size ``batch_size``
-    6. Returns (inputs, labels) tuples directly for training
+# ---------------------------------------------------------------------------
+# 1. PretrainingDataset  (map-style, random access)
+# ---------------------------------------------------------------------------
 
-    This matches the behavior of ``PackedTokenBatchLoader`` while maintaining
-    the same Dataset interface.
+class PretrainingDataset(Dataset):
+    """
+    Map-style dataset for language model pretraining.
 
-    Memory Model
-    -----------
-    - **Parquet (single file)**: ParquetFile.read() loads only the specified
-      column into an Arrow Table in memory. The table is shared across all
-      workers (if using multiple DataLoader workers with fork start method,
-      the table is inherited via copy‑on‑write in the child processes).
-    - **Parquet (directory)**: All discovered files are concatenated into a
-      single Arrow Table. This is memory‑efficient because columnar data from
-      multiple files is concatenated row‑wise without copying the underlying
-      buffers (PyArrow uses zero‑copy concatenation).
-    - **Streaming mode**: Memory usage is O(read_batch_size × source_sequence_length)
-      plus O(batch_size × sequence_length). No full dataset copy.
-    - **JSON/JSONL**: Entire dataset is loaded into memory at construction.
-      For datasets larger than RAM, use Parquet format or streaming mode.
-    - **In‑memory lists**: The list reference is stored directly — no copy.
+    WHY MAP-STYLE?
+    Random access by index (__getitem__) is essential for:
+    - Shuffling with a fixed seed (reproducible epochs)
+    - Using PyTorch's RandomSampler / DistributedSampler
+    - Resuming training exactly at a specific sample
 
-    Example::
-        >>> # Single Parquet file (full load)
-        >>> ds = KilatDataset("train.parquet", key_name="input_ids")
-        >>> 
-        >>> # Directory with multiple Parquet files (full load - may OOM)
-        >>> ds = KilatDataset("./data/tokens/train/tokens/tokenized.parquet", key_name="input_ids")
-        >>> 
-        >>> # Streaming mode for large datasets (recommended for >1GB)
-        >>> ds = KilatDataset(
-        ...     "./data/tokens/train/tokens/tokenized.parquet",
-        ...     key_name="input_ids",
-        ...     streaming=True,
-        ...     batch_size=8,
-        ...     sequence_length=512,
-        ...     pad_token_id=0,
-        ... )
-        >>> 
-        >>> # JSONL file
-        >>> ds = KilatDataset("data.jsonl", key_name="input_ids")
-        >>> 
-        >>> sample = ds[0]
-        >>> print(sample.keys())   # dict with key "input_ids"
-        >>> print(len(ds))         # total number of samples
+    Supported storage backends (all present a uniform dict interface):
+
+    1. **NumPy memmap** (``.npy`` / ``.bin``)
+       - Fastest random access. File is memory-mapped, pages loaded on demand.
+       - Assumes a flat int32/int64 array of concatenated token IDs.
+       - Sequences are sliced at `[idx * chunk_size : (idx+1) * chunk_size]`.
+       - Zero-copy: OS page cache shared across DataLoader workers.
+       - Ideal for large pretraining corpora that exceed RAM.
+
+    2. **Apache Parquet** (``.parquet`` / directory)
+       - Column-selective loading via Arrow. Fetch row `i` with `table.column(key)[i]`.
+       - Suitable when data is already in Parquet shards (HF datasets, Spark) and
+         the dataset fits in RAM (or you have enough RAM to hold the whole table).
+       - Slower than memmap for random access because Arrow must decode each row.
+
+    3. **JSON / JSONL / in-memory list**
+       - Full in-memory load. Suitable for small datasets, evaluation sets,
+         or programmatic construction.
+
+    Trade-offs:
+    - Memmap: fastest, but requires pre‑tokenisation into a flat binary file.
+      Also discards the tail (tokens % chunk_size) to keep all chunks equal length.
+    - Parquet: more flexible (supports multiple columns, row groups), but each
+      __getitem__ involves a PyArrow conversion (row → Python list). For large
+      datasets, memmap can be 2-3x faster.
+    - In‑memory: simplest, but uses RAM for the whole dataset.
+
+    Parameters
+    ----------
+    source : str | List[dict]
+        Path to a file or directory, or a list of dicts.
+    key_name : str
+        Column / dict key containing token IDs. Default "input_ids".
+    chunk_size : int
+        Sequence length for memmap slicing. Ignored for other backends.
+    dtype : np.dtype
+        Numpy dtype for memmap. Must match the file's dtype.
+
+    Example Usage
+    -------------
+        >>> ds = PretrainingDataset("tokens.npy", chunk_size=1024)
+        >>> len(ds)          # total_tokens // chunk_size
+        >>> ds[0]            # {"input_ids": [3, 17, 42, ...]}
+    """
+
+    def __init__(
+        self,
+        source: Union[str, List[Dict[str, Any]]],
+        key_name: str = "input_ids",
+        chunk_size: int = 1024,
+        dtype: np.dtype = np.int32,
+    ) -> None:
+        self.key_name = key_name
+        self.chunk_size = chunk_size
+
+        self._backend: str          # "memmap" | "parquet" | "memory"
+        self._memmap: Optional[np.ndarray] = None
+        self._table: Optional[pa.Table] = None
+        self._samples: Optional[List[Dict[str, Any]]] = None
+        self._memory_is_dicts = False
+
+        if isinstance(source, list):
+            self._backend = "memory"
+            self._samples = source
+            self._length = len(source)
+            self._memory_is_dicts = bool(source) and isinstance(source[0], dict)
+
+        elif isinstance(source, str):
+            if os.path.isdir(source):
+                self._init_parquet(source)
+            else:
+                _, ext = os.path.splitext(source)
+                ext = ext.lower()
+
+                if ext in (".parquet", ".parq"):
+                    self._init_parquet(source)
+                elif ext in (".npy", ".bin"):
+                    self._init_memmap(source, dtype)
+                elif ext in (".jsonl", ".json"):
+                    self._init_json(source, ext)
+                elif ext == "":
+                    # A path without extension is ambiguous. Prefer treating
+                    # it as a parquet source only if it is an actual directory.
+                    raise ValueError(
+                        f"Unsupported path without extension: {source}. "
+                        "Use a .parquet/.parq file, a directory of parquet files, "
+                        "a .npy/.bin memmap, or a JSON/JSONL file."
+                    )
+                else:
+                    # Fallback: try parquet file(s) only after explicit types.
+                    self._init_parquet(source)
+        else:
+            raise TypeError("source must be a str path or list of dicts.")
+
+        if self._length == 0:
+            raise ValueError("Dataset is empty after loading.")
+
+    # ── backend initialisers ──────────────────────────────────────────────
+
+    def _init_memmap(self, path: str, dtype: np.dtype) -> None:
+        """
+        Memory-map a flat integer array and slice into fixed-size chunks.
+
+        WHY: Memmap gives O(1) index → byte offset, no parsing overhead.
+        The file is opened read-only; data pages are loaded on first access
+        and cached by the OS.
+
+        Edge Cases:
+        - If the file is an .npy, we load via np.load(…, mmap_mode='r').
+        - Otherwise treat as raw binary (e.g., .bin) via np.memmap.
+        - Tokens that do not fit into a full chunk are silently discarded.
+          This is intentional: training requires all examples to have the
+          same length for efficient batching without padding. Discarding
+          a small tail (at most chunk_size-1 tokens) is acceptable for
+          large pretraining corpora.
+        """
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Memmap file not found: {path}")
+        self._memmap = np.load(path, mmap_mode="r") if path.endswith(".npy") else \
+                       np.memmap(path, dtype=dtype, mode="r")
+        total_tokens = len(self._memmap)
+        self._length = total_tokens // self.chunk_size
+        self._backend = "memmap"
+        if self._length == 0:
+            raise ValueError(
+                f"Memmap file has {total_tokens} tokens but chunk_size={self.chunk_size}. "
+                "Not enough tokens for even one chunk."
+            )
+
+    def _init_parquet(self, path: str) -> None:
+        """Load Parquet file(s) column-selectively into an Arrow Table.
+
+        WHY: Parquet is columnar; reading only the required column reduces I/O.
+        We load the entire column into an Arrow Table because random access
+        by row index is efficient (Arrow supports O(1) row slicing).
+
+        Note: This loads the whole column into RAM. For huge datasets that
+        do not fit in memory, use StreamingDataset instead.
+        """
+        files = _discover_parquet_files(path)
+        tables = [pq.read_table(f, columns=[self.key_name]) for f in files]
+        self._table = pa.concat_tables(tables) if len(tables) > 1 else tables[0]
+        self._length = self._table.num_rows
+        self._backend = "parquet"
+
+    def _init_json(self, path: str, ext: str) -> None:
+        """Load JSON / JSONL into memory.
+
+        WHY: JSON is human-readable but slow to parse and not memory-efficient.
+        Only suitable for small datasets or evaluation.
+        """
+        samples: List[Dict[str, Any]] = []
+        if ext == ".jsonl":
+            with open(path, encoding="utf-8") as f:
+                for i, line in enumerate(f):
+                    if line.strip():
+                        try:
+                            samples.append(json.loads(line))
+                        except json.JSONDecodeError as e:
+                            raise ValueError(f"Invalid JSONL at line {i+1}: {e}") from e
+        else:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, list):
+                raise ValueError("JSON file must be a top-level list of dicts.")
+            samples = data
+        if samples and self.key_name not in samples[0]:
+            raise KeyError(f"Key '{self.key_name}' not found in JSON data.")
+        self._samples = samples
+        self._length = len(samples)
+        self._backend = "memory"
+        self._memory_is_dicts = bool(samples) and isinstance(samples[0], dict)
+
+    # ── Dataset interface ─────────────────────────────────────────────────
+
+    def __len__(self) -> int:
+        return self._length
+
+    def __getitem__(self, idx: int) -> Dict[str, List[int]]:
+        if idx < 0 or idx >= self._length:
+            raise IndexError(f"Index {idx} out of range [0, {self._length - 1}].")
+
+        if self._backend == "memmap":
+            start = idx * self.chunk_size
+            # Slicing a memmap returns a view; .tolist() copies into Python ints.
+            token_ids = self._memmap[start : start + self.chunk_size].tolist()
+
+        elif self._backend == "parquet":
+            # Arrow column access: .column(name)[idx] returns a PyArrow scalar,
+            # .as_py() converts to Python list.
+            token_ids = self._table.column(self.key_name)[idx].as_py()
+
+        else:  # memory
+            if self._memory_is_dicts:
+                token_ids = self._samples[idx][self.key_name]
+            else:
+                token_ids = self._samples[idx]
+
+        return {self.key_name: _to_list(token_ids, idx)}
+
+
+# ---------------------------------------------------------------------------
+# 2. StreamingDataset  (iterable, memory-efficient)
+# ---------------------------------------------------------------------------
+
+class StreamingDataset(IterableDataset):
+    """
+    Iterable dataset for corpora that do not fit in RAM.
+
+    WHY ITERABLE?
+    For very large datasets (hundreds of GB or more), random access is impossible
+    because indexes would require an O(N) mapping. IterableDataset processes
+    data sequentially, streaming from disk without building a global index.
+
+    Memory usage is O(read_batch_size × source_sequence_length) independent of
+    corpus size.
+
+    DataLoader integration:
+        loader = DataLoader(StreamingDataset(...), batch_size=8,
+                            collate_fn=CLMCollator(pad_token_id=0))
+
+    Worker sharding (automatic):
+        When num_workers > 0, __iter__ detects worker id and assigns a disjoint
+        subset of files to each worker via `_get_worker_files`. This prevents
+        duplicate samples across workers. No custom worker_init_fn needed.
+
+    Epoch shuffling:
+        Set shuffle=True to randomise file order and row order within each read‑batch
+        at the start of every epoch. Call `set_epoch(epoch)` before each epoch to
+        advance the seed; otherwise the same order repeats.
+
+    How attention_mask is handled:
+        - If the Parquet schema includes an `attention_mask` column, it is used
+          to determine valid token lengths (padding already marked).
+        - Otherwise, valid length is inferred by stripping trailing pad_token_id
+          values from the token sequence. This works for HuggingFace tokenised
+          datasets where all sequences are right-padded.
+
+    Parameters
+    ----------
+    source : str
+        Path to a single Parquet file or a directory of Parquet files.
+    key_name : str
+        Column name containing token IDs.
+    chunk_size : int
+        Length of each output sequence chunk.
+    pad_token_id : int
+        Token ID used to identify padding (determines valid token count).
+    shuffle : bool
+        Shuffle file order and within-batch row order each epoch.
+    drop_last : bool
+        Discard the final incomplete chunk per sequence.
+    seed : int
+        Base random seed; actual seed = seed + epoch.
+    read_batch_size : int
+        Rows read per Parquet iteration step (larger = less I/O overhead,
+        but more memory).
+
+    Example Usage
+    -------------
+        ds = StreamingDataset("./data/train/", chunk_size=1024, shuffle=True)
+        loader = DataLoader(ds, batch_size=16, num_workers=4,
+                            collate_fn=CLMCollator(pad_token_id=0))
+        for epoch in range(10):
+            ds.set_epoch(epoch)
+            for batch in loader:
+                loss = model(**batch)
+    """
+
+    def __init__(
+        self,
+        source: str,
+        key_name: str = "input_ids",
+        chunk_size: int = 1024,
+        pad_token_id: int = 0,
+        shuffle: bool = False,
+        drop_last: bool = False,
+        seed: int = 42,
+        read_batch_size: int = 256,
+    ) -> None:
+        self.key_name = key_name
+        self.chunk_size = chunk_size
+        self.pad_token_id = pad_token_id
+        self.shuffle = shuffle
+        self.drop_last = drop_last
+        self.seed = seed
+        self.read_batch_size = read_batch_size
+
+        self._files = _discover_parquet_files(source)
+        self._epoch = 0
+
+        # Detect presence of attention_mask column across the available files.
+        # If any shard carries the mask, we can use it directly; otherwise we
+        # infer padding by stripping pad_token_id.
+        self._has_mask = False
+        for file_path in self._files:
+            schema = pq.read_schema(file_path)
+            if any(name.strip().lower() == "attention_mask" for name in schema.names):
+                self._has_mask = True
+                break
+
+    def set_epoch(self, epoch: int) -> None:
+        """
+        Set the current epoch for deterministic shuffling.
+
+        WHY: The dataset itself holds the seed and epochs; we need to advance
+        the seed every epoch so that shuffle order differs. This method should
+        be called before each epoch in the training loop.
+
+        Edge Cases: If not called, self._epoch remains 0 and shuffling (if enabled)
+        repeats the same order every epoch – which might be acceptable for
+        deterministic evaluation but undesirable for training.
+
+        Example:
+            for epoch in range(num_epochs):
+                dataset.set_epoch(epoch)
+                for batch in loader: ...
+        """
+        self._epoch = epoch
+
+    def __iter__(self) -> Iterator[Dict[str, List[int]]]:
+        """
+        Yield one chunk at a time as {key_name: List[int]}.
+
+        This method is called once per DataLoader worker. It respects worker
+        sharding automatically via `_get_worker_files`.
+        """
+        worker_info = torch.utils.data.get_worker_info()
+        files = self._get_worker_files(worker_info)
+
+        rng = random.Random(self.seed + self._epoch)
+        if self.shuffle:
+            rng.shuffle(files)
+
+        for chunk in self._iter_chunks(files, rng):
+            yield {self.key_name: chunk}
+        # NOTE: Do NOT auto-increment _epoch here.
+        # Each DataLoader worker holds an independent copy of the dataset.
+        # Incrementing inside __iter__ would cause the epoch counter to drift
+        # across workers. The user must call set_epoch explicitly in the main
+        # process before each epoch.
+
+    # ── internals ─────────────────────────────────────────────────────────
+
+    def _get_worker_files(self, worker_info) -> List[str]:
+        """Return the file subset assigned to this DataLoader worker."""
+        if worker_info is None:
+            return list(self._files)
+        num_workers = worker_info.num_workers
+        worker_id = worker_info.id
+        # Round‑robin distribution: worker i gets files[i::num_workers]
+        # This ensures each worker processes a disjoint subset.
+        return self._files[worker_id::num_workers]
+
+    def _iter_chunks(
+        self,
+        files: List[str],
+        rng: random.Random,
+    ) -> Iterator[List[int]]:
+        """
+        Core generator: read Parquet in batches → extract valid tokens → split into chunks.
+
+        Steps:
+        1. Read a batch of `read_batch_size` rows.
+        2. For each row, obtain token_ids and (if available) attention_mask.
+        3. If mask not present, infer it by stripping trailing pad tokens.
+        4. Shuffle the rows within the batch (if shuffle=True).
+        5. For each row, cut the active token sequence into chunks of `chunk_size`.
+        6. Yield each chunk.
+
+        Memory: At most `read_batch_size` rows are held in memory at any time.
+        """
+        columns = [self.key_name] + (["attention_mask"] if self._has_mask else [])
+
+        for file_path in files:
+            pf = pq.ParquetFile(file_path)
+            for batch in pf.iter_batches(batch_size=self.read_batch_size, columns=columns):
+                token_rows = batch.column(0).to_pylist()
+
+                if self._has_mask:
+                    mask_rows = batch.column(1).to_pylist()
+                else:
+                    # Infer valid length by stripping trailing pad tokens.
+                    # This is O(len(row)) per row, but batch size is moderate.
+                    mask_rows = [
+                        self._infer_mask(row) for row in token_rows
+                    ]
+
+                pairs = list(zip(token_rows, mask_rows))
+                if self.shuffle:
+                    rng.shuffle(pairs)
+
+                for token_ids, mask in pairs:
+                    valid_len = int(sum(mask))
+                    # Skip sequences that are too short to form even one chunk.
+                    # This avoids yielding empty chunks that would cause training instability.
+                    if valid_len < 2:
+                        continue
+                    active = token_ids[:valid_len]
+                    for start in range(0, len(active) - 1, self.chunk_size):
+                        chunk = active[start : start + self.chunk_size]
+                        if len(chunk) < 2:
+                            continue
+                        if len(chunk) < self.chunk_size and self.drop_last:
+                            continue
+                        yield chunk
+
+    def _infer_mask(self, token_ids: List[int]) -> List[int]:
+        """Build a binary mask by stripping trailing pad tokens."""
+        valid_len = len(token_ids)
+        while valid_len > 0 and token_ids[valid_len - 1] == self.pad_token_id:
+            valid_len -= 1
+        return [1] * valid_len + [0] * (len(token_ids) - valid_len)
+
+
+# ---------------------------------------------------------------------------
+# 3. PackedDataset  (bin-packing, zero padding waste)
+# ---------------------------------------------------------------------------
+
+class PackedDataset(Dataset):
+    """
+    Map-style dataset that packs multiple short sequences into fixed-length
+    blocks with no padding waste.
+
+    MOTIVATION
+    Standard batching pads all sequences in a batch to the longest sequence,
+    wasting compute on pad tokens. For pretraining on long documents, this can
+    waste 20–40% of tokens. Bin‑packing concatenates sequences end‑to‑end
+    (separated by EOS) to fill blocks exactly, achieving ~100% token utilisation.
+
+    ALGORITHM (greedy first‑fit)
+    At construction time:
+        1. Maintain a current block buffer.
+        2. For each sequence (with EOS appended):
+            a. If it fits in the current block, append it.
+            b. Otherwise, pad the current block to block_size (only the last
+               block needs padding; intermediate blocks are exact).
+            c. Start a new block with the current sequence.
+        3. Drop or keep the last partial block according to `drop_last`.
+
+    Why greedy first‑fit? It is simple, deterministic, and packs nearly as
+    well as more complex algorithms for typical sequence length distributions.
+
+    ATTENTION MASKING
+    Each packed block carries a corresponding `labels` tensor where padding
+    positions are set to -100 (ignored by nn.CrossEntropyLoss). This ensures:
+    - Loss is computed only over real tokens.
+    - No cross‑contamination between sequences: the EOS token teaches the model
+      to end a sequence, and the next token starts a new context.
+
+    For models that need to prevent attention from crossing document boundaries
+    (e.g., flash‑attention with cu_seqlens), the `block_seqlens` list stores
+    the lengths of individual sequences within each block. This can be passed
+    to the model's attention function.
+
+    MEMORY TRADE‑OFF
+    PackedDataset is map‑style, so it must build the packed blocks at construction
+    time. This requires materialising all source sequences into a list of token
+    lists. For very large corpora (e.g., >100GB), use StreamingDataset directly
+    with a collator that pads (accepting some waste) or implement a streaming
+    packer as a custom IterableDataset.
+
+    Parameters
+    ----------
+    source : PretrainingDataset | StreamingDataset | List[List[int]]
+        Source of token sequences. For StreamingDataset, all data is materialised
+        into memory at construction time – only suitable for moderate‑sized datasets.
+    block_size : int
+        Target packed block length (= model's max_position_embeddings).
+    eos_token_id : int
+        Appended after each sequence before packing.
+    pad_token_id : int
+        Fills the tail of the last (partial) block.
+    drop_last : bool
+        If True, discard the last block if it is shorter than block_size.
+
+    Example Usage
+    -------------
+        base = PretrainingDataset("tokens.npy", chunk_size=256)
+        packed = PackedDataset(base, block_size=1024, eos_token_id=2)
+        len(packed)        # number of full blocks
+        packed[0]          # dict with keys: input_ids, labels, block_seqlens
+    """
+
+    def __init__(
+        self,
+        source: Union[PretrainingDataset, "StreamingDataset", List[List[int]]],
+        block_size: int = 1024,
+        eos_token_id: int = 2,
+        pad_token_id: int = 0,
+        drop_last: bool = False,
+    ) -> None:
+        self.block_size = block_size
+        self.eos_token_id = eos_token_id
+        self.pad_token_id = pad_token_id
+
+        sequences = self._collect_sequences(source)
+        self._blocks, self._seqlens = self._pack(sequences, drop_last)
+
+    # ── sequence collection ───────────────────────────────────────────────
+
+    def _collect_sequences(
+        self,
+        source: Any,
+    ) -> List[List[int]]:
+        """
+        Extract raw token sequences from any supported source type.
+
+        WHY: PackedDataset must know all sequences upfront to run the packing
+        algorithm. For StreamingDataset, this means materialising the entire
+        iterable into a list. This is intentional: PackedDataset is a map‑style
+        dataset; it requires a fixed length. If the corpus is too large to
+        materialise, use StreamingDataset directly with a collator that pads,
+        or implement a custom streaming packer.
+        """
+        if isinstance(source, list):
+            # List of token sequences or list of dicts
+            if source and isinstance(source[0], dict):
+                # List[Dict[str, List[int]]] – extract the first key
+                key = next(iter(source[0]))
+                return [_to_list(s[key], i) for i, s in enumerate(source)]
+            return [_to_list(s, i) for i, s in enumerate(source)]
+
+        if isinstance(source, StreamingDataset):
+            # Materialise the iterable – only appropriate for moderate‑size datasets
+            return [item[source.key_name] for item in source]
+
+        if isinstance(source, PretrainingDataset):
+            key = source.key_name
+            return [source[i][key] for i in range(len(source))]
+
+        raise TypeError(
+            f"Unsupported source type: {type(source)}. "
+            "Use PretrainingDataset, StreamingDataset, or List[List[int]]."
+        )
+
+    # ── greedy first‑fit packing ──────────────────────────────────────────
+
+    def _pack(
+        self,
+        sequences: List[List[int]],
+        drop_last: bool,
+    ) -> Tuple[List[List[int]], List[List[int]]]:
+        """
+        Greedily pack sequences into blocks of block_size tokens.
+
+        Returns
+        -------
+        blocks : List[List[int]]
+            Each entry is a token ID list of length <= block_size.
+            Intermediate blocks have length exactly block_size (after padding);
+            the last block may be shorter unless drop_last discards it.
+        seqlens : List[List[int]]
+            Each entry is a list of individual sequence lengths packed
+            into the corresponding block (used for cu_seqlens / flash‑attn).
+
+        Edge Cases:
+        - If a single sequence (after adding EOS) is longer than block_size,
+          we truncate it to block_size - 1 and force a final EOS. This is safer
+          than splitting into multiple blocks, because splitting would require
+          placing EOS at each sub‑block boundary to maintain document separation.
+          Truncation is acceptable in well‑preprocessed corpora where tokenizer
+          already limits sequence length.
+        """
+        blocks: List[List[int]] = []
+        seqlens: List[List[int]] = []
+
+        current_block: List[int] = []
+        current_seqlens: List[int] = []
+
+        for seq in sequences:
+            # Append EOS to delimit sequences within a block
+            tokens = seq + [self.eos_token_id]
+
+            # Handle overly long sequences
+            if len(tokens) > self.block_size:
+                tokens = tokens[: self.block_size - 1] + [self.eos_token_id]
+                # Now length = block_size, fall through to normal packing.
+
+            # Check if tokens fit in current block
+            if len(current_block) + len(tokens) <= self.block_size:
+                current_seqlens.append(len(tokens))
+                current_block.extend(tokens)
+            else:
+                # Flush current block and start a new one
+                if current_block:
+                    blocks.append(self._pad_block(current_block))
+                    seqlens.append(current_seqlens)
+                current_block = list(tokens)
+                current_seqlens = [len(tokens)]
+
+        # Handle the last partial block
+        if current_block:
+            if not drop_last:
+                blocks.append(self._pad_block(current_block))
+                seqlens.append(current_seqlens)
+
+        return blocks, seqlens
+
+    def _pad_block(self, block: List[int]) -> List[int]:
+        """Right‑pad block to block_size with pad_token_id."""
+        pad_len = self.block_size - len(block)
+        return block + [self.pad_token_id] * pad_len
+
+    # ── Dataset interface ─────────────────────────────────────────────────
+
+    def __len__(self) -> int:
+        return len(self._blocks)
+
+    def __getitem__(self, idx: int) -> Dict[str, Any]:
+        """
+        Return a packed block as a training‑ready dict.
+
+        Keys:
+        - input_ids : List[int] of length block_size
+        - labels    : List[int] where pad positions are -100 (ignored by loss)
+        - block_seqlens : List[int] of individual sequence lengths inside the block
+        """
+        if idx < 0 or idx >= len(self._blocks):
+            raise IndexError(f"Index {idx} out of range [0, {len(self._blocks) - 1}].")
+
+        block = self._blocks[idx]
+        labels = [
+            tok if tok != self.pad_token_id else -100
+            for tok in block
+        ]
+        return {
+            "input_ids": block,
+            "labels": labels,
+            "block_seqlens": self._seqlens[idx],
+        }
+
+
+# ---------------------------------------------------------------------------
+# 4. ConcatDataset  (weighted mix dari multiple sources)
+# ---------------------------------------------------------------------------
+
+class ConcatDataset(Dataset):
+    """
+    Mix multiple map‑style datasets with optional sampling weights.
+
+    WHY: Pretraining corpora typically blend multiple sources (web text, books,
+    code, multilingual) at specific mixing ratios. ConcatDataset implements
+    two strategies:
+
+    **Proportional mode (weights=None)**
+        Datasets are concatenated sequentially. Total length = sum of lengths.
+        Equivalent to simple concatenation. Index mapping uses binary search
+        over cumulative sizes (O(log n)).
+
+    **Weighted mode (weights provided)**
+        A virtual dataset of total_size samples is constructed by drawing
+        samples from source datasets according to the weights (normalised).
+        The mapping is pre‑computed at construction so __getitem__ is O(1)
+        and deterministic (no RNG at access time).
+
+        This is the standard approach used by The Pile, RedPajama, and Dolma
+        for mixing heterogeneous pretraining corpora.
+
+    Important restriction: All source datasets must be map‑style (have __len__).
+    IterableDataset (StreamingDataset) is not supported because ConcatDataset
+    needs to know the length of each source to build the index map.
+
+    Parameters
+    ----------
+    datasets : List[Dataset]
+        Source datasets. All must implement __len__ and __getitem__.
+    weights : Optional[List[float]]
+        Sampling weight for each dataset. Automatically normalised to sum=1.
+        If None, datasets are concatenated without resampling.
+    total_size : Optional[int]
+        Target virtual dataset size for weighted mode. Defaults to the sum
+        of all source dataset lengths.
+    seed : int
+        Random seed for constructing the weighted index map.
+
+    Example Usage
+    -------------
+        web = PretrainingDataset("web_tokens.npy", chunk_size=1024)
+        books = PretrainingDataset("book_tokens.npy", chunk_size=1024)
+        code = PretrainingDataset("code_tokens.npy", chunk_size=1024)
+
+        # Equal concatenation
+        ds = ConcatDataset([web, books, code])
+
+        # Weighted: 70% web, 20% books, 10% code
+        ds = ConcatDataset([web, books, code], weights=[0.7, 0.2, 0.1])
+    """
+
+    def __init__(
+        self,
+        datasets: List[Dataset],
+        weights: Optional[List[float]] = None,
+        total_size: Optional[int] = None,
+        seed: int = 42,
+    ) -> None:
+        if not datasets:
+            raise ValueError("datasets list is empty.")
+        # Verify all datasets are map‑style (have __len__)
+        for i, ds in enumerate(datasets):
+            if not hasattr(ds, "__len__"):
+                raise TypeError(
+                    f"ConcatDataset only supports map‑style datasets with __len__. "
+                    f"datasets[{i}] is {type(ds).__name__} (IterableDataset). "
+                    "For streaming mixing, instantiate one StreamingDataset per source "
+                    "and interleave them in the training loop instead."
+                )
+        if weights is not None and len(weights) != len(datasets):
+            raise ValueError(
+                f"len(weights)={len(weights)} must equal len(datasets)={len(datasets)}."
+            )
+
+        self.datasets = datasets
+
+        if weights is None:
+            self._weighted = False
+            self._cumulative_sizes = self._compute_cumulative_sizes()
+            self._length = self._cumulative_sizes[-1]
+        else:
+            self._weighted = True
+            total = total_size or sum(len(d) for d in datasets)
+            self._length = total
+            self._index_map = self._build_index_map(weights, total, seed)
+
+    # ── index mapping ─────────────────────────────────────────────────────
+
+    def _compute_cumulative_sizes(self) -> List[int]:
+        """Cumulative sizes for O(log n) binary‑search indexing."""
+        sizes: List[int] = []
+        cumsum = 0
+        for d in self.datasets:
+            cumsum += len(d)
+            sizes.append(cumsum)
+        return sizes
+
+    def _build_index_map(
+        self,
+        weights: List[float],
+        total: int,
+        seed: int,
+    ) -> List[Tuple[int, int]]:
+        """
+        Pre‑compute a mapping from virtual index → (dataset_idx, local_idx).
+
+        Steps:
+        1. Normalise weights to sum 1.
+        2. Allocate sample counts per dataset (rounding, last adjusted).
+        3. For each dataset, assign local indices by cycling (local_idx % len(ds)).
+        4. Shuffle the combined list to interleave sources throughout the epoch.
+        """
+        # Normalise weights
+        total_w = sum(weights)
+        norm_weights = [w / total_w for w in weights]
+
+        # Compute exact sample count per dataset
+        counts = [round(w * total) for w in norm_weights]
+        # Fix rounding error: adjust the last bucket
+        counts[-1] += total - sum(counts)
+
+        # Build unshuffled index map
+        index_map: List[Tuple[int, int]] = []
+        for ds_idx, (ds, count) in enumerate(zip(self.datasets, counts)):
+            ds_len = len(ds)
+            for sample_num in range(count):
+                local_idx = sample_num % ds_len  # cycle if count > ds_len
+                index_map.append((ds_idx, local_idx))
+
+        # Shuffle to interleave sources
+        rng = random.Random(seed)
+        rng.shuffle(index_map)
+        return index_map
+
+    # ── Dataset interface ─────────────────────────────────────────────────
+
+    def __len__(self) -> int:
+        return self._length
+
+    def __getitem__(self, idx: int) -> Any:
+        if idx < 0 or idx >= self._length:
+            raise IndexError(f"Index {idx} out of range [0, {self._length - 1}].")
+
+        if self._weighted:
+            ds_idx, local_idx = self._index_map[idx]
+            return self.datasets[ds_idx][local_idx]
+
+        # Proportional mode: binary search into cumulative sizes
+        ds_idx = self._find_dataset_index(idx)
+        local_idx = idx - (self._cumulative_sizes[ds_idx - 1] if ds_idx > 0 else 0)
+        return self.datasets[ds_idx][local_idx]
+
+    def _find_dataset_index(self, idx: int) -> int:
+        """Binary search: find which dataset owns global index idx."""
+        lo, hi = 0, len(self.datasets) - 1
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if self._cumulative_sizes[mid] <= idx:
+                lo = mid + 1
+            else:
+                hi = mid
+        return lo
+
+
+# ---------------------------------------------------------------------------
+# Legacy alias — backward compatibility with existing code using KilatDataset
+# ---------------------------------------------------------------------------
+
+class KilatDataset(PretrainingDataset):
+    """
+    Backward‑compatible alias for PretrainingDataset.
+
+    .. deprecated::
+        Use PretrainingDataset for map‑style access or StreamingDataset
+        for iterable / large‑corpus usage. KilatDataset will be removed
+        in a future release.
+
+    Example (legacy):
+        ds = KilatDataset("tokens.bin", key_name="input_ids")
     """
 
     def __init__(
         self,
         file_or_data: Union[str, List[Dict[str, Any]]],
         key_name: str = "input_ids",
-        # Streaming mode parameters (new)
+        # Legacy streaming param — ignored; use StreamingDataset instead
         streaming: bool = False,
-        batch_size: int = 8,
-        sequence_length: int = 512,
-        pad_token_id: int = 0,
-        shuffle: bool = False,
-        drop_last: bool = False,
-        seed: int = 42,
-        read_batch_size: int = 128,
-    ):
-        """
-        Parameters
-        ----------
-        file_or_data : Union[str, List[Dict[str, Any]]]
-            - If str: path to a Parquet (.parquet/.parq), JSON (.json), or
-              JSONL (.jsonl) file. **Also supports directories containing
-              multiple Parquet files** – all .parquet/.parq files in the
-              directory will be discovered and concatenated automatically.
-            - If list: list of dictionaries, each containing at least the
-              key specified by ``key_name``.
-        key_name : str
-            The dictionary key or column name containing the token ID sequence.
-            Default: ``"input_ids"``.
-        streaming : bool
-            If True, use streaming mode (memory efficient, recommended for large
-            datasets >1GB that would cause OOM). If False, load all data into
-            memory (default). When streaming=True, the dataset returns (inputs, labels)
-            tuples directly, not dicts with "input_ids".
-        batch_size : int
-            Number of chunks per batch (only used when streaming=True).
-        sequence_length : int
-            Target sequence length for chunking (only used when streaming=True).
-        pad_token_id : int
-            Token ID used for padding (only used when streaming=True).
-        shuffle : bool
-            Whether to shuffle chunks within each read batch (only used when streaming=True).
-        drop_last : bool
-            Whether to drop the last incomplete batch (only used when streaming=True).
-        seed : int
-            Random seed for shuffling (only used when streaming=True).
-        read_batch_size : int
-            Number of rows to read at once from Parquet files (only used when streaming=True).
-
-        Raises
-        ------
-        FileNotFoundError
-            If ``file_or_data`` is a str pointing to a non‑existent file/directory.
-        TypeError
-            If ``file_or_data`` is neither str nor list.
-        ValueError
-            If the dataset contains zero samples after loading.
-            If JSON/JSONL file is malformed.
-            If Parquet directory contains no .parquet/.parq files.
-        KeyError
-            If ``key_name`` is not present in the first sample (for JSON/JSONL).
-        """
-        self.key_name = key_name
-        self.is_parquet = False
-        self.parquet_table = None
-        self.samples: List[Dict[str, Any]] = []
-        
-        # Streaming mode attributes
-        self.streaming = streaming
-        self.batch_size = batch_size
-        self.sequence_length = sequence_length
-        self.pad_token_id = pad_token_id
-        self.shuffle = shuffle
-        self.drop_last = drop_last
-        self.seed = seed
-        self.read_batch_size = read_batch_size
-        self._epoch = 0
-        self._part_files = None
-        self._total_rows = 0
-        self._source_sequence_length = None
-        self._has_attention_mask = False
-
-        # --- Input type dispatch ---
-        # Path‑based loading: detect format from file extension.
-        # Extension detection is case‑insensitive and handles compound
-        # extensions like .parquet.gz (though not officially supported,
-        # the suffix check catches .parquet).
-        if isinstance(file_or_data, str):
-            if not os.path.exists(file_or_data):
-                raise FileNotFoundError(
-                    f"Dataset path does not exist: {file_or_data}"
-                )
-
-            # Check if it's a directory (Parquet sharded dataset)
-            if os.path.isdir(file_or_data):
-                if streaming:
-                    # Streaming mode: don't load everything, just store file list
-                    self._init_streaming_mode(file_or_data, key_name)
-                else:
-                    # Full load mode (may OOM for large datasets)
-                    self._load_from_parquet_directory(file_or_data, key_name)
-            else:
-                _, ext = os.path.splitext(file_or_data)
-                ext = ext.lower()
-
-                if ext in (".parquet", ".parq"):
-                    if streaming:
-                        self._init_streaming_mode_from_file(file_or_data, key_name)
-                    else:
-                        # Single Parquet file backend: memory‑mapped, column‑selective loading.
-                        # Only the required column is read into memory to minimize
-                        # RAM usage. Other columns (e.g., metadata, source info)
-                        # are ignored entirely.
-                        self.is_parquet = True
-                        self.parquet_file = pq.ParquetFile(file_or_data)
-                        # Column‑selective read: if the dataset has 50 columns but we
-                        # only need "input_ids", we avoid loading the other 49 columns.
-                        # This can reduce memory by 10‑100x for wide datasets.
-                        self.parquet_table = self.parquet_file.read(columns=[self.key_name])
-                        self.dataset_length = self.parquet_table.num_rows
-                else:
-                    # JSON/JSONL backend: full in‑memory loading.
-                    # Suitable for datasets up to a few GB that fit in RAM.
-                    # For larger datasets, use Parquet.
-                    self._load_from_json(file_or_data, ext)
-                    self.dataset_length = len(self.samples)
-        elif isinstance(file_or_data, list):
-            # In‑memory backend: direct reference (no copy).
-            # User is responsible for the list's lifetime.
-            # This is useful for programmatic dataset creation, testing,
-            # or wrapping iterable datasets.
-            self.samples = file_or_data
-            self.dataset_length = len(self.samples)
-        else:
-            raise TypeError(
-                "file_or_data must be a str (file path or directory) or a list of dicts."
-            )
-
-        # Fail fast on empty datasets.
-        # An empty dataset would cause division‑by‑zero in steps‑per‑epoch
-        # calculation and produce cryptic errors downstream.
-        if not streaming and self.dataset_length == 0:
-            raise ValueError("Dataset contains zero samples.")
-        elif streaming and self._total_rows == 0:
-            raise ValueError("Dataset contains zero rows (streaming mode).")
-
-    def _init_streaming_mode_from_file(self, file_path: str, key_name: str):
-        """
-        Initialize streaming mode for a single Parquet file.
-
-        This method stores metadata and row counts without loading the full
-        dataset into memory. It is compatible with a single file when the user
-        wants streaming mode but does not have a directory of shards.
-        """
-        self._part_files = [file_path]
-        self.is_parquet = True
-
-        parquet_file = pq.ParquetFile(file_path)
-        self._total_rows = parquet_file.metadata.num_rows
-        self._has_attention_mask = "attention_mask" in parquet_file.schema.names
-        self._source_sequence_length = self._infer_source_sequence_length()
-
-        chunk_factor = max(1, self._source_sequence_length // self.sequence_length)
-        estimated_samples = self._total_rows * chunk_factor
-        self.dataset_length = math.ceil(estimated_samples / self.batch_size)
-
-        print(f"Streaming mode: {self._total_rows:,} rows, 1 file")
-        print(f"Source seq length: {self._source_sequence_length}")
-        print(f"Estimated batches: {self.dataset_length:,}")
-
-    def _init_streaming_mode(self, dir_path: str, key_name: str):
-        """
-        Initialize streaming mode for large Parquet directories.
-
-        This method only stores metadata (file paths, row counts) without loading
-        any actual data into memory. Data is read on-the-fly during iteration.
-
-        Parameters
-        ----------
-        dir_path : str
-            Path to the directory containing Parquet files.
-        key_name : str
-            The column name to read from each Parquet file.
-        """
-        # Discover all Parquet files in the directory.
-        # Using sorted() ensures deterministic order across runs.
-        self._part_files = sorted(glob.glob(os.path.join(dir_path, "*.parquet")))
-        self._part_files += sorted(glob.glob(os.path.join(dir_path, "*.parq")))
-
-        if not self._part_files:
+        **kwargs,
+    ) -> None:
+        import warnings
+        warnings.warn(
+            "KilatDataset is deprecated. Use PretrainingDataset (map‑style) "
+            "or StreamingDataset (iterable) instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        if streaming:
             raise ValueError(
-                f"No .parquet or .parq files found in directory: {dir_path}"
+                "streaming=True is no longer supported in KilatDataset. "
+                "Use StreamingDataset(source, chunk_size=...) instead."
             )
-
-        print(f"Found {len(self._part_files)} Parquet file(s) in {dir_path} (streaming mode)")
-
-        # Count total rows without loading data (reads only metadata)
-        self._total_rows = 0
-        for file_path in self._part_files:
-            pf = pq.ParquetFile(file_path)
-            self._total_rows += pf.metadata.num_rows
-
-        # Infer source sequence length from first file
-        self._source_sequence_length = self._infer_source_sequence_length()
-        self._has_attention_mask = "attention_mask" in pq.ParquetFile(self._part_files[0]).schema.names
-
-        # For compatibility with Dataset interface, set dataset_length to
-        # estimated number of batches (not actual samples count)
-        chunk_factor = max(1, self._source_sequence_length // self.sequence_length)
-        estimated_samples = self._total_rows * chunk_factor
-        self.dataset_length = math.ceil(estimated_samples / self.batch_size)
-
-        print(f"Streaming mode: {self._total_rows:,} rows, {len(self._part_files)} files")
-        print(f"Source seq length: {self._source_sequence_length}")
-        print(f"Estimated batches: {self.dataset_length:,}")
-
-    def _infer_source_sequence_length(self) -> int:
-        """Infer the sequence length of source data from first file."""
-        first_file = pq.ParquetFile(self._part_files[0])
-        first_batch = next(first_file.iter_batches(batch_size=1, columns=[self.key_name]))
-        return len(first_batch.column(0)[0].as_py())
-
-    def _iter_chunks(self) -> Iterator[List[int]]:
-        """
-        Iterate through all data and yield chunks of tokens.
-
-        This is the core of streaming mode. It reads Parquet files in batches,
-        extracts valid token sequences, and splits them into chunks of
-        sequence_length. Memory usage is O(read_batch_size × source_sequence_length).
-        """
-        rng = random.Random(self.seed + self._epoch)
-        part_files = list(self._part_files)
-        if self.shuffle:
-            rng.shuffle(part_files)
-
-        for part_file in part_files:
-            parquet_file = pq.ParquetFile(part_file)
-            columns = [self.key_name]
-            if self._has_attention_mask:
-                columns.append("attention_mask")
-
-            for record_batch in parquet_file.iter_batches(
-                batch_size=self.read_batch_size,
-                columns=columns,
-            ):
-                token_rows = record_batch.column(0).to_pylist()
-                if self._has_attention_mask:
-                    mask_rows = record_batch.column(1).to_pylist()
-                else:
-                    mask_rows = []
-                    for token_ids in token_rows:
-                        if self.pad_token_id is None:
-                            mask_rows.append([1] * len(token_ids))
-                        else:
-                            valid_len = len(token_ids)
-                            while valid_len > 0 and token_ids[valid_len - 1] == self.pad_token_id:
-                                valid_len -= 1
-                            mask_rows.append([1] * valid_len + [0] * (len(token_ids) - valid_len))
-
-                rows = list(zip(token_rows, mask_rows))
-                if self.shuffle:
-                    rng.shuffle(rows)
-
-                for token_ids, attention_mask in rows:
-                    valid_tokens = int(sum(attention_mask))
-                    if valid_tokens < 2:
-                        continue
-                    active_ids = token_ids[:valid_tokens]
-                    max_start = len(active_ids) - 1
-                    for start in range(0, max_start, self.sequence_length):
-                        chunk = active_ids[start:start + self.sequence_length]
-                        if len(chunk) < 2:
-                            continue
-                        yield chunk
-
-        self._epoch += 1
-
-    def _collate_chunks(self, chunks: List[List[int]]) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Collate a list of token chunks into input_ids and labels tensors.
-
-        This method pads chunks to sequence_length and creates labels shifted by one
-        position with -100 for padding positions (ignored in loss calculation).
-
-        Parameters
-        ----------
-        chunks : List[List[int]]
-            List of token chunks to collate into a batch.
-
-        Returns
-        -------
-        Tuple[torch.Tensor, torch.Tensor]
-            (input_ids, labels) tensors of shape (batch_size, sequence_length)
-        """
-        padded_ids = []
-        padded_mask = []
-        for chunk in chunks:
-            trimmed = chunk[:self.sequence_length]
-            pad_size = self.sequence_length - len(trimmed)
-            padded_ids.append(trimmed + [self.pad_token_id] * pad_size)
-            padded_mask.append([1] * len(trimmed) + [0] * pad_size)
-
-        token_tensor = torch.tensor(padded_ids, dtype=torch.long)
-        mask_tensor = torch.tensor(padded_mask, dtype=torch.long)
-        inputs = token_tensor[:, :-1]
-        labels = token_tensor[:, 1:].clone()
-        labels[mask_tensor[:, 1:] == 0] = -100
-        return inputs, labels
-
-    def __len__(self) -> int:
-        """
-        Return the number of items in the dataset.
-
-        For full-load mode: returns exact number of samples.
-        For streaming mode: returns estimated number of batches (not exact sample count).
-
-        Returns
-        -------
-        int
-            Number of samples (full-load) or estimated batches (streaming).
-        """
-        return self.dataset_length
-
-    def __getitem__(self, idx: int) -> Union[Dict[str, List[int]], Tuple[torch.Tensor, torch.Tensor]]:
-        """
-        Returns the token sequence at position ``idx``.
-
-        For streaming mode, returns (input_ids, labels) tuple directly.
-        For non-streaming mode, returns Dict[str, List[int]].
-
-        Normalization
-        ------------
-        All backends normalize to plain Python lists for uniform downstream handling.
-        The collator expects lists; this conversion ensures consistency
-        regardless of whether the data was stored as tensors, numpy arrays,
-        Arrow arrays, or native Python lists.
-
-        Supported Types for token_ids
-        ----------------------------
-        - torch.Tensor → .tolist() (common when loading pre‑tokenized tensors)
-        - numpy.ndarray → .tolist() (common in older datasets)
-        - list → pass‑through (native format)
-        - Other types raise TypeError with index context for debugging.
-
-        Parameters
-        ----------
-        idx : int
-            Integer index (supports Python‑style negative indexing for
-            accessing samples from the end of the dataset).
-
-        Returns
-        -------
-        Union[Dict[str, List[int]], Tuple[torch.Tensor, torch.Tensor]]
-            - Non-streaming mode: Dictionary with key ``self.key_name`` mapping to
-              a list of integer token IDs.
-            - Streaming mode: Tuple of (input_ids, labels) tensors ready for model.
-
-        Raises
-        ------
-        IndexError
-            If idx is out of range [0, dataset_length).
-        TypeError
-            If the token sequence cannot be converted to a list.
-        NotImplementedError
-            If streaming mode and random access is attempted (streaming only
-            supports sequential iteration via __iter__, not __getitem__).
-        """
-        if self.streaming:
-            # Streaming mode does not support random access by index
-            # Users should iterate with 'for batch in dataloader' or use __iter__
-            raise NotImplementedError(
-                "Streaming mode does not support random access via __getitem__. "
-                "Use 'for batch in dataset:' iteration instead, or set streaming=False."
-            )
-
-        # Validate index with descriptive error message.
-        # Using [0, len-1] range check (not Python's default IndexError)
-        # provides a clearer error message including the valid range.
-        if idx < 0 or idx >= self.dataset_length:
-            raise IndexError(
-                f"Index {idx} out of range [0, {self.dataset_length - 1}]."
-            )
-
-        # --- Extract token IDs based on storage backend ---
-        if self.is_parquet:
-            # Arrow columnar access: retrieve row and convert to Python list.
-            # .column(key_name) returns a ChunkedArray (Arrow column).
-            # [idx] returns a scalar Arrow value.
-            # .as_py() converts Arrow scalar → Python list.
-            # This is a zero‑copy operation for the underlying buffer;
-            # the Python list is a view into Arrow's memory in many cases.
-            token_ids = self.parquet_table.column(self.key_name)[idx].as_py()
-        else:
-            # In‑memory backend: direct dictionary lookup.
-            token_ids = self.samples[idx][self.key_name]
-
-        # Normalise to plain Python list for uniform downstream handling.
-        # The collator expects lists; this conversion ensures consistency
-        # regardless of whether the data was stored as tensors, numpy arrays,
-        # Arrow arrays, or native Python lists.
-        if isinstance(token_ids, torch.Tensor):
-            token_ids = token_ids.tolist()
-        elif hasattr(token_ids, "tolist"):  # NumPy array, JAX array, etc.
-            token_ids = token_ids.tolist()
-        elif not isinstance(token_ids, list):
-            raise TypeError(
-                f"Unsupported token sequence type at index {idx}: {type(token_ids)}"
-            )
-
-        return {self.key_name: token_ids}
-
-    def __iter__(self) -> Iterator[Tuple[torch.Tensor, torch.Tensor]]:
-        """
-        Iterate over batches in streaming mode.
-
-        This is the primary interface for streaming mode. Each iteration yields
-        a batch of (input_ids, labels) tensors ready for model training.
-
-        Yields
-        ------
-        Tuple[torch.Tensor, torch.Tensor]
-            (input_ids, labels) tensors of shape (batch_size, sequence_length)
-
-        Returns
-        -------
-        Iterator[Tuple[torch.Tensor, torch.Tensor]]
-            Iterator over batches.
-        """
-        if not self.streaming:
-            # For non-streaming mode, fall back to standard Dataset iteration
-            # This creates a DataLoader-like interface for convenience
-            for i in range(len(self)):
-                yield self[i]
-            return
-
-        # Streaming mode: iterate through chunks and yield batches
-        batch_buffer: List[List[int]] = []
-        for chunk in self._iter_chunks():
-            batch_buffer.append(chunk)
-            if len(batch_buffer) == self.batch_size:
-                yield self._collate_chunks(batch_buffer)
-                batch_buffer = []
-
-        if batch_buffer and not self.drop_last:
-            yield self._collate_chunks(batch_buffer)
-
-    def _load_from_parquet_directory(self, dir_path: str, key_name: str):
-        """
-        Load all Parquet files from a directory into a single Arrow Table.
-
-        This method discovers every ``.parquet`` and ``.parq`` file in the
-        specified directory (non‑recursive for performance; recursive discovery
-        is a common footgun that can accidentally include hundreds of unrelated
-        files). If recursive discovery is needed, users can pass a glob pattern
-        directly as ``file_or_data``.
-
-        Design Decisions
-        ---------------
-        - **Sorted file order**: Files are processed in alphabetical order to
-          ensure deterministic row indices across runs. Without sorting, the
-          order of files from ``glob.glob()`` is system‑dependent.
-        - **Column‑selective reading**: Each file is read with
-          ``columns=[key_name]`` to avoid loading unnecessary columns.
-        - **Zero‑copy concatenation**: PyArrow's ``concat_tables()`` stacks
-          tables row‑wise without copying the underlying buffers (the data is
-          already columnar and contiguous per file; concatenation just chains
-          the row groups).
-        - **Empty directory detection**: If no Parquet files are found, raises
-          a clear error rather than silently creating an empty dataset.
-
-        Parameters
-        ----------
-        dir_path : str
-            Path to the directory containing Parquet files.
-        key_name : str
-            The column name to read from each Parquet file.
-
-        Raises
-        ------
-        ValueError
-            If no ``.parquet`` or ``.parq`` files are found in the directory.
-        """
-        # Discover all Parquet files in the directory.
-        # Using sorted() ensures deterministic order across runs.
-        # The pattern matches both .parquet and .parq extensions.
-        parquet_files = sorted(glob.glob(os.path.join(dir_path, "*.parquet")))
-        parquet_files += sorted(glob.glob(os.path.join(dir_path, "*.parq")))
-
-        if not parquet_files:
-            raise ValueError(
-                f"No .parquet or .parq files found in directory: {dir_path}"
-            )
-
-        print(f"Found {len(parquet_files)} Parquet file(s) in {dir_path}")
-
-        # Load each file column‑selectively and collect tables.
-        # Using a list comprehension here keeps the code concise while
-        # maintaining readability. Each read is independent, so files can be
-        # processed in any order; sorted order is only for determinism.
-        tables = []
-        for file_path in parquet_files:
-            # Read only the required column to minimize memory usage.
-            # This is particularly important when the source files have many
-            # metadata columns (e.g., HuggingFace datasets often include
-            # __index_level_0__, timestamp, etc.).
-            table = pq.read_table(file_path, columns=[key_name])
-            tables.append(table)
-
-        # Concatenate all tables into a single Arrow Table.
-        # PyArrow's concat_tables performs zero‑copy row‑wise concatenation:
-        # the underlying buffers from each table are chained together without
-        # copying the actual data. This is both memory‑efficient and fast.
-        # NOTE: concat_tables is from pyarrow, not pyarrow.parquet!
-        self.parquet_table = pa.concat_tables(tables)
-        self.is_parquet = True
-        self.dataset_length = self.parquet_table.num_rows
-
-        # Release the intermediate tables list to help garbage collector.
-        # The tables list is no longer needed after concatenation; setting it
-        # to None makes the memory eligible for reclamation (though Python's
-        # GC may not free it immediately, it signals intent).
-        tables = None
-
-    def _load_from_json(self, path: str, ext: str):
-        """
-        Parse JSON or JSONL and verify the presence of ``key_name``.
-
-        JSONL Parsing
-        ------------
-        Each line is a complete JSON object. This format is:
-        - Appendable (new samples can be added without rewriting)
-        - Streamable (can be read line‑by‑line for large files)
-        - Human‑readable (each line is self‑contained)
-        
-        Empty lines are silently skipped to handle trailing newlines
-        and common formatting artifacts.
-
-        JSON Parsing
-        -----------
-        Expects a top‑level list of objects. This format is:
-        - Easier to create from Python (json.dump(list_of_dicts, f))
-        - More compact than JSONL for small datasets
-        - Not streamable (entire file is parsed at once)
-
-        Validation
-        ---------
-        After loading, checks that the first sample contains the required key.
-        This catches common errors like:
-        - Wrong key_name parameter
-        - Data format mismatch (e.g., loading a file with "text" key when
-          key_name="input_ids")
-        - Corrupted data where the first sample is malformed
-        """
-        if ext == ".jsonl":
-            # JSONL: one JSON object per line.
-            # Using line‑by‑line reading with explicit error context (line number)
-            # makes debugging easy — the error message points to the exact line
-            # with the malformed JSON.
-            with open(path, "r", encoding="utf-8") as f:
-                for i, line in enumerate(f):
-                    if line.strip():  # Skip empty lines (common at end of files)
-                        try:
-                            self.samples.append(json.loads(line))
-                        except json.JSONDecodeError as e:
-                            raise ValueError(
-                                f"Invalid JSONL at line {i + 1}: {e}"
-                            )
-        else:  # assume standard JSON
-            # Standard JSON: top‑level list of objects.
-            # The entire file is parsed at once. For very large datasets,
-            # this can be memory‑intensive; JSONL or Parquet is preferred.
-            with open(path, "r", encoding="utf-8") as f:
-                try:
-                    data = json.load(f)
-                    if not isinstance(data, list):
-                        raise TypeError(
-                            "JSON file must contain a top‑level list of samples."
-                        )
-                    self.samples = data
-                except json.JSONDecodeError as e:
-                    raise ValueError(f"Failed to parse JSON file: {e}")
-
-        # Confirm the required key exists in the first sample.
-        # This is a lightweight check — it only verifies the first sample,
-        # not all samples. A more thorough validation would check all samples
-        # but would be O(N) and potentially slow for large datasets.
-        # The assumption is that if the first sample is correct, the rest
-        # of the dataset follows the same schema.
-        if self.samples and self.key_name not in self.samples[0]:
-            raise KeyError(
-                f"Key '{self.key_name}' not found in the loaded JSON data."
-            )
+        super().__init__(source=file_or_data, key_name=key_name)

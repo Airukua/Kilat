@@ -20,9 +20,9 @@ The generator works in two phases:
 import torch
 import torch.nn.functional as F
 from typing import Union, List, Optional
-from transformers import AutoTokenizer
 
 from arc.model import KilatTransformer
+from data.tokenizer import KilatTokenizer
 from .generation_config import GenerationConfig
 
 
@@ -32,7 +32,7 @@ class KilatGenerator:
     def __init__(
         self,
         model: KilatTransformer,
-        tokenizer: AutoTokenizer,
+        tokenizer: KilatTokenizer,
         device: Optional[torch.device] = None,
     ):
         self.model = model
