@@ -340,26 +340,24 @@ kilat/
 │   └── small_dense.yaml               # Dense baseline config
 ├── data/                              # Data pipeline
 │   ├── __init__.py
+│   ├── converter.py                   # Dataset conversion helpers
 │   ├── collator.py                    # PackedTokenBatchLoader
+│   ├── dataloader.py                  # Train/eval dataloader builders
 │   ├── dataset.py                     # Parquet, JSON, in-memory
-├── distiliation/                      # Knowledge distillation (note: dir name as in ls)
+│   └── tokenizer.py                   # Shared tokenizer wrapper
+├── distiliation/                      # Knowledge distillation (coming soon)
 │   ├── __init__.py
-│   ├── distill_trainer.py
 │   ├── losses.py
 │   ├── student.py
 │   └── teacher.py
 ├── experiments/                       # Notebooks and scripts
-│   ├── 01_nano_GPT.ipynb
-│   ├── 02_demo.ipynb
-│   ├── 03_tiny_amq.ipynb
-│   ├── MBGkilat01_light.py
+│   ├── 01_dataset.Ipynb
 │   ├── alkitab_text.txt
-│   ├── demo_data.jsonl
-│   ├── demo_data.parquet
+│   ├── kilat1.0.py
 │   └── tinyshakespeare.txt
 ├── images/
 │   └── illustration.png
-├── inference/                         # Inference & CLI
+├── generation/                        # Inference & CLI
 │   ├── __init__.py
 │   ├── chat_session.py
 │   ├── generation_config.py
@@ -368,19 +366,17 @@ kilat/
 │   └── model_loader.py
 ├── training/                          # Training infrastructure
 │   ├── __init__.py
-│   ├── arguments.py                   # TrainingArguments
-│   ├── checkpointing.py
-│   ├── early_stopping.py
-│   ├── logging_utils.py
-│   ├── optim_utils.py
-│   └── trainer.py                     # KilatTrainer
+│   ├── args.py                        # TrainingArguments
+│   ├── callbacks.py
+│   ├── integration.py
+│   ├── optimizer.py
+│   ├── scheduler.py
+│   ├── trainer.py                     # KilatTrainer
+│   └── trainer_utils.py
 └── utils/
     ├── __init__.py
-    ├── callback.py
     ├── config.py                      # KilatConfig / TrainingConfig / MainConfig
-    ├── health_check.py                # smoke test for train + checkpoint + resume
-    ├── sanity_check.py
-    └── vram_check.py                  # empirical GPU memory probing before training
+    └── validators.py
 ```
 
 ---
