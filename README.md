@@ -394,17 +394,6 @@ kilat/
 │   ├── ffn.py                         # Dense / MoE / MoE-shared FFN
 │   ├── model.py                       # KilatTransformer
 │   └── triton_ops.py                  # Triton causal decay kernel
-├── checkpoints/
-│   ├── checkpoint-best/
-│   │   ├── config.json
-│   │   ├── config.yaml
-│   │   ├── model.safetensors
-│   │   └── training_state.pt
-│   └── checkpoint-interrupted/
-│       ├── config.json
-│       ├── config.yaml
-│       ├── model.safetensors
-│       └── training_state.pt
 ├── configs/
 │   ├── moe_standart.yaml              # MoE configuration (standard)
 │   └── small_dense.yaml               # Dense baseline config
@@ -412,31 +401,6 @@ kilat/
 │   ├── __init__.py
 │   ├── collator.py                    # PackedTokenBatchLoader
 │   ├── dataset.py                     # Parquet, JSON, in-memory
-│   ├── fine-web-edu/
-│   │   ├── train/
-│   │   │   └── data.parquet
-│   │   └── val/
-│   │       └── data.parquet
-│   └── tokens/                        # Pre‑tokenized datasets
-│       ├── test/
-│       │   ├── tokenizer/             # (empty)
-│       │   └── tokens/
-│       │       └── tokenized.parquet/ # directory containing parquet parts
-│       │           ├── _SUCCESS
-│       │           └── part-*.snappy.parquet (4 files)
-│       ├── train/
-│       │   ├── tokenizer/
-│       │   │   ├── corpus_sample.txt
-│       │   │   ├── sp_tokenizer.model
-│       │   │   └── sp_tokenizer.vocab
-│       │   └── tokens/
-│       │       ├── analysis.json
-│       │       └── tokenized.parquet/ # directory with 4 part files
-│       └── validation/
-│           ├── tokenizer/             # (empty)
-│           └── tokens/
-│               ├── analysis.json
-│               └── tokenized.parquet/ # directory with 4 part files
 ├── distiliation/                      # Knowledge distillation (note: dir name as in ls)
 │   ├── __init__.py
 │   ├── distill_trainer.py
