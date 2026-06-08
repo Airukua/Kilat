@@ -366,6 +366,53 @@ args = TrainingArguments(**config.training.to_dict())
 
 See `configs/` for ready-made examples, or keep everything in Python for Kaggle / Colab workflows.
 
+### Tokenizer configuration
+
+Kilat supports two decode-time tokenizer styles through `TokenizerConfig`:
+
+- `tokenizer_type: "auto"` — load any Hugging Face tokenizer via `AutoTokenizer.from_pretrained(...)`
+- `tokenizer_type: "sentencepiece"` — load a local SentencePiece model via `tokenizer_model_path`
+
+Use this when your training data was tokenized with:
+
+- a pretrained HF tokenizer like GPT-2, LLaMA, etc.
+- your own tokenizer saved locally in HF format
+- your own SentencePiece tokenizer
+
+Example for a Hugging Face tokenizer:
+
+```python
+tokenizer_cfg = TokenizerConfig(
+    tokenizer_type="auto",
+    tokenizer_name_or_path="gpt2",
+    local_files_only=True,
+)
+```
+
+Example for a local tokenizer you trained yourself:
+
+```python
+tokenizer_cfg = TokenizerConfig(
+    tokenizer_type="auto",
+    tokenizer_name_or_path="./tokenizers/my_tokenizer",
+    local_files_only=True,
+)
+```
+
+Example for SentencePiece:
+
+```python
+tokenizer_cfg = TokenizerConfig(
+    tokenizer_type="sentencepiece",
+    tokenizer_name_or_path="./tokenizers/my_spm",
+    tokenizer_model_path="./tokenizers/my_spm/sp_tokenizer.model",
+    local_files_only=True,
+)
+```
+
+Important: the tokenizer used for decoding eval samples must match the tokenizer
+that produced the dataset, otherwise the printed prompt can look like garbled text.
+
 ### Preflight checks
 
 Before launching a real run, you can do:

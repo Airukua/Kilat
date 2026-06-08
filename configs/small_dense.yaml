@@ -1,7 +1,7 @@
 experiment:
-  name: "kilat-small-dense-finetune"
+  name: "kilat-small-dense"
   description: "Fine-tuning on downstream task with dense FFN"
-  tags: ["fine-tuning", "dense", "small"]
+  tags: ["dense", "small"]
 
 model:
   # Core architecture
@@ -44,8 +44,8 @@ tokenizer:
 
 training:
   # I/O
-  output_dir: "./checkpoints/kilat-small-dense"
-  resume_from_checkpoint: "./checkpoints/kilat-small-dense/checkpoint-best"
+  output_dir: "./checkpoints"
+  resume_from_checkpoint: null
   save_checkpoints: true
   
   # Training mode (epoch-based for fine-tuning)
@@ -65,7 +65,7 @@ training:
   
   # Logging & evaluation
   logging_steps: 100
-  eval_steps: 1000
+  eval_steps: 200
   save_steps: 5000
   save_total_limit: 5
   
@@ -78,7 +78,7 @@ training:
   
   # Reporting
   report_to: "none"
-  run_name: "kilat-small-dense-finetune"
+  run_name: "kilat-small-dense"
   
   # Reproducibility
   seed: 42
