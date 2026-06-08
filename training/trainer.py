@@ -1,12 +1,10 @@
 from __future__ import annotations
-
 import math
 import os
 import random
 import time
 import warnings
 from typing import Any, Optional
-
 import sentencepiece as spm
 import torch
 import torch.nn as nn

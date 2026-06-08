@@ -115,6 +115,99 @@ training:
 That restores model weights, optimizer, scheduler, scaler, and training
 counters so training continues from the exact saved state.
 
+### Distill a student from a teacher
+
+Kilat also includes a separate distillation path under `distiliation/`. In this
+setup, the teacher is a frozen model that produces logits, while the student is
+the model you actually train.
+
+How to set them up:
+
+1. Load or build a teacher backend with `load_teacher(...)`.
+2. Load or build a student backend with `load_student(...)` or `build_student(...)`.
+3. Make sure the teacher and student use the same vocabulary size.
+4. Choose a distillation loss, such as `vanilla`, `reverse`, or `adaptive`.
+5. Run `DistillTrainer` the same way you would run the regular trainer.
+
+The factories are backend-specific:
+
+- `load_teacher("kilat", checkpoint_dir, ...)` loads a frozen Kilat checkpoint.
+- `load_teacher("huggingface", model_name_or_path, ...)` loads a Hugging Face model.
+- `load_student("kilat", checkpoint_dir, ...)` resumes a Kilat student checkpoint.
+- `build_student("kilat", vocab_size=..., n_embd=..., n_layer=..., n_head=...)`
+  creates a new smaller Kilat student from config.
+- `build_student("huggingface", model_name_or_path=...)` starts from a pretrained
+  Hugging Face model.
+
+If you want to train a student from scratch, use the `build_student(...)` path
+for Kilat models. For example:
+
+```python
+student = build_student(
+    "kilat",
+    vocab_size=50000,
+    n_embd=256,
+    n_layer=4,
+    n_head=4,
+    ffn_mode="dense",
+)
+```
+
+That creates a fresh student with random initialization, which is the usual
+choice when you want a smaller architecture than the teacher. If you are using
+Hugging Face as the student backend, you can also start from a pretrained model
+or use `HuggingFaceStudent.from_scratch(...)` directly with a model config.
+
+For Kilat-to-Kilat distillation, the student is usually a smaller model with the
+same tokenizer and vocabulary as the teacher.
+
+Minimal example:
+
+```python
+from distiliation import DistillTrainer, load_teacher, load_student, build_loss
+from training.arguments import TrainingArguments
+from data.dataset import KilatDataset
+
+teacher = load_teacher("kilat", "./checkpoints/teacher-best", device="cuda")
+student = load_student("kilat", "./checkpoints/student-init", device="cuda")
+
+train_dataset = KilatDataset("data/train.parquet", key_name="input_ids")
+eval_dataset = KilatDataset("data/eval.parquet", key_name="input_ids")
+
+args = TrainingArguments(
+    output_dir="./distill-runs",
+    training_mode="epochs",
+    num_train_epochs=3,
+    per_device_train_batch_size=16,
+    per_device_eval_batch_size=16,
+    learning_rate=5e-5,
+    precision="bf16",
+)
+
+loss_fn = build_loss("vanilla", temperature=4.0, alpha=0.5)
+
+trainer = DistillTrainer(
+    student=student,
+    teacher=teacher,
+    args=args,
+    train_dataset=train_dataset,
+    eval_dataset=eval_dataset,
+    loss_fn=loss_fn,
+)
+trainer.train()
+```
+
+If you prefer, you can also pass `loss_name="vanilla"` directly instead of
+creating `loss_fn` manually.
+
+Quick notes:
+- The teacher stays frozen and only produces logits.
+- The student must match the teacher's vocabulary size and output format.
+- `DistillTrainer` only needs a `forward()` that returns logits and a
+  `vocab_size` property.
+- Distillation checkpoints store extra state for losses with learnable
+  parameters, such as `adaptive`.
+
 ### Data format and collator
 
 `KilatDataset` accepts these training inputs:
