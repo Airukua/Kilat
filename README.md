@@ -382,33 +382,100 @@ Kilat latent KV-cache:              256 × 1024     =    262,144 floats
 
 ```
 kilat/
-├── arc/               # Model architecture
-│   ├── model.py       # KilatTransformer
-│   ├── blocks.py      # Transformer blocks
-│   ├── attention.py   # KilatAttention (hybrid global-decay + latent MLA)
-│   ├── ffn.py         # Dense / MoE / MoE-shared FFN
-│   └── triton_ops.py  # Triton causal decay kernel
-├── data/              # Data pipeline
-│   ├── dataset.py     # Parquet, JSON, in-memory
-│   └── collator.py    # PackedTokenBatchLoader
-├── training/          # Training infrastructure
-│   ├── trainer.py     # KilatTrainer
-│   ├── arguments.py   # TrainingArguments
+├── LICENSE
+├── README.md
+├── pyproject.toml
+├── requirements.txt
+├── setup.py
+├── arc/                               # Model architecture
+│   ├── __init__.py
+│   ├── attention.py                   # KilatAttention (hybrid global-decay + latent MLA)
+│   ├── blocks.py                      # Transformer blocks
+│   ├── ffn.py                         # Dense / MoE / MoE-shared FFN
+│   ├── model.py                       # KilatTransformer
+│   └── triton_ops.py                  # Triton causal decay kernel
+├── checkpoints/
+│   ├── checkpoint-best/
+│   │   ├── config.json
+│   │   ├── config.yaml
+│   │   ├── model.safetensors
+│   │   └── training_state.pt
+│   └── checkpoint-interrupted/
+│       ├── config.json
+│       ├── config.yaml
+│       ├── model.safetensors
+│       └── training_state.pt
+├── configs/
+│   ├── moe_standart.yaml              # MoE configuration (standard)
+│   └── small_dense.yaml               # Dense baseline config
+├── data/                              # Data pipeline
+│   ├── __init__.py
+│   ├── collator.py                    # PackedTokenBatchLoader
+│   ├── dataset.py                     # Parquet, JSON, in-memory
+│   ├── fine-web-edu/
+│   │   ├── train/
+│   │   │   └── data.parquet
+│   │   └── val/
+│   │       └── data.parquet
+│   └── tokens/                        # Pre‑tokenized datasets
+│       ├── test/
+│       │   ├── tokenizer/             # (empty)
+│       │   └── tokens/
+│       │       └── tokenized.parquet/ # directory containing parquet parts
+│       │           ├── _SUCCESS
+│       │           └── part-*.snappy.parquet (4 files)
+│       ├── train/
+│       │   ├── tokenizer/
+│       │   │   ├── corpus_sample.txt
+│       │   │   ├── sp_tokenizer.model
+│       │   │   └── sp_tokenizer.vocab
+│       │   └── tokens/
+│       │       ├── analysis.json
+│       │       └── tokenized.parquet/ # directory with 4 part files
+│       └── validation/
+│           ├── tokenizer/             # (empty)
+│           └── tokens/
+│               ├── analysis.json
+│               └── tokenized.parquet/ # directory with 4 part files
+├── distiliation/                      # Knowledge distillation (note: dir name as in ls)
+│   ├── __init__.py
+│   ├── distill_trainer.py
+│   ├── losses.py
+│   ├── student.py
+│   └── teacher.py
+├── experiments/                       # Notebooks and scripts
+│   ├── 01_nano_GPT.ipynb
+│   ├── 02_demo.ipynb
+│   ├── 03_tiny_amq.ipynb
+│   ├── MBGkilat01_light.py
+│   ├── alkitab_text.txt
+│   ├── demo_data.jsonl
+│   ├── demo_data.parquet
+│   └── tinyshakespeare.txt
+├── images/
+│   └── illustration.png
+├── inference/                         # Inference & CLI
+│   ├── __init__.py
+│   ├── chat_session.py
+│   ├── generation_config.py
+│   ├── generator.py                   # KilatGenerator
+│   ├── inference.py                   # CLI entry point
+│   └── model_loader.py
+├── training/                          # Training infrastructure
+│   ├── __init__.py
+│   ├── arguments.py                   # TrainingArguments
 │   ├── checkpointing.py
 │   ├── early_stopping.py
-│   └── optim_utils.py
-├── inference/         # Inference & CLI
-│   ├── inference.py   # CLI entry point
-│   ├── generator.py   # KilatGenerator
-│   └── chat_session.py
-├── utils/
-│   ├── config.py      # KilatConfig / TrainingConfig / MainConfig
-│   ├── vram_check.py  # empirical GPU memory probing before training
-│   ├── health_check.py# smoke test for train + checkpoint + resume
-│   └── sanity_check.py
-└── configs/           # Example YAML configs
-    ├── small_dense.yaml
-    └── moe_standard.yaml
+│   ├── logging_utils.py
+│   ├── optim_utils.py
+│   └── trainer.py                     # KilatTrainer
+└── utils/
+    ├── __init__.py
+    ├── callback.py
+    ├── config.py                      # KilatConfig / TrainingConfig / MainConfig
+    ├── health_check.py                # smoke test for train + checkpoint + resume
+    ├── sanity_check.py
+    └── vram_check.py                  # empirical GPU memory probing before training
 ```
 
 ---
