@@ -265,7 +265,7 @@ def triton_global_decay(lam_scores, V):
     - Input V must be contiguous in the last dimension (stride_vd = 1
       or D for row-major). Non-contiguous layouts may cause incorrect
       results or reduced performance.
-    - λ values should be in (0, 1). λ = 1 is NOT handled correctly by
+    - λ values should be in (0, 1). λ = 1 is NOT handled correctly bya
       the analytical normalization (see kernel docstring).
     - Sequence length N should be reasonably large to amortize kernel
       launch overhead. For N < 64, a pure PyTorch implementation may

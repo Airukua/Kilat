@@ -32,7 +32,7 @@ config = MainConfig.from_yaml("./configs/small_dense.yaml")
 # TRADEOFF: Streaming reduces memory at the cost of random access and slightly slower per-epoch iteration.
 
 # Training dataset - streaming from parquet instead of loading all tokens into memory
-train_parquet_path = "./experiments/tinystories/train.parquet"
+train_parquet_path = "./data/fine-web-edu/train/data.parquet"
 train_dataset = KilatDataset(
     file_or_data=train_parquet_path, 
     key_name="input_ids",                    # Column name in parquet storing token sequences
@@ -47,7 +47,7 @@ train_dataset = KilatDataset(
 )
 
 # Validation dataset - same streaming pattern but no shuffling to maintain deterministic evaluation
-val_parquet_path = "./experiments/tinystories/validation.parquet"
+val_parquet_path = "./data/fine-web-edu/val/data.parquet"
 val_dataset = KilatDataset(
     file_or_data=val_parquet_path, 
     key_name="input_ids",
@@ -126,6 +126,7 @@ trainer = KilatTrainer(
     train_dataset=train_dataset,
     eval_dataset=val_dataset,
     data_collator=collate_fn,
+    tokenizer_config=config.tokenizer,
 )
 
 # Begin autoregressive language model training:

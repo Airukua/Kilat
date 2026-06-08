@@ -342,6 +342,17 @@ class KilatConfig(PretrainedConfig):
             config_dict = yaml.safe_load(f)
         return cls(**config_dict)
 
+    @classmethod
+    def from_file(cls, path: str | Path) -> "KilatConfig":
+        """
+        Backward-compatible alias for ``from_yaml``.
+
+        Some utility scripts in this repo historically called ``from_file``.
+        Keeping this alias avoids breaking those entrypoints while still
+        supporting the newer explicit ``from_yaml`` name.
+        """
+        return cls.from_yaml(path)
+
     def save_pretrained(self, save_directory: str | Path, **kwargs):
         """
         Save configuration to directory in multiple formats.
@@ -363,6 +374,70 @@ class KilatConfig(PretrainedConfig):
         # Additionally save human‑readable YAML version
         save_dir = Path(save_directory)
         self.to_yaml(save_dir / "config.yaml")
+
+
+class TokenizerConfig:
+    """
+    Tokenizer configuration used for preprocessing and decode-time inspection.
+    """
+
+    def __init__(
+        self,
+        tokenizer_type: Literal["gpt2", "sentencepiece", "auto"] = "gpt2",
+        tokenizer_name_or_path: str = "gpt2",
+        tokenizer_model_path: Optional[str] = None,
+        use_fast: bool = True,
+        local_files_only: bool = True,
+    ):
+        if tokenizer_type not in ("gpt2", "sentencepiece", "auto"):
+            raise ValueError(
+                "tokenizer_type must be one of ('gpt2', 'sentencepiece', 'auto'), "
+                f"got '{tokenizer_type}'."
+            )
+        if not tokenizer_name_or_path:
+            raise ValueError("tokenizer_name_or_path must not be empty.")
+        if tokenizer_type == "sentencepiece" and not tokenizer_model_path:
+            raise ValueError(
+                "tokenizer_model_path is required when tokenizer_type='sentencepiece'."
+            )
+
+        self.tokenizer_type = tokenizer_type
+        self.tokenizer_name_or_path = tokenizer_name_or_path
+        self.tokenizer_model_path = tokenizer_model_path
+        self.use_fast = use_fast
+        self.local_files_only = local_files_only
+
+    def to_dict(self) -> dict:
+        return {
+            "tokenizer_type": self.tokenizer_type,
+            "tokenizer_name_or_path": self.tokenizer_name_or_path,
+            "tokenizer_model_path": self.tokenizer_model_path,
+            "use_fast": self.use_fast,
+            "local_files_only": self.local_files_only,
+        }
+
+    def to_yaml(self, path: Optional[str | Path] = None) -> str:
+        yaml_str = yaml.dump(
+            self.to_dict(),
+            default_flow_style=False,
+            sort_keys=False,
+            allow_unicode=True,
+            width=120,
+        )
+
+        if path is not None:
+            path = Path(path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(yaml_str)
+
+        return yaml_str
+
+    @classmethod
+    def from_yaml(cls, yaml_path: str | Path) -> "TokenizerConfig":
+        with open(yaml_path, "r", encoding="utf-8") as f:
+            config_dict = yaml.safe_load(f)
+        return cls(**config_dict)
 
 
 class TrainingConfig:
@@ -670,8 +745,8 @@ class MainConfig:
     """
     Complete experiment configuration combining model and training settings.
 
-    Provides a unified configuration interface that bundles model architecture
-    hyperparameters with training hyperparameters and experiment metadata.
+    Provides a unified configuration interface that bundles model architecture,
+    tokenizer metadata, training hyperparameters and experiment metadata.
     This enables storing the complete experiment specification in a single
     version‑controlled YAML file.
 
@@ -689,7 +764,7 @@ class MainConfig:
 
     YAML Structure
     -------------
-    The exported YAML has three top‑level sections::
+    The exported YAML has four top‑level sections::
 
         experiment:
           name: "my-experiment"
@@ -699,6 +774,9 @@ class MainConfig:
           vocab_size: 32000
           n_embd: 768
           ...
+        tokenizer:
+          tokenizer_type: "gpt2"
+          tokenizer_name_or_path: "gpt2"
         training:
           output_dir: "./checkpoints"
           training_mode: "steps"
@@ -714,6 +792,7 @@ class MainConfig:
     def __init__(
         self,
         model: KilatConfig,
+        tokenizer: TokenizerConfig,
         training: TrainingConfig,
         # ---- Experiment metadata ----
         experiment_name: str = "kilat-experiment",
@@ -727,6 +806,8 @@ class MainConfig:
         ----------
         model : KilatConfig
             Model architecture configuration.
+        tokenizer : TokenizerConfig
+            Tokenizer metadata used to decode and reproduce tokenization.
         training : TrainingConfig
             Training hyperparameter configuration.
         experiment_name : str
@@ -737,6 +818,7 @@ class MainConfig:
             Tags for experiment categorization and filtering.
         """
         self.model = model
+        self.tokenizer = tokenizer
         self.training = training
         self.experiment_name = experiment_name
         self.description = description
@@ -766,6 +848,7 @@ class MainConfig:
                 "tags": self.tags,
             },
             "model": self.model.to_dict(),
+            "tokenizer": self.tokenizer.to_dict(),
             "training": self.training.to_dict(),
         }
         
@@ -802,7 +885,7 @@ class MainConfig:
         """
         Load complete experiment configuration from YAML.
 
-        The YAML file must contain ``model`` and ``training`` sections.
+        The YAML file must contain ``model``, ``tokenizer`` and ``training`` sections.
         The ``experiment`` section is optional and defaults to empty values.
 
         Parameters
@@ -820,15 +903,25 @@ class MainConfig:
         
         # Extract experiment metadata with defaults for optional fields
         experiment = config_dict.get("experiment", {})
+
+        if "tokenizer" not in config_dict:
+            raise ValueError(
+                "MainConfig YAML must include a 'tokenizer' section describing "
+                "the tokenizer type and source used to create the dataset."
+            )
         
         # Construct model configuration (validates on construction)
         model_config = KilatConfig(**config_dict["model"])
+
+        # Construct tokenizer configuration (validates on construction)
+        tokenizer_config = TokenizerConfig(**config_dict["tokenizer"])
         
         # Construct training configuration (validates on construction)
         training_config = TrainingConfig(**config_dict["training"])
         
         return cls(
             model=model_config,
+            tokenizer=tokenizer_config,
             training=training_config,
             experiment_name=experiment.get("name", "kilat-experiment"),
             description=experiment.get("description", ""),
@@ -839,9 +932,10 @@ class MainConfig:
         """
         Save all configurations to a checkpoint directory.
 
-        Writes three files:
+        Writes the following files:
         - ``config.json``: Standard HF model config
         - ``config.yaml``: Human‑readable model config
+        - ``tokenizer_config.yaml``: Tokenizer metadata for decode-time inspection
         - ``training_config.yaml``: Training hyperparameters
         - ``full_config.yaml``: Complete combined configuration
 
@@ -855,6 +949,9 @@ class MainConfig:
         
         # Save model config in both HF JSON and readable YAML formats
         self.model.save_pretrained(save_dir)
+
+        # Save tokenizer config alongside the model for decoding/inference.
+        self.tokenizer.to_yaml(save_dir / "tokenizer_config.yaml")
         
         # Save training config separately for clarity
         self.training.to_yaml(save_dir / "training_config.yaml")

@@ -42,6 +42,14 @@ model:
   use_cache: false
   initializer_range: 0.02
 
+tokenizer:
+  # Must match the tokenizer used to create the token IDs in the dataset.
+  tokenizer_type: gpt2
+  tokenizer_name_or_path: gpt2
+  tokenizer_model_path: null
+  use_fast: true
+  local_files_only: true
+
 training:
   # I/O
   output_dir: "./checkpoints/kilat-moe-medium"
@@ -66,7 +74,7 @@ training:
   
   # Logging & evaluation
   logging_steps: 100
-  eval_steps: 1000
+  eval_steps: 200
   save_steps: 5000
   save_total_limit: 5
   

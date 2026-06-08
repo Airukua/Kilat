@@ -31,20 +31,6 @@ print(f"{sum(p.numel() for p in model.parameters()) / 1e6:.1f}M parameters")
 ```
 
 ---
-<!-- 
-## Why Kilat?
-
-Most training frameworks give you either too much magic (HuggingFace Trainer) or too little structure (raw PyTorch scripts). Kilat sits in between: a clean, hackable codebase with the production features you'd otherwise rebuild yourself.
-
-- **Real training loop** — gradient accumulation, AMP (FP16/BF16/FP32), early stopping, checkpointing, WandB integration
-- **Two FFN modes** — dense SwiGLU and DeepSeek-V2 style MoE with shared experts
-- **Hybrid attention** — linear global-decay heads + latent MLA heads, fused via learned gate
-- **KV-cache inference** — autoregressive generation with temperature / top-k / top-p / repetition penalty
-- **Flexible data** — stream from Parquet, JSON/JSONL, or in-memory lists; efficient batch packing for long sequences
-- **No framework lock-in** — build configs in code or export them as YAML; checkpoints are plain PyTorch state dicts
-- **Preflight checks** — empirical VRAM probing and end-to-end health checks before real training starts
-
---- -->
 
 ## Quick Start
 
@@ -106,6 +92,28 @@ print(health_report.pretty())
 
 KilatTrainer(model=model, args=args, train_dataset=train_dataset, eval_dataset=eval_dataset).train()
 ```
+
+To continue a stopped run, point `resume_from_checkpoint` to the checkpoint
+directory you want to restore:
+
+```python
+args = TrainingArguments(
+    output_dir="./checkpoints",
+    resume_from_checkpoint="./checkpoints/checkpoint-best",
+    training_mode="epochs",
+    num_train_epochs=3,
+)
+```
+
+When you use `MainConfig.from_yaml(...)`, put the same path under:
+
+```yaml
+training:
+  resume_from_checkpoint: "./checkpoints/checkpoint-best"
+```
+
+That restores model weights, optimizer, scheduler, scaler, and training
+counters so training continues from the exact saved state.
 
 ### Data format and collator
 
@@ -316,9 +324,12 @@ kilat/
 
 You can build configs directly in Python, then optionally export to YAML:
 
+The tokenizer section is required and must match the tokenizer used to create
+the dataset, so evaluation prompts decode correctly.
+
 ```python
 from arc.model import KilatTransformer
-from utils.config import KilatConfig, TrainingConfig, MainConfig
+from utils.config import KilatConfig, TokenizerConfig, TrainingConfig, MainConfig
 from training.arguments import TrainingArguments
 
 model_cfg = KilatConfig(
@@ -340,7 +351,13 @@ train_cfg = TrainingConfig(
     report_to="none",
 )
 
-config = MainConfig(model=model_cfg, training=train_cfg)
+tokenizer_cfg = TokenizerConfig(
+    tokenizer_type="gpt2",
+    tokenizer_name_or_path="gpt2",
+    local_files_only=True,
+)
+
+config = MainConfig(model=model_cfg, tokenizer=tokenizer_cfg, training=train_cfg)
 config.to_yaml("configs/my_experiment.yaml")  # optional
 
 model = KilatTransformer(config.model)

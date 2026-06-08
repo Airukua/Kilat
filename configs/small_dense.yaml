@@ -12,7 +12,7 @@ model:
   
   # Attention
   recall_ratio: 0.6
-  latent_dim: null 
+  latent_dim: 160 
   attn_drop: 0.1
   
   # Feed-forward (dense)
@@ -34,10 +34,18 @@ model:
   use_cache: false
   initializer_range: 0.02
 
+tokenizer:
+  # Must match the tokenizer used to create the token IDs in the dataset.
+  tokenizer_type: gpt2
+  tokenizer_name_or_path: gpt2
+  tokenizer_model_path: null
+  use_fast: true
+  local_files_only: true
+
 training:
   # I/O
   output_dir: "./checkpoints/kilat-small-dense"
-  resume_from_checkpoint: null
+  resume_from_checkpoint: "./checkpoints/kilat-small-dense/checkpoint-best"
   save_checkpoints: true
   
   # Training mode (epoch-based for fine-tuning)

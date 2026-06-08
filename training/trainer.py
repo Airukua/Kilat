@@ -11,7 +11,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset, IterableDataset
 from tqdm import tqdm
-from transformers import PreTrainedModel
+from transformers import AutoTokenizer, PreTrainedModel
 
 from .arguments import TrainingArguments
 from .early_stopping import EarlyStoppingCallback
@@ -34,6 +34,7 @@ from .checkpointing import (
     resume_from_checkpoint,
     prune_checkpoints,
 )
+from utils.config import TokenizerConfig
 
 
 def _iterable_from_dataset(ds: Dataset) -> IterableDataset:
@@ -161,6 +162,7 @@ class KilatTrainer:
         train_dataset: Dataset,
         eval_dataset: Optional[Dataset] = None,
         data_collator: Optional[Any] = None,
+        tokenizer_config: Optional[TokenizerConfig] = None,
         tokenizer_model_path: Optional[str] = None,
     ) -> None:
         self.model = model
@@ -168,7 +170,10 @@ class KilatTrainer:
         self.train_dataset = train_dataset
         self.eval_dataset = eval_dataset
         self.data_collator = data_collator
-        self._prompt_decoder = self._load_prompt_decoder(tokenizer_model_path)
+        self._prompt_decoder = self._load_prompt_decoder(
+            tokenizer_config=tokenizer_config,
+            tokenizer_model_path=tokenizer_model_path,
+        )
 
         # Reproducibility: Set seed before any initialization to ensure
         # consistent parameter initialization, data shuffling, and dropout patterns.
@@ -356,12 +361,36 @@ class KilatTrainer:
             self.model.config.to_dict(),
         )
 
-    def _load_prompt_decoder(self, tokenizer_model_path: Optional[str]) -> Optional[spm.SentencePieceProcessor]:
-        """Load a SentencePiece model for decoding validation prompts into readable text.
-        
-        Tries the explicit path first, then falls back to a default location.
-        Returns None if neither path exists, in which case raw token IDs are displayed.
+    def _load_prompt_decoder(
+        self,
+        tokenizer_config: Optional[TokenizerConfig],
+        tokenizer_model_path: Optional[str],
+    ) -> Optional[Any]:
+        """Load the tokenizer used for decoding validation prompts.
+
+        Preference order:
+        1. Explicit ``tokenizer_config`` from experiment config.
+        2. Backward-compatible SentencePiece path.
+        3. Legacy default SentencePiece path in the repo.
         """
+        if tokenizer_config is not None:
+            if tokenizer_config.tokenizer_type == "sentencepiece":
+                decoder_path = tokenizer_config.tokenizer_model_path or tokenizer_config.tokenizer_name_or_path
+                if os.path.exists(decoder_path):
+                    decoder = spm.SentencePieceProcessor()
+                    decoder.load(decoder_path)
+                    return decoder
+                return None
+
+            try:
+                return AutoTokenizer.from_pretrained(
+                    tokenizer_config.tokenizer_name_or_path,
+                    use_fast=tokenizer_config.use_fast,
+                    local_files_only=tokenizer_config.local_files_only,
+                )
+            except Exception:
+                return None
+
         if tokenizer_model_path is not None and os.path.exists(tokenizer_model_path):
             decoder = spm.SentencePieceProcessor()
             decoder.load(tokenizer_model_path)
@@ -393,7 +422,11 @@ class KilatTrainer:
             text = " ".join(str(int(tok)) for tok in token_ids.tolist())
             return f"[token ids] {text}"
 
-        return self._prompt_decoder.decode(token_ids.tolist())
+        token_list = token_ids.tolist()
+        if hasattr(self._prompt_decoder, "decode") and not isinstance(self._prompt_decoder, spm.SentencePieceProcessor):
+            return self._prompt_decoder.decode(token_list, skip_special_tokens=True)
+
+        return self._prompt_decoder.decode(token_list)
 
     def _trim_trailing_padding(self, token_ids: torch.Tensor) -> torch.Tensor:
         """Remove trailing padding tokens from a 1D prompt tensor."""
