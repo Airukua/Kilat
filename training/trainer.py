@@ -4,6 +4,7 @@ import math
 import os
 import random
 import time
+import warnings
 from typing import Any, Optional
 
 import sentencepiece as spm
@@ -14,7 +15,6 @@ from tqdm import tqdm
 from transformers import AutoTokenizer, PreTrainedModel
 
 from .arguments import TrainingArguments
-from .early_stopping import EarlyStoppingCallback
 from .optim_utils import (
     create_optimizer,
     create_scheduler,
@@ -34,6 +34,7 @@ from .checkpointing import (
     resume_from_checkpoint,
     prune_checkpoints,
 )
+from utils.callback import CallbackHandler, EarlyStoppingCallback
 from utils.config import TokenizerConfig
 
 
@@ -269,6 +270,10 @@ class KilatTrainer:
             self.early_stopping = None
             self._eval_is_streaming = False
 
+        self.callbacks = CallbackHandler(
+            [self.early_stopping] if self.early_stopping is not None else []
+        )
+
         self.model.to(self.device)
 
         # Compute total steps for the scheduler.
@@ -388,7 +393,16 @@ class KilatTrainer:
                     use_fast=tokenizer_config.use_fast,
                     local_files_only=tokenizer_config.local_files_only,
                 )
-            except Exception:
+            except Exception as exc:
+                warnings.warn(
+                    "Failed to load decode tokenizer from tokenizer_config "
+                    f"(type={tokenizer_config.tokenizer_type}, "
+                    f"name_or_path={tokenizer_config.tokenizer_name_or_path}, "
+                    f"local_files_only={tokenizer_config.local_files_only}): {exc}. "
+                    "Eval samples will fall back to raw token IDs.",
+                    UserWarning,
+                    stacklevel=2,
+                )
                 return None
 
         if tokenizer_model_path is not None and os.path.exists(tokenizer_model_path):
@@ -498,7 +512,7 @@ class KilatTrainer:
             max_new_tokens: Maximum number of tokens to generate beyond the prompt
         
         Returns:
-            Decoded text string containing the full generated sequence (prompt + continuation)
+            Decoded text string containing only the generated continuation
         """
         self.model.eval()
 
@@ -508,6 +522,7 @@ class KilatTrainer:
                     prompt_ids = prompt_ids.unsqueeze(0)
 
                 prompt_ids = prompt_ids.to(self.device)
+                prompt_length = prompt_ids.size(-1)
                 generated_ids = prompt_ids.clone()
                 pad_token_id = getattr(self.model.config, "pad_token_id", 0)
                 eos_token_id = getattr(self.model.config, "eos_token_id", None)
@@ -561,7 +576,8 @@ class KilatTrainer:
                     logits = outputs.logits[:, -1, :]
                     past_key_values = outputs.past_key_values
 
-                generated_text = self._decode_prompt(generated_ids[0].detach().cpu())
+                continuation_ids = generated_ids[0].detach().cpu()[prompt_length:]
+                generated_text = self._decode_prompt(continuation_ids)
                 return generated_text
             except Exception as e:
                 # Graceful fallback if generate() is unavailable or fails
@@ -602,6 +618,7 @@ class KilatTrainer:
             self.args.seed,
         )
         self.model.train()
+        self.callbacks.on_train_begin(self)
 
         try:
             if self.args.training_mode == "steps":
@@ -970,7 +987,7 @@ class KilatTrainer:
         # on temporary loss spikes while still catching genuine overfitting.
         # The callback tracks consecutive evaluations without improvement
         # and signals stop when patience is exhausted.
-        if self.early_stopping and self.early_stopping.check(eval_loss):
+        if self.callbacks.on_evaluate_end(self, eval_loss, eval_ppl):
             print(f"\n{'='*60}")
             print(f"Early stopping triggered at step {self.global_step}")
             print(f"{'='*60}")
@@ -1056,18 +1073,13 @@ class KilatTrainer:
         avg_eval_loss = eval_loss / max(1, num_eval_batches)
         eval_ppl = math.exp(avg_eval_loss) if avg_eval_loss < 100 else float("inf")
 
-        # Display a sampled prompt and generated continuation for qualitative assessment.
-        # We use a prefix of the selected validation sequence as the prompt so the
-        # model generates a continuation rather than simply echoing the entire item.
+        # Display only a sampled generated continuation for qualitative assessment.
         if selected_prompt is not None:
             selected_prompt = self._trim_trailing_padding(selected_prompt)
             if selected_prompt.numel() > 1:
                 prompt_length = min(selected_prompt.numel() - 1, max(8, selected_prompt.numel() // 2))
                 prompt_length = max(1, prompt_length)
                 prompt_ids = selected_prompt[:prompt_length]
-
-                prompt_text = self._decode_prompt(prompt_ids.detach().cpu())
-                print(f"\n[Eval sample prompt] {prompt_text}")
 
                 generated_text = self._generate_sample(prompt_ids.unsqueeze(0))
                 print(f"[Eval sample generated] {generated_text}")
@@ -1130,4 +1142,5 @@ class KilatTrainer:
             self.best_eval_loss,
             self.args.output_dir,
         )
+        self.callbacks.on_train_end(self)
         finish_wandb(self.args.report_to)

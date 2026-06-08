@@ -1,5 +1,6 @@
 from __future__ import annotations
 from typing import Optional, Literal
+import warnings
 from transformers import PretrainedConfig
 import yaml
 from pathlib import Path
@@ -438,6 +439,61 @@ class TokenizerConfig:
         with open(yaml_path, "r", encoding="utf-8") as f:
             config_dict = yaml.safe_load(f)
         return cls(**config_dict)
+
+    def warn_if_vocab_mismatch(self, expected_vocab_size: int) -> None:
+        """
+        Warn when the configured tokenizer vocabulary does not match the model.
+
+        The check is best-effort: if the tokenizer cannot be loaded locally,
+        a warning is emitted and validation continues without failing training.
+        """
+        if expected_vocab_size <= 0:
+            return
+
+        resolved_vocab_size = self._resolve_vocab_size()
+        if resolved_vocab_size is None:
+            warnings.warn(
+                "Tokenizer vocabulary could not be resolved locally, so vocab "
+                "size mismatch could not be checked.",
+                UserWarning,
+                stacklevel=3,
+            )
+            return
+
+        if resolved_vocab_size != expected_vocab_size:
+            warnings.warn(
+                f"Tokenizer vocab size ({resolved_vocab_size}) does not match "
+                f"model vocab_size ({expected_vocab_size}). This can cause "
+                "index errors or incorrect decoding if the dataset was tokenized "
+                "with a different tokenizer.",
+                UserWarning,
+                stacklevel=3,
+            )
+
+    def _resolve_vocab_size(self) -> Optional[int]:
+        try:
+            if self.tokenizer_type == "sentencepiece":
+                from sentencepiece import SentencePieceProcessor
+
+                model_path = self.tokenizer_model_path or self.tokenizer_name_or_path
+                if not model_path:
+                    return None
+
+                processor = SentencePieceProcessor()
+                if not processor.load(model_path):
+                    return None
+                return processor.get_piece_size()
+
+            from transformers import AutoTokenizer
+
+            tokenizer = AutoTokenizer.from_pretrained(
+                self.tokenizer_name_or_path,
+                use_fast=self.use_fast,
+                local_files_only=self.local_files_only,
+            )
+            return len(tokenizer)
+        except Exception:
+            return None
 
 
 class TrainingConfig:
@@ -915,6 +971,9 @@ class MainConfig:
 
         # Construct tokenizer configuration (validates on construction)
         tokenizer_config = TokenizerConfig(**config_dict["tokenizer"])
+
+        # Best-effort warning if tokenizer and model disagree on vocabulary size.
+        tokenizer_config.warn_if_vocab_mismatch(model_config.vocab_size)
         
         # Construct training configuration (validates on construction)
         training_config = TrainingConfig(**config_dict["training"])

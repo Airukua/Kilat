@@ -39,8 +39,8 @@ tokenizer:
   tokenizer_type: gpt2
   tokenizer_name_or_path: gpt2
   tokenizer_model_path: null
-  use_fast: true
-  local_files_only: true
+  # use_fast: true
+  local_files_only: false
 
 training:
   # I/O

@@ -441,6 +441,7 @@ print(health.pretty())
 - [x] Mixed precision (FP16, BF16, FP32)
 - [x] Parquet + JSON/JSONL streaming
 - [x] WandB integration
+- [ ] Optimize Gate fused
 - [ ] Flash Attention 2 integration
 - [ ] Multi-GPU (DDP / FSDP)
 - [ ] ONNX / TorchScript export

@@ -13,6 +13,7 @@ hyperparameters alongside the model for reproducibility.
 
 from pathlib import Path
 from typing import Optional, Tuple
+import warnings
 import torch
 from transformers import AutoTokenizer
 
@@ -105,6 +106,20 @@ def load_model_and_tokenizer(
                 raise FileNotFoundError(f"No model weights found in {checkpoint_path}")
     else:
         raise ValueError(f"Checkpoint path must be a directory, got {checkpoint_path}")
+
+    # Best-effort warning if tokenizer and model disagree on vocabulary size.
+    # This is helpful when a checkpoint is paired with a different tokenizer
+    # than the one used during training.
+    tokenizer_vocab_size = len(tokenizer)
+    model_vocab_size = getattr(config, "vocab_size", None)
+    if model_vocab_size is not None and tokenizer_vocab_size != model_vocab_size:
+        warnings.warn(
+            f"Loaded tokenizer vocab size ({tokenizer_vocab_size}) does not match "
+            f"model vocab_size ({model_vocab_size}). Decoding and generation may "
+            "behave incorrectly if this checkpoint was trained with a different tokenizer.",
+            UserWarning,
+            stacklevel=2,
+        )
 
     model.to(device)
     model.eval()  # Disables dropout - critical for deterministic inference
