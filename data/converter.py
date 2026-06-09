@@ -102,29 +102,31 @@ def _count_tokens_parquet(
     batch_size: int,
     verbose: bool,
 ) -> int:
-    """
-    Count total number of tokens across all Parquet files without loading all values into memory.
-    This function reads each file in batches of rows, extracts the column as lists,
-    and sums the length of each list. It does NOT convert the lists to arrays or
-    concatenate them, so memory usage is O(batch_size * average_sequence_length).
-    """
     total = 0
     pbar = tqdm(total=0, desc="Counting tokens", unit="tok", disable=not verbose, dynamic_ncols=True)
     for file_path in files:
-        pf = pq.ParquetFile(file_path)
-        # Determine if column exists; if not, raise error early.
-        if key_name not in pf.schema.names:
-            raise KeyError(f"Column '{key_name}' not found in {file_path}")
-        for batch in pf.iter_batches(batch_size=batch_size, columns=[key_name]):
-            # batch.column(0) returns a ChunkedArray; .to_pylist() gives list of lists
-            sequences = batch.column(0).to_pylist()
-            for seq in sequences:
-                if seq is None:
+        try:
+            pf = pq.ParquetFile(file_path)
+        except Exception as e:
+            if verbose:
+                warnings.warn(f"Cannot open {file_path}: {e}")
+            continue
+
+        try:
+            for batch in pf.iter_batches(batch_size=batch_size, columns=[key_name]):
+                if batch.num_columns == 0:
                     continue
-                # seq is either list or maybe a pyarrow list. Its length is the token count.
-                total += len(seq)
-                if verbose:
-                    pbar.update(len(seq))
+                sequences = batch.column(0).to_pylist()
+                for seq in sequences:
+                    if seq is None:
+                        continue
+                    total += len(seq)
+                    if verbose:
+                        pbar.update(len(seq))
+        except Exception as e:
+            if verbose:
+                warnings.warn(f"Skipping {file_path}: could not read column '{key_name}' - {e}")
+            continue
     pbar.close()
     return total
 

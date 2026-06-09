@@ -40,6 +40,14 @@ print(f"{sum(p.numel() for p in model.parameters()) / 1e6:.1f}M parameters")
 pip install git+https://github.com/Airukua/kilat.git
 ```
 
+Optional reporting backends are not installed by default. If you cloned the
+repo locally and want `report_to="wandb"`, `tensorboard`, `mlflow`, or
+`comet_ml`, install the extra package set:
+
+```bash
+pip install -e ".[reporting]"
+```
+
 Verify:
 ```bash
 python -c "from arc.model import KilatTransformer; print('✓ Kilat ready')"
@@ -481,7 +489,7 @@ Notable training fields:
 - `resume_from_checkpoint` to continue from a saved run
 - `scheduler_type` and `scheduler_kwargs` to choose the LR schedule
 - `atomic_checkpoint` to write checkpoints safely via temp-directory rename
-- `report_to` to pick logging backends, including `["wandb", "tensorboard"]`
+- `report_to` to pick logging backends; install `.[reporting]` first if you want `["wandb", "tensorboard", "mlflow", "comet_ml"]`
 - `metric_for_best_model` and `greater_is_better` to control early stopping and best-checkpoint selection
 - `per_device_train_batch_size` and `per_device_eval_batch_size` to size the loaders built by `data.dataloader`
 

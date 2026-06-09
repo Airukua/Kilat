@@ -13,9 +13,16 @@ dependencies = [
   "tqdm>=4.66",
   "pyarrow>=14.0",
   "triton>=2.0",
+]
+
+[project.optional-dependencies]
+reporting = [
   "wandb>=0.16",
+  "tensorboard>=2.14",
+  "mlflow>=2.10",
+  "comet_ml>=3.45",
 ]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["arc*", "data*", "training*", "utils*", "inference*"]
+include = ["arc*", "data*", "training*", "utils*", "generation*", "distiliation*"]

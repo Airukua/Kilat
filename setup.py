@@ -11,14 +11,22 @@ setup(
         "tqdm>=4.66",
         "pyarrow>=14.0",
         "triton>=2.0",
-        "wandb>=0.16",
     ],
+    extras_require={
+        "reporting": [
+            "wandb>=0.16",
+            "tensorboard>=2.14",
+            "mlflow>=2.10",
+            "comet_ml>=3.45",
+        ],
+    },
     packages=[
         "arc",
         "data",
         "training",
         "utils",
-        "inference",
+        "generation",
+        "distiliation",
     ],
     include_package_data=True,
 )
