@@ -354,6 +354,50 @@ class KilatConfig(PretrainedConfig):
         """
         return cls.from_yaml(path)
 
+    @classmethod
+    def from_main_config(cls, main_config: "MainConfig") -> "KilatConfig":
+        """
+        Create KilatConfig from MainConfig object (convenience method).
+        
+        This allows users to directly use their existing MainConfig without
+        manually extracting the model section.
+        
+        Parameters
+        ----------
+        main_config : MainConfig
+            Complete experiment configuration containing model subsection.
+        
+        Returns
+        -------
+        KilatConfig
+            Validated model configuration instance.
+        
+        Example
+        -------
+        >>> main_config = MainConfig.from_yaml("configs/small_dense.yaml")
+        >>> model_config = KilatConfig.from_main_config(main_config)
+        >>> model = KilatTransformer(model_config)
+        """
+        # Handle MainConfig object
+        if hasattr(main_config, 'model'):
+            model_dict = main_config.model.__dict__
+        # Handle dictionary input
+        elif isinstance(main_config, dict):
+            if 'model' in main_config:
+                model_dict = main_config['model']
+            else:
+                model_dict = main_config
+        # Handle arbitrary object with __dict__
+        elif hasattr(main_config, '__dict__'):
+            model_dict = main_config.__dict__
+        else:
+            raise TypeError(
+                f"Unsupported config type: {type(main_config)}. "
+                "Expected MainConfig, dict, or object with model attribute."
+            )
+        
+        return cls(**model_dict)
+
     def save_pretrained(self, save_directory: str | Path, **kwargs):
         """
         Save configuration to directory in multiple formats.
@@ -494,6 +538,234 @@ class TokenizerConfig:
             return len(tokenizer)
         except Exception:
             return None
+
+
+class DataLoaderConfig:
+    """
+    DataLoader configuration for optimal data loading performance.
+
+    Separated from TrainingConfig because DataLoader settings are about
+    I/O and CPU utilization, not training hyperparameters. This configuration
+    controls how data is loaded, batched, and preprocessed before being passed
+    to the training loop.
+
+    Design Decisions
+    ----------------
+    - **Worker management**: `num_workers` controls CPU cores used for data
+      loading. `persistent_workers` keeps processes alive across epochs.
+    - **Memory transfer**: `pin_memory` enables faster host-to-GPU transfers
+      using page-locked memory.
+    - **Prefetching**: `prefetch_factor` preloads batches to overlap I/O with
+      computation.
+    - **Packing**: `use_packing` enables bin-packing of short sequences to
+      eliminate padding waste (improves token utilization).
+    - **Distributed**: `use_distributed_sampler` automatically partitions data
+      across GPUs with optional shuffling.
+
+    Example::
+        >>> dl_config = DataLoaderConfig(
+        ...     train_batch_size=32,
+        ...     num_workers=8,
+        ...     max_seq_length=2048,
+        ...     use_packing=True,
+        ... )
+        >>> dl_config.to_yaml("dataloader_config.yaml")
+    """
+
+    def __init__(
+        self,
+        # ---- Core settings ----
+        train_batch_size: int = 8,
+        eval_batch_size: int = 8,
+        num_workers: int = 4,
+        pin_memory: bool = True,
+        prefetch_factor: int = 2,
+        persistent_workers: bool = False,
+        drop_last: bool = True,
+        
+        # ---- Sequence handling ----
+        max_seq_length: int = 1024,
+        truncation: Literal["left", "right"] = "right",
+        
+        # ---- Packing (optional) ----
+        use_packing: bool = False,
+        packed_block_size: Optional[int] = None,
+        
+        # ---- Distributed ----
+        use_distributed_sampler: bool = True,
+        distributed_shuffle: bool = True,
+        
+        # ---- Dataset source ----
+        train_data_path: Optional[str] = None,
+        eval_data_path: Optional[str] = None,
+        dataset_format: Literal["parquet", "memmap", "jsonl"] = "parquet",
+        
+        # ---- Caching ----
+        cache_dir: Optional[str] = None,
+        prefetch_batches: int = 2,
+    ):
+        """
+        Initialize DataLoader configuration with validation.
+
+        Parameters
+        ----------
+        train_batch_size : int
+            Training batch size per device (micro-batch before accumulation).
+        eval_batch_size : int
+            Evaluation batch size per device.
+        num_workers : int
+            Number of CPU subprocesses for data loading. 0 = main process only.
+        pin_memory : bool
+            If True, use pinned memory for faster GPU transfer.
+        prefetch_factor : int
+            Batches to prefetch per worker (higher = more memory, better I/O overlap).
+        persistent_workers : bool
+            Keep worker processes alive across epochs (reduces startup overhead).
+        drop_last : bool
+            Discard last incomplete batch (True for training to avoid variable sizes).
+        max_seq_length : int
+            Maximum sequence length after truncation.
+        truncation : Literal["left", "right"]
+            Which side to truncate. "right" keeps prefix, "left" keeps suffix.
+        use_packing : bool
+            Enable bin-packing of short sequences into fixed blocks (zero padding waste).
+        packed_block_size : Optional[int]
+            Block size for packing. Defaults to max_seq_length if None.
+        use_distributed_sampler : bool
+            If True and distributed training, use DistributedSampler for data partitioning.
+        distributed_shuffle : bool
+            If True, DistributedSampler shuffles data each epoch.
+        train_data_path : Optional[str]
+            Path to training dataset (overrides hardcoded paths in code).
+        eval_data_path : Optional[str]
+            Path to evaluation dataset.
+        dataset_format : Literal["parquet", "memmap", "jsonl"]
+            Dataset storage format for automatic DataLoader creation.
+        cache_dir : Optional[str]
+            Directory for caching processed datasets (e.g., tokenized Parquet).
+        prefetch_batches : int
+            Number of batches to prefetch in dataset iterator.
+        """
+        # Validation
+        if num_workers < 0:
+            raise ValueError(f"num_workers must be >= 0, got {num_workers}")
+        if prefetch_factor < 1:
+            raise ValueError(f"prefetch_factor must be >= 1, got {prefetch_factor}")
+        if max_seq_length < 1:
+            raise ValueError(f"max_seq_length must be >= 1, got {max_seq_length}")
+        if train_batch_size < 1:
+            raise ValueError(f"train_batch_size must be >= 1, got {train_batch_size}")
+        if eval_batch_size < 1:
+            raise ValueError(f"eval_batch_size must be >= 1, got {eval_batch_size}")
+        
+        # Core settings
+        self.train_batch_size = train_batch_size
+        self.eval_batch_size = eval_batch_size
+        self.num_workers = num_workers
+        self.pin_memory = pin_memory
+        self.prefetch_factor = prefetch_factor
+        self.persistent_workers = persistent_workers
+        self.drop_last = drop_last
+        
+        # Sequence handling
+        self.max_seq_length = max_seq_length
+        self.truncation = truncation
+        
+        # Packing
+        self.use_packing = use_packing
+        self.packed_block_size = packed_block_size or max_seq_length
+        
+        # Distributed
+        self.use_distributed_sampler = use_distributed_sampler
+        self.distributed_shuffle = distributed_shuffle
+        
+        # Dataset source
+        self.train_data_path = train_data_path
+        self.eval_data_path = eval_data_path
+        self.dataset_format = dataset_format
+        
+        # Caching
+        self.cache_dir = cache_dir
+        self.prefetch_batches = prefetch_batches
+
+    def to_dict(self) -> dict:
+        """
+        Convert DataLoader configuration to a plain dictionary.
+
+        Returns
+        -------
+        dict
+            Dictionary with all DataLoader hyperparameters.
+        """
+        return {
+            "train_batch_size": self.train_batch_size,
+            "eval_batch_size": self.eval_batch_size,
+            "num_workers": self.num_workers,
+            "pin_memory": self.pin_memory,
+            "prefetch_factor": self.prefetch_factor,
+            "persistent_workers": self.persistent_workers,
+            "drop_last": self.drop_last,
+            "max_seq_length": self.max_seq_length,
+            "truncation": self.truncation,
+            "use_packing": self.use_packing,
+            "packed_block_size": self.packed_block_size,
+            "use_distributed_sampler": self.use_distributed_sampler,
+            "distributed_shuffle": self.distributed_shuffle,
+            "train_data_path": self.train_data_path,
+            "eval_data_path": self.eval_data_path,
+            "dataset_format": self.dataset_format,
+            "cache_dir": self.cache_dir,
+            "prefetch_batches": self.prefetch_batches,
+        }
+
+    def to_yaml(self, path: Optional[str | Path] = None) -> str:
+        """
+        Export DataLoader configuration to YAML format.
+
+        Parameters
+        ----------
+        path : Optional[str | Path]
+            If provided, writes YAML to this file. If None, returns the YAML string.
+
+        Returns
+        -------
+        str
+            YAML string representation.
+        """
+        yaml_str = yaml.dump(
+            self.to_dict(),
+            default_flow_style=False,
+            sort_keys=False,
+            allow_unicode=True,
+            width=120,
+        )
+        
+        if path is not None:
+            path = Path(path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(yaml_str)
+        
+        return yaml_str
+
+    @classmethod
+    def from_yaml(cls, yaml_path: str | Path) -> "DataLoaderConfig":
+        """
+        Load DataLoader configuration from a YAML file.
+
+        Parameters
+        ----------
+        yaml_path : str | Path
+            Path to YAML DataLoader configuration file.
+
+        Returns
+        -------
+        DataLoaderConfig
+            Validated DataLoader configuration instance.
+        """
+        with open(yaml_path, 'r', encoding='utf-8') as f:
+            config_dict = yaml.safe_load(f)
+        return cls(**config_dict)
 
 
 class TrainingConfig:
@@ -864,7 +1136,7 @@ class MainConfig:
 
     YAML Structure
     -------------
-    The exported YAML has four top‑level sections::
+    The exported YAML has five top‑level sections::
 
         experiment:
           name: "my-experiment"
@@ -877,6 +1149,11 @@ class MainConfig:
         tokenizer:
           tokenizer_type: "gpt2"
           tokenizer_name_or_path: "gpt2"
+        dataloader:
+          train_batch_size: 32
+          num_workers: 8
+          max_seq_length: 1024
+          ...
         training:
           output_dir: "./checkpoints"
           training_mode: "steps"
@@ -894,6 +1171,7 @@ class MainConfig:
         model: KilatConfig,
         tokenizer: TokenizerConfig,
         training: TrainingConfig,
+        dataloader: DataLoaderConfig,
         # ---- Experiment metadata ----
         experiment_name: str = "kilat-experiment",
         description: str = "",
@@ -910,6 +1188,8 @@ class MainConfig:
             Tokenizer metadata used to decode and reproduce tokenization.
         training : TrainingConfig
             Training hyperparameter configuration.
+        dataloader : DataLoaderConfig
+            DataLoader configuration for data loading performance.
         experiment_name : str
             Human‑readable experiment name (used for W&B runs, logging).
         description : str
@@ -920,6 +1200,7 @@ class MainConfig:
         self.model = model
         self.tokenizer = tokenizer
         self.training = training
+        self.dataloader = dataloader
         self.experiment_name = experiment_name
         self.description = description
         self.tags = tags or []
@@ -949,6 +1230,7 @@ class MainConfig:
             },
             "model": self.model.to_dict(),
             "tokenizer": self.tokenizer.to_dict(),
+            "dataloader": self.dataloader.to_dict(),
             "training": self.training.to_dict(),
         }
         
@@ -985,7 +1267,7 @@ class MainConfig:
         """
         Load complete experiment configuration from YAML.
 
-        The YAML file must contain ``model``, ``tokenizer`` and ``training`` sections.
+        The YAML file must contain ``model``, ``tokenizer``, ``dataloader`` and ``training`` sections.
         The ``experiment`` section is optional and defaults to empty values.
 
         Parameters
@@ -1010,6 +1292,12 @@ class MainConfig:
                 "the tokenizer type and source used to create the dataset."
             )
         
+        if "dataloader" not in config_dict:
+            raise ValueError(
+                "MainConfig YAML must include a 'dataloader' section describing "
+                "data loading configuration (batch_size, num_workers, etc.)."
+            )
+        
         # Construct model configuration (validates on construction)
         model_config = KilatConfig(**config_dict["model"])
 
@@ -1019,6 +1307,9 @@ class MainConfig:
         # Best-effort warning if tokenizer and model disagree on vocabulary size.
         tokenizer_config.warn_if_vocab_mismatch(model_config.vocab_size)
         
+        # Construct DataLoader configuration (validates on construction)
+        dataloader_config = DataLoaderConfig(**config_dict["dataloader"])
+        
         # Construct training configuration (validates on construction)
         training_config = TrainingConfig(**config_dict["training"])
         
@@ -1026,6 +1317,7 @@ class MainConfig:
             model=model_config,
             tokenizer=tokenizer_config,
             training=training_config,
+            dataloader=dataloader_config,
             experiment_name=experiment.get("name", "kilat-experiment"),
             description=experiment.get("description", ""),
             tags=experiment.get("tags", []),
@@ -1039,6 +1331,7 @@ class MainConfig:
         - ``config.json``: Standard HF model config
         - ``config.yaml``: Human‑readable model config
         - ``tokenizer_config.yaml``: Tokenizer metadata for decode-time inspection
+        - ``dataloader_config.yaml``: DataLoader configuration
         - ``training_config.yaml``: Training hyperparameters
         - ``full_config.yaml``: Complete combined configuration
 
@@ -1055,6 +1348,9 @@ class MainConfig:
 
         # Save tokenizer config alongside the model for decoding/inference.
         self.tokenizer.to_yaml(save_dir / "tokenizer_config.yaml")
+        
+        # Save DataLoader config separately for clarity
+        self.dataloader.to_yaml(save_dir / "dataloader_config.yaml")
         
         # Save training config separately for clarity
         self.training.to_yaml(save_dir / "training_config.yaml")
