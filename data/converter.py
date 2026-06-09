@@ -254,7 +254,7 @@ def parquet_to_memmap(
     # We'll write the header and then memory‑map the rest.
     dtype_obj = np.dtype(dtype)
     header = {
-        "descr": f"<{dtype.char}",  # little‑endian, e.g., '<i4'
+        "descr": f"<{dtype_obj.char}",  # little‑endian, e.g., '<i4'
         "fortran_order": False,
         "shape": (total_tokens,),
     }
