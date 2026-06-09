@@ -5,7 +5,7 @@ experiment:
   tags: ["dense", "baseline", "smoke-test"]
 
 model:
-  vocab_size: 50000
+  vocab_size: 50257
   n_embd: 640
   n_layer: 8
   n_head: 10
@@ -31,11 +31,10 @@ model:
   initializer_range: 0.02
 
 tokenizer:
-  tokenizer_type: sentencepiece 
-  tokenizer_name_or_path: data/indo/tokenizer/
-  tokenizer_model_path: data/indo/tokenizer/sp_tokenizer.model
+  tokenizer_type: auto
+  tokenizer_name_or_path: gpt2  
   use_fast: true
-  local_files_only: true
+  local_files_only: true 
 
 dataloader:
   train_batch_size: 8
@@ -63,10 +62,10 @@ training:
   save_checkpoints: true
   atomic_checkpoint: true
   training_mode: steps
-  learning_rate: 3.0e-4
+  learning_rate: 1.5e-3
   beta1: 0.9
   beta2: 0.95
-  epsilon: 1.0e-6
+  epsilon: 1.0e-8
   gradient_accumulation_steps: 2
   weight_decay: 0.1
   max_grad_norm: 1.0
@@ -75,6 +74,7 @@ training:
   warmup_steps: 1000
   scheduler_type: cosine
   scheduler_kwargs: {}
+  #   min_lr_ratio: 0.1
   logging_steps: 100
   eval_steps: 500
   save_steps: 500

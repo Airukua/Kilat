@@ -89,14 +89,14 @@ summary(model, input_data=sample_input, depth=3)
 # WHY memmap: The file is memory-mapped (zero-copy), allowing datasets larger
 # than RAM. The OS page cache loads only the pages needed for current batches.
 train = PretrainingDataset(
-    source="data/indo/train/tokens.npy",
+    source="data/fine-web/train/tokens.npy",
     key_name="input_ids",
     chunk_size=main_config.dataloader.max_seq_length,  # Matches model's context length
     dtype=np.int32,  # Token IDs fit in 32-bit signed integer
 )
 
 val = PretrainingDataset(
-    source="data/indo/val/tokens.npy",
+    source="data/fine-web/val/tokens.npy",
     key_name="input_ids",
     chunk_size=main_config.dataloader.max_seq_length,
     dtype=np.int32,

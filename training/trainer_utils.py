@@ -84,6 +84,134 @@ def should_save_on_rank0(state: TrainerState) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# PPL (Perplexity) Computation
+# ---------------------------------------------------------------------------
+
+def compute_perplexity(loss: float, base: float = torch.e) -> float:
+    """
+    Compute perplexity from cross-entropy loss.
+
+    Perplexity is defined as exp(loss) for natural log, or 2^loss for log2.
+    It measures how "surprised" the model is by the data – lower is better.
+    For a perfect model (loss=0), perplexity = 1.
+
+    Mathematical definition:
+        PPL = exp(avg_negative_log_likelihood)
+
+    Properties:
+    - PPL ∈ [1, ∞)
+    - PPL = 1 means perfect prediction (loss = 0)
+    - PPL = vocab_size means random uniform guessing
+
+    WHY: Perplexity is the standard metric for language modeling because it's
+    interpretable (effective vocabulary size) and monotonic with loss.
+
+    Parameters
+    ----------
+    loss : float
+        Average cross-entropy loss (natural log base, typically from nn.CrossEntropyLoss).
+    base : float
+        Base of exponentiation. Default `torch.e` (natural log) matches PyTorch's loss.
+        Use `base=2` for bits-per-character (BPC) style perplexity.
+
+    Returns
+    -------
+    float
+        Perplexity value (always >= 1.0).
+
+    Example
+    -------
+        >>> loss = 2.3026  # ln(10)
+        >>> compute_perplexity(loss)
+        10.0  # Model is as surprised as guessing from 10 tokens
+
+        >>> loss = 0.6931  # ln(2)
+        >>> compute_perplexity(loss)
+        2.0   # Effective vocabulary size = 2
+    """
+    import math
+    if base == torch.e or base == math.e:
+        return math.exp(loss)
+    return base ** loss
+
+
+def compute_perplexity_from_logits(
+    logits: torch.Tensor,
+    labels: torch.Tensor,
+    ignore_index: int = -100,
+) -> tuple[float, float]:
+    """
+    Compute both loss and perplexity from model logits in one pass.
+
+    This is more efficient than calling compute_perplexity separately because
+    it avoids recomputing the loss.
+
+    Parameters
+    ----------
+    logits : torch.Tensor
+        Model output logits of shape (batch_size, seq_len, vocab_size).
+    labels : torch.Tensor
+        Ground truth labels of shape (batch_size, seq_len).
+    ignore_index : int
+        Label value to ignore in loss computation (typically -100 for padding).
+
+    Returns
+    -------
+    tuple[float, float]
+        (loss, perplexity) where loss is the average cross-entropy loss.
+
+    Example
+    -------
+        >>> outputs = model(input_ids)
+        >>> loss, ppl = compute_perplexity_from_logits(outputs.logits, labels)
+        >>> print(f"Loss: {loss:.4f}, PPL: {ppl:.2f}")
+    """
+    loss_fn = torch.nn.CrossEntropyLoss(ignore_index=ignore_index)
+    # Reshape logits: (B, N, V) -> (B*N, V)
+    # Reshape labels: (B, N) -> (B*N)
+    shift_logits = logits[..., :-1, :].contiguous()
+    shift_labels = labels[..., 1:].contiguous()
+    
+    loss = loss_fn(
+        shift_logits.view(-1, shift_logits.size(-1)),
+        shift_labels.view(-1)
+    )
+    
+    ppl = compute_perplexity(loss.item())
+    return loss.item(), ppl
+
+
+def format_metrics_with_ppl(metrics: dict[str, float]) -> dict[str, float]:
+    """
+    Automatically add perplexity to metrics dict if loss is present.
+
+    Convenience function for evaluation loops: if metrics contains "eval_loss"
+    or "loss", add a "perplexity" field automatically.
+
+    Parameters
+    ----------
+    metrics : dict[str, float]
+        Dictionary containing at least "loss" or "eval_loss".
+
+    Returns
+    -------
+    dict[str, float]
+        Original metrics with added "perplexity" key.
+
+    Example
+    -------
+        >>> metrics = {"eval_loss": 1.234}
+        >>> metrics = format_metrics_with_ppl(metrics)
+        >>> print(metrics)
+        {"eval_loss": 1.234, "perplexity": 3.43}
+    """
+    loss_key = "eval_loss" if "eval_loss" in metrics else "loss"
+    if loss_key in metrics:
+        metrics["perplexity"] = compute_perplexity(metrics[loss_key])
+    return metrics
+
+
+# ---------------------------------------------------------------------------
 # Advanced checkpointing (HuggingFace‑style + training state)
 # ---------------------------------------------------------------------------
 
