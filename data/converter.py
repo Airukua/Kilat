@@ -67,9 +67,6 @@ Example Usage
     ...     batch_size=10000,
     ...     verbose=True,
     ... )
-    Counting tokens: 100%|██████████| 1234567 tokens found.
-    Writing memmap: 100%|██████████| 1234567 tokens written.
-    Metadata saved to ./data/train_tokens_meta.json
 """
 
 import json
@@ -255,6 +252,7 @@ def parquet_to_memmap(
     # Create the .npy file with the correct header.
     # The header is a Python dict with 'descr' and 'fortran_order', 'shape'.
     # We'll write the header and then memory‑map the rest.
+    dtype_obj = np.dtype(dtype)
     header = {
         "descr": f"<{dtype.char}",  # little‑endian, e.g., '<i4'
         "fortran_order": False,
