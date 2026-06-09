@@ -267,7 +267,7 @@ def parquet_to_memmap(
         npyfmt.write_array_header_1_0(f, header)
         data_offset = f.tell()
         # Fill the rest with zeros to allocate the file size.
-        f.seek(total_tokens * dtype.itemsize - 1, os.SEEK_CUR)
+        f.seek(total_tokens * dtype_obj.itemsize - 1, os.SEEK_CUR)
         f.write(b"\0")
 
     # Now memory‑map the data portion for writing.
