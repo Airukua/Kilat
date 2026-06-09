@@ -76,7 +76,7 @@ import json
 import os
 import warnings
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import List
 
 import numpy as np
 import pyarrow.parquet as pq
@@ -95,16 +95,49 @@ def _discover_parquet_files(path: str) -> List[str]:
         raise ValueError(f"No .parquet/.parq files found in {path}")
     return [str(f) for f in files]
 
-
 def _count_tokens_parquet(
     files: List[str],
     key_name: str,
     batch_size: int,
     verbose: bool,
 ) -> int:
+    """
+    Count total number of tokens across multiple Parquet files without materialising all data.
+
+    WHY: To allocate a memmap array of the exact size, we need to know the total token count
+    before writing. This function performs a fast pass over the Parquet files, reading only
+    the token ID column and summing sequence lengths. It does NOT store the token values,
+    only their lengths, so memory usage is O(batch_size * average_sequence_length) independent
+    of corpus size.
+
+    Parameters
+    ----------
+    files : List[str]
+        List of Parquet file paths.
+    key_name : str
+        Name of the column containing token IDs (list of ints).
+    batch_size : int
+        Number of rows to read per iteration from each Parquet file.
+    verbose : bool
+        If True, show a tqdm progress bar with token count.
+
+    Returns
+    -------
+    int
+        Total number of tokens (sum of lengths of all sequences across all files).
+    """
     total = 0
-    pbar = tqdm(total=0, desc="Counting tokens", unit="tok", disable=not verbose, dynamic_ncols=True)
+    # Initialize progress bar with unknown total (tqdm updates as we add tokens)
+    pbar = tqdm(
+        total=None,
+        desc="Counting tokens",
+        unit="tok",
+        disable=not verbose,
+        dynamic_ncols=True,
+    )
+
     for file_path in files:
+        # Attempt to open the Parquet file; skip if corrupted.
         try:
             pf = pq.ParquetFile(file_path)
         except Exception as e:
@@ -112,24 +145,29 @@ def _count_tokens_parquet(
                 warnings.warn(f"Cannot open {file_path}: {e}")
             continue
 
+        # Read the file in batches of rows.
         try:
             for batch in pf.iter_batches(batch_size=batch_size, columns=[key_name]):
+                # In case the column is missing (should not happen if schema checked earlier)
                 if batch.num_columns == 0:
                     continue
+                # Extract the column values as Python lists (each element is a list of token IDs)
                 sequences = batch.column(0).to_pylist()
                 for seq in sequences:
                     if seq is None:
                         continue
-                    total += len(seq)
+                    token_count = len(seq)
+                    total += token_count
                     if verbose:
-                        pbar.update(len(seq))
+                        pbar.update(token_count)
         except Exception as e:
+            # If the column is missing or data type mismatch, skip the file.
             if verbose:
                 warnings.warn(f"Skipping {file_path}: could not read column '{key_name}' - {e}")
             continue
+
     pbar.close()
     return total
-
 
 def parquet_to_memmap(
     input_path: str,
