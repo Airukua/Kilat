@@ -272,12 +272,6 @@ kilat/
 │   ├── scheduler.py                   # LR schedulers (cosine, linear, etc.)
 │   ├── trainer.py                     # KilatTrainer
 │   └── trainer_utils.py               # Checkpointing, metrics, helpers
-├── generation/                        # Inference
-│   ├── chat_session.py
-│   ├── generation_config.py
-│   ├── generator.py
-│   ├── inference.py
-│   └── model_loader.py
 ├── pipeline/                          # Conversion utilities
 │   └── converter/
 │       ├── convert_to_hf.py           # Checkpoint → HuggingFace format
