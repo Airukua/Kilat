@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="kilat",
-    version="0.1.0",
+    version="1.3.0",
     description="Kilat: a lightweight transformer training and inference toolkit.",
     python_requires=">=3.10",
     install_requires=[
