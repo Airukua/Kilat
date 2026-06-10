@@ -18,13 +18,91 @@ import torch
 
 from data.tokenizer import KilatTokenizer
 from arc.model import KilatTransformer
-from utils.config import KilatConfig, MainConfig
+from utils.config import KilatConfig, MainConfig, TokenizerConfig
+
+
+def _checkpoint_has_tokenizer_files(path: Path) -> bool:
+    """Return True if a checkpoint directory already contains tokenizer artifacts."""
+    tokenizer_files = (
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "special_tokens_map.json",
+        "vocab.json",
+        "merges.txt",
+        "spm.model",
+        "sentencepiece.bpe.model",
+    )
+    return any((path / name).exists() for name in tokenizer_files)
+
+
+def _load_tokenizer_config(checkpoint_path: Path) -> Optional[TokenizerConfig]:
+    """Load tokenizer metadata if the checkpoint saved it alongside the model."""
+    full_config_path = checkpoint_path / "full_config.yaml"
+    if full_config_path.exists():
+        return MainConfig.from_yaml(full_config_path).tokenizer
+
+    tokenizer_config_path = checkpoint_path / "tokenizer_config.yaml"
+    if tokenizer_config_path.exists():
+        return TokenizerConfig.from_yaml(tokenizer_config_path)
+
+    return None
+
+
+def _resolve_tokenizer_source(
+    checkpoint_path: Path,
+    config: KilatConfig,
+    explicit_tokenizer_path: Optional[str],
+) -> tuple[str, dict]:
+    """
+    Resolve the tokenizer source and init kwargs.
+
+    Preference order:
+    1. Explicit --tokenizer_path
+    2. tokenizer_config.yaml / full_config.yaml saved with the checkpoint
+    3. Tokenizer files already present in the checkpoint directory
+    4. Bundled GPT-2 tokenizer when the checkpoint matches the standard 50,257 vocab
+    """
+    if explicit_tokenizer_path:
+        return explicit_tokenizer_path, {}
+
+    tokenizer_config = _load_tokenizer_config(checkpoint_path)
+    if tokenizer_config is not None:
+        if tokenizer_config.tokenizer_type == "sentencepiece":
+            model_path = tokenizer_config.tokenizer_model_path or tokenizer_config.tokenizer_name_or_path
+            return model_path, {"tokenizer_type": "sentencepiece"}
+
+        return tokenizer_config.tokenizer_name_or_path, {
+            "use_fast": tokenizer_config.use_fast,
+            "local_files_only": tokenizer_config.local_files_only,
+        }
+
+    if _checkpoint_has_tokenizer_files(checkpoint_path):
+        return str(checkpoint_path), {}
+
+    bundled_gpt2 = Path(__file__).resolve().parents[2] / "tokenizers" / "gpt2"
+    if bundled_gpt2.exists() and config.vocab_size == 50257:
+        warnings.warn(
+            "No tokenizer files were found in the checkpoint directory; "
+            f"falling back to bundled GPT-2 tokenizer at {bundled_gpt2}. "
+            "Use --tokenizer_path to override this if the checkpoint was trained "
+            "with a different tokenizer.",
+            UserWarning,
+            stacklevel=2,
+        )
+        return str(bundled_gpt2), {"local_files_only": True}
+
+    raise FileNotFoundError(
+        "Could not find tokenizer files in the checkpoint directory. "
+        "Pass --tokenizer_path to point at a tokenizer directory, or save "
+        "tokenizer artifacts alongside the model checkpoint."
+    )
 
 
 def load_model_and_tokenizer(
     checkpoint_path: str,
     device: Optional[torch.device] = None,
     use_yaml_config: bool = False,
+    tokenizer_path: Optional[str] = None,
 ) -> Tuple[KilatTransformer, KilatTokenizer]:
     """
     Load a KilatTransformer model and its tokenizer from a checkpoint.
@@ -52,12 +130,6 @@ def load_model_and_tokenizer(
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # --- Load tokenizer ---
-    # Generation now uses the shared tokenizer wrapper from data/tokenizer.py so
-    # inference and preprocessing stay in sync.
-    tokenizer_path = checkpoint_path if checkpoint_path.is_dir() else checkpoint_path.parent
-    tokenizer = KilatTokenizer.from_pretrained(str(tokenizer_path))
-
     # --- Determine model configuration ---
     # Priority ordering supports development workflow: YAML for active tweaking,
     # MainConfig for checkpointing experiments, JSON for HF ecosystem compat.
@@ -70,6 +142,19 @@ def load_model_and_tokenizer(
     else:
         # Standard HF format - used when sharing models with non-Kilat code
         config = KilatConfig.from_pretrained(str(checkpoint_path))
+
+    # --- Load tokenizer ---
+    # The checkpoint directory may only contain model weights/config, so we
+    # resolve the tokenizer source separately instead of assuming it lives there.
+    resolved_tokenizer_path, tokenizer_kwargs = _resolve_tokenizer_source(
+        checkpoint_path,
+        config,
+        tokenizer_path,
+    )
+    tokenizer = KilatTokenizer.from_pretrained(
+        str(resolved_tokenizer_path),
+        **tokenizer_kwargs,
+    )
 
     # --- Instantiate model ---
     model = KilatTransformer(config)

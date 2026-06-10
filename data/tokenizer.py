@@ -277,12 +277,20 @@ class KilatTokenizer:
             if self._pad_token_id is None:
                 if self._eos_token_id is not None:
                     self._pad_token_id = self._eos_token_id
+                    # HF tokenizers need the pad token itself to be set, not
+                    # just the cached pad_token_id, otherwise padding=True fails.
+                    self._tokenizer.pad_token = self._tokenizer.eos_token
                     warnings.warn(
                         f"Tokenizer has no pad_token. Setting pad_token_id = eos_token_id ({self._eos_token_id}).",
                         UserWarning,
                     )
                 else:
                     self._pad_token_id = 0
+                    # Fall back to the first token id if the tokenizer truly has
+                    # no pad/eos token. This keeps the wrapper usable, though a
+                    # real pad token is strongly preferred for generation.
+                    if getattr(self._tokenizer, "pad_token", None) is None:
+                        self._tokenizer.pad_token = self._tokenizer.unk_token or self._tokenizer.bos_token
                     warnings.warn(
                         "Tokenizer has no pad_token and no eos_token. Setting pad_token_id = 0.",
                         UserWarning,

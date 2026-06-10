@@ -78,6 +78,12 @@ Examples:
                        help="Device to run on (auto-detected if not specified)")
     parser.add_argument("--use_yaml_config", action="store_true", 
                        help="Load config from config.yaml instead of model config.json")
+    parser.add_argument(
+        "--tokenizer_path",
+        type=str,
+        default=None,
+        help="Optional tokenizer directory. Use this when the checkpoint only contains model weights.",
+    )
 
     args = parser.parse_args()
 
@@ -88,7 +94,10 @@ Examples:
     # Load model - this may take 5-30 seconds depending on model size and hardware
     print("Loading model...")
     model, tokenizer = load_model_and_tokenizer(
-        args.checkpoint, device=device, use_yaml_config=args.use_yaml_config
+        args.checkpoint,
+        device=device,
+        use_yaml_config=args.use_yaml_config,
+        tokenizer_path=args.tokenizer_path,
     )
 
     # Generator wraps the model with KV-cache management and sampling logic
