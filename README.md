@@ -148,6 +148,72 @@ Shared experts are controlled by `num_shared_experts` in `KilatConfig` — set t
 
 The attention module splits `n_head` heads into two specialised paths that run in parallel and merge via a learned gate. This hybrid design trades a fraction of precise-recall capacity for O(N) compute and dramatically reduced KV-cache memory.
 
+```
+                     Input x  [B, N, D]
+                          │
+          ┌───────────────┴────────────────┐
+          │                                │
+          ▼                                ▼
+  ╔═══════════════════╗           ╔════════════════════╗
+  ║   PATH 1          ║           ║   PATH 2           ║
+  ║   Global Decay    ║           ║   Latent MLA       ║
+  ║   (linear, O(N))  ║           ║   (softmax, O(N²)) ║
+  ╚═══════════════════╝           ╚════════════════════╝
+          │                                │
+          ▼                                ▼
+   ┌─────────────┐                 ┌──────────────────┐
+   │  v_proj     │                 │  q_a → LN → q_b  │
+   │  (values)   │                 │  kv_a → LN → kv_b│
+   └──────┬──────┘                 └────────┬─────────┘
+          │  [B, N, H_g·Dh]                 │  Q [B, H_r, N, Dh]
+          ▼                                 │  K,V from latent cache
+   ┌─────────────────┐                      ▼
+   │  λ = σ(log_λ)   │             ┌─────────────────────┐
+   │  per-head decay │             │  KV-cache in latent │
+   └──────┬──────────┘             │  space (B, N, L)    │
+          │                        │  4–8× smaller than  │
+          ▼                        │  full K,V matrices  │
+   ┌──────────────────────┐        └──────────┬──────────┘
+   │  Triton causal decay │                   │
+   │                      │                   ▼
+   │  full seq:           │        ┌─────────────────────┐
+   │    Σ λ^(i-j)·V[j]   │        │  SDPA (is_causal)   │
+   │    O(N) kernel       │        │  Q·Kᵀ/√Dh → V      │
+   │                      │        └──────────┬──────────┘
+   │  incremental:        │                   │
+   │    λ·state + V_new   │                   │
+   │    O(1) per step     │                   │
+   └──────────┬───────────┘                   │
+              │  out_global                   │  out_recall
+              │  [B, N, H_g·Dh]              │  [B, N, H_r·Dh]
+              └──────────────┬────────────────┘
+                             │
+                             ▼
+                  ┌─────────────────────┐
+                  │  cat along head dim │
+                  │  [B, N, D]          │
+                  └──────────┬──────────┘
+                             │
+              x (residual) ──┤
+                             ▼
+                  ┌─────────────────────────────┐
+                  │  γ_net([x, out_combined])    │
+                  │                             │
+                  │  Linear → ReLU → Linear → σ │
+                  │  gate ∈ (0,1)^D, elem-wise  │
+                  └──────────┬──────────────────┘
+                             │  out * gate
+                             ▼
+                  ┌─────────────────────┐
+                  │  c_proj             │
+                  │  Linear(D → D)      │
+                  └──────────┬──────────┘
+                             │
+                     output [B, N, D]
+                   + cache (optional)
+```
+
+
 **Head allocation** is controlled by `recall_ratio`:
 
 ```
