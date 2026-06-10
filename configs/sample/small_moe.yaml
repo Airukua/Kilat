@@ -1,28 +1,34 @@
-# Kilat experiment config: small dense baseline
+# Kilat experiment config: small MoE for RTX 4050 (6GB VRAM)
 experiment:
-  name: small-dense-baseline
-  description: Small dense baseline for quick smoke tests and local experiments.
-  tags: ["dense", "baseline", "smoke-test"]
+  name: moe-rtx4050-optimized
+  description: MoE model optimized for RTX 4050 6GB VRAM
+  tags: ["moe", "rtx4050", "optimized"]
 
 model:
   vocab_size: 50257
-  n_embd: 768
-  n_layer: 12
-  n_head: 12
+  n_embd: 512          
+  n_layer: 8         
+  n_head: 8           
   recall_ratio: 0.5
-  latent_dim: 192
+  latent_dim: 128      
   attn_drop: 0.0
-  ffn_mode: dense
+  
+  # MoE configuration 
+  ffn_mode: moe
   ff_mult: 2.6666666667
   ffn_dropout: 0.0
-  num_experts: 8
-  active_experts: 2
+  num_experts: 4      
+  active_experts: 2    
   num_shared_experts: 0
   fine_grained_factor: 1
   aux_loss_coef: 0.01
   device_balance_coef: 0.001
+  
+  # Regularisation
   embd_drop: 0.0
   resid_drop: 0.0
+  
+  # HF boilerplate
   pad_token_id: 0
   bos_token_id: 1
   eos_token_id: 2
@@ -34,17 +40,17 @@ tokenizer:
   tokenizer_type: auto
   tokenizer_name_or_path: gpt2  
   use_fast: true
-  local_files_only: true 
+  local_files_only: true
 
 dataloader:
-  train_batch_size: 8
-  eval_batch_size: 8
-  num_workers: 4
+  train_batch_size: 4  
+  eval_batch_size: 4
+  num_workers: 2       
   pin_memory: true
   prefetch_factor: 2
   persistent_workers: false
   drop_last: true
-  max_seq_length: 1024
+  max_seq_length: 512   
   truncation: right
   use_packing: false
   packed_block_size: null
@@ -62,11 +68,11 @@ training:
   save_checkpoints: true
   atomic_checkpoint: true
   training_mode: steps
-  learning_rate: 1.0e-3
+  learning_rate: 3.0e-4    
   beta1: 0.9
   beta2: 0.95
   epsilon: 1.0e-8
-  gradient_accumulation_steps: 2
+  gradient_accumulation_steps: 4   
   weight_decay: 0.1
   max_grad_norm: 1.0
   max_steps: 50000
@@ -83,7 +89,7 @@ training:
   early_stopping_threshold: 0.0
   metric_for_best_model: eval_loss
   greater_is_better: null
-  precision: fp16
+  precision: fp16          
   report_to: "none"
-  run_name: small-dense-baseline
+  run_name: moe-rtx4050
   seed: 42

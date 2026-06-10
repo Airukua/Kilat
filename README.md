@@ -129,7 +129,333 @@ The trainer restores model weights, optimizer, scheduler, scaler, callback state
 
 ### Run inference
 
-Comming Soon!
+The generation module consists of several components:
+
+| Component | File | Description |
+|-----------|------|-------------|
+| `GenerationConfig` | `generation_config.py` | Configuration dataclass for generation parameters |
+| `GenerationMixin` | `generation_mixin.py` | Mixin class adding `generate()` method to models |
+| `AutoTokenizer` | `auto_tokenizer.py` | Custom tokenizer loader for Kilat checkpoints |
+| `TextGenerator` | `wrapper.py` | High-level wrapper for easy generation |
+| `sampler.py` | Sampling strategies (multinomial, top-k, top-p, etc.) |
+| `logit_processor.py` | Logits processors (temperature, repetition penalty, etc.) |
+| `stopping_criteria.py` | Stopping criteria (max length, EOS token, etc.) |
+| `beam_search.py` | Beam search implementation |
+
+### Basic Generation
+
+```python
+from arc.model import KilatTransformer
+from data.tokenizer import AutoTokenizer
+from pipeline.generation.generator import TextGenerator
+
+# Load model and tokenizer
+model = KilatTransformer.from_pretrained("./checkpoints/my-model")
+tokenizer = AutoTokenizer.from_pretrained("./checkpoints/my-model")
+
+# Create generator
+generator = TextGenerator(model, tokenizer)
+
+# Generate text
+text = generator.generate("Once upon a time", max_new_tokens=100)
+print(text)
+```
+
+### One-liner Quick Generation
+
+```python
+from generation import quick_generate
+
+text = quick_generate(model, tokenizer, "Hello world", max_new_tokens=50)
+```
+
+## Generation Strategies
+
+### 1. Greedy Decoding (Fast, Deterministic)
+
+Picks the most likely token at each step. Best for tasks requiring reproducibility.
+
+```python
+text = generator.generate(
+    "The capital of France is",
+    max_new_tokens=20,
+    do_sample=False,  # Greedy mode
+)
+```
+
+### 2. Sampling with Temperature (Creative)
+
+Adds randomness for diverse outputs. Higher temperature = more creative.
+
+```python
+text = generator.generate(
+    "Once upon a time",
+    max_new_tokens=100,
+    do_sample=True,
+    temperature=0.8,
+)
+```
+
+### 3. Top-K Sampling
+
+Only samples from the K most likely tokens.
+
+```python
+text = generator.generate(
+    prompt,
+    do_sample=True,
+    top_k=50,
+    temperature=0.8,
+)
+```
+
+### 4. Top-P (Nucleus) Sampling
+
+Samples from the smallest set of tokens whose cumulative probability exceeds P.
+
+```python
+text = generator.generate(
+    prompt,
+    do_sample=True,
+    top_p=0.95,
+    temperature=0.8,
+)
+```
+
+### 5. Beam Search
+
+Maintains multiple candidate sequences for higher quality.
+
+```python
+text = generator.generate(
+    prompt,
+    num_beams=4,
+    length_penalty=1.2,
+    do_sample=False,
+)
+```
+
+### 6. Contrastive Search
+
+Penalizes repetitive tokens for more coherent output.
+
+```python
+text = generator.generate(
+    prompt,
+    do_sample=True,
+    sampling_strategy="contrastive",
+    contrastive_penalty=0.5,
+    top_k=4,
+)
+```
+
+## Batch Generation
+
+Generate multiple prompts at once:
+
+```python
+from generation import batch_generate
+
+prompts = [
+    "Once upon a time",
+    "In a galaxy far far away",
+    "The quick brown fox",
+]
+
+texts = batch_generate(model, tokenizer, prompts, max_new_tokens=50)
+for prompt, text in zip(prompts, texts):
+    print(f"{prompt} -> {text[:100]}...")
+```
+
+## Streaming Generation
+
+Generate token by token for real-time applications:
+
+```python
+from generation import stream_generate
+
+print("AI: ", end="")
+for chunk in stream_generate(model, tokenizer, "Hello", max_new_tokens=50):
+    print(chunk, end="", flush=True)
+print()
+```
+
+## Advanced Usage
+
+### Custom GenerationConfig
+
+```python
+from generation import GenerationConfig
+
+config = GenerationConfig(
+    max_new_tokens=200,
+    do_sample=True,
+    temperature=0.7,
+    top_k=40,
+    top_p=0.92,
+    repetition_penalty=1.15,
+    num_beams=4,
+    length_penalty=1.0,
+    early_stopping=True,
+)
+
+output_ids = model.generate(input_ids, generation_config=config)
+```
+
+### Manual Low-Level Generation
+
+```python
+# First forward pass (prompt processing)
+outputs = model(input_ids, use_cache=True)
+past_key_values = outputs.past_key_values
+generated = input_ids
+
+# Generate token by token
+for _ in range(max_new_tokens):
+    outputs = model(
+        generated[:, -1:],  # Only the last token
+        past_key_values=past_key_values,
+        use_cache=True,
+    )
+    logits = outputs.logits[:, -1, :]
+    past_key_values = outputs.past_key_values
+    
+    # Sample or greedy
+    next_token = torch.argmax(logits, dim=-1, keepdim=True)
+    generated = torch.cat([generated, next_token], dim=1)
+    
+    if next_token.item() == eos_token_id:
+        break
+
+output_text = tokenizer.decode(generated[0], skip_special_tokens=True)
+```
+
+### Custom Logits Processor
+
+```python
+from generation.logit_processor import LogitsProcessor, LogitsProcessorList
+
+class MyCustomProcessor(LogitsProcessor):
+    def __call__(self, input_ids, scores):
+        # Ban specific token IDs
+        scores[:, 12345] = -float("inf")
+        return scores
+
+# Apply custom processor
+processors = LogitsProcessorList()
+processors.append(MyCustomProcessor())
+```
+
+### Custom Stopping Criteria
+
+```python
+from generation.stoping_criteria import StoppingCriteria, StoppingCriteriaList
+
+class MyStopCriteria(StoppingCriteria):
+    def __call__(self, input_ids, scores=None, **kwargs):
+        # Stop when a specific token appears
+        return (input_ids[:, -1] == 12345).any()
+
+criteria = StoppingCriteriaList()
+criteria.append(MyStopCriteria())
+```
+
+## GenerationConfig Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `max_new_tokens` | int | 100 | Maximum new tokens to generate |
+| `do_sample` | bool | False | Whether to sample (vs greedy) |
+| `temperature` | float | 1.0 | Sampling temperature (higher = more random) |
+| `top_k` | int | 50 | Top-K filtering (0 = disabled) |
+| `top_p` | float | 1.0 | Nucleus sampling threshold (1.0 = disabled) |
+| `num_beams` | int | 1 | Number of beams for beam search |
+| `repetition_penalty` | float | 1.0 | Penalty for repeated tokens |
+| `length_penalty` | float | 1.0 | Length penalty for beam search |
+| `early_stopping` | bool | False | Stop beam search early when finished |
+| `eos_token_id` | int | None | End-of-sequence token ID |
+| `pad_token_id` | int | None | Padding token ID |
+| `num_return_sequences` | int | 1 | Number of sequences to return |
+
+## AutoTokenizer
+
+The custom `AutoTokenizer` loads tokenizers from Kilat checkpoints, supporting all backend types:
+
+```python
+from data.tokenizer import AutoTokenizer
+
+# Load from checkpoint (supports HuggingFace, SentencePiece, and custom)
+tokenizer = AutoTokenizer.from_pretrained("./checkpoints/my-model")
+
+# Save tokenizer
+from generation.auto_tokenizer import save_tokenizer
+save_tokenizer(tokenizer, "./checkpoints/my-model")
+```
+
+## Complete Example
+
+```python
+import torch
+from arc.model import KilatTransformer
+from pipeline.generation.generator import TextGenerator
+from pipeline.generation.generation_config import GenerationConfig
+
+# Load model
+model_path = "./checkpoints/checkpoint-best"
+model = KilatTransformer.from_pretrained(model_path)
+model = model.to("cuda").eval()
+
+# Load tokenizer
+tokenizer = AutoTokenizer.from_pretrained(model_path)
+
+# Create generator
+generator = TextGenerator(model, tokenizer, device="cuda")
+
+# Configure generation
+config = GenerationConfig(
+    max_new_tokens=150,
+    do_sample=True,
+    temperature=0.8,
+    top_p=0.95,
+    repetition_penalty=1.1,
+)
+
+# Generate
+prompt = "The future of artificial intelligence"
+output = model.generate(
+    tokenizer.encode(prompt, return_tensors="pt").cuda(),
+    generation_config=config,
+)
+text = tokenizer.decode(output[0], skip_special_tokens=True)
+print(text)
+```
+
+## Performance Notes
+
+- **Greedy**: Fastest, O(N) per token
+- **Sampling**: Similar to greedy, plus sampling overhead
+- **Beam Search**: Slower, O(num_beams × N) per token
+- **KV-Cache**: Enabled automatically for all strategies
+- **Global Decay Heads**: O(1) per token
+- **MLA Heads**: O(N) per token
+
+## Troubleshooting
+
+| Issue | Solution |
+|-------|----------|
+| Model outputs gibberish | Continue training (loss should be < 3.0) |
+| Excessive repetition | Increase `repetition_penalty` to 1.1-1.2 |
+| Too random | Lower `temperature` to 0.5-0.7 |
+| Too deterministic | Increase `temperature` to 0.9-1.2 or enable sampling |
+| Out of memory | Reduce `max_new_tokens` or `num_beams` |
+| Slow generation | Use greedy or reduce `num_beams` |
+
+## References
+
+- Hugging Face Transformers Generation API
+- Holtzman et al. (2019): "The Curious Case of Neural Text Degeneration" (Top-P)
+- Fan et al. (2018): "Hierarchical Neural Story Generation" (Top-K)
+- Su et al. (2022): "A Contrastive Framework for Neural Text Generation" (Contrastive Search)
 
 ---
 

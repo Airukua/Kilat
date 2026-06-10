@@ -8,6 +8,7 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 from .blocks import Block, RMSNorm
 from configs.model_config import KilatConfig
 from configs.main_config import MainConfig
+from pipeline.generation.generation_mixin import GenerationMixin
 from utils.validators import (
     validate_finite_tensor,
     validate_tensor_rank,
@@ -71,9 +72,9 @@ class KilatPreTrainedModel(PreTrainedModel):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
 
-class KilatTransformer(KilatPreTrainedModel):
+class KilatTransformer(KilatPreTrainedModel, GenerationMixin):
     """
-    Hugging Face‑compatible KilatTransformer for causal language modelling.
+    Hugging Face‑compatible KilatTransformer for causal language modelling with generation support.
 
     Architecture Overview
     --------------------
@@ -119,9 +120,20 @@ class KilatTransformer(KilatPreTrainedModel):
       placeholder. Full KV‑cache support requires implementing a cache object
       that tracks the compressed MLA KV states.
 
-    Incremental Decoding Support (added)
-    ------------------------------------
-    The model now supports efficient autoregressive generation using a compressed
+    Generation Support (via GenerationMixin)
+    -----------------------------------------
+    The model now inherits from ``GenerationMixin``, which provides the ``generate()``
+    method for text generation. This supports:
+    - Greedy decoding (do_sample=False, num_beams=1)
+    - Multinomial sampling (do_sample=True, num_beams=1)
+    - Beam search (num_beams>1, do_sample=False)
+    - Various sampling strategies (temperature, top-k, top-p, typical, contrastive)
+    - Stopping criteria (max_length, max_new_tokens, EOS token)
+    - Logits processors (repetition penalty, no repeat n-gram, etc.)
+
+    Incremental Decoding Support
+    ----------------------------
+    The model supports efficient autoregressive generation using a compressed
     KV‑cache. The cache is a tuple of per‑layer caches, each of which is a tuple
     `(global_state, latent_kv)` as produced by `KilatAttention`.
     - `global_state`: (B, n_global_heads, head_dim) – recurrent state for global decay heads.
@@ -132,7 +144,10 @@ class KilatTransformer(KilatPreTrainedModel):
         outputs = model(input_ids, use_cache=True)
         past_key_values = outputs.past_key_values
 
-        # Subsequent steps (generation)
+        # Generate text (uses KV-cache automatically)
+        generated = model.generate(input_ids, max_new_tokens=100)
+
+        # Or manual incremental decoding
         next_token = sample(outputs.logits[:, -1, :])
         outputs = model(next_token, past_key_values=past_key_values, use_cache=True)
 
@@ -144,6 +159,10 @@ class KilatTransformer(KilatPreTrainedModel):
         >>> out = model(input_ids, labels=labels)
         >>> print(out.loss)       # scalar loss (incl. auxiliary if MoE)
         >>> print(out.logits.shape)  # (2, 128, 32000)
+        >>>
+        >>> # Generation
+        >>> generated = model.generate(input_ids, max_new_tokens=50, do_sample=True, temperature=0.8)
+        >>> print(generated.shape)  # (2, 178)
     """
 
     def __init__(self, config: KilatConfig):
