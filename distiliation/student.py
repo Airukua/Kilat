@@ -108,7 +108,7 @@ class KilatStudent(BaseStudent):
             )
         """
         from arc.model import KilatTransformer
-        from utils.config import KilatConfig
+        from config import KilatConfig
 
         cfg = KilatConfig(
             vocab_size=vocab_size,
@@ -130,7 +130,7 @@ class KilatStudent(BaseStudent):
     ) -> "KilatStudent":
         """Create student from an existing KilatConfig or MainConfig object."""
         from arc.model import KilatTransformer
-        from utils.config import MainConfig
+        from config import MainConfig
 
         if isinstance(config, MainConfig):
             config = config.model
@@ -151,7 +151,7 @@ class KilatStudent(BaseStudent):
         The directory must contain config.yaml and model weights.
         """
         from arc.model import KilatTransformer
-        from utils.config import MainConfig
+        from config import MainConfig
         from safetensors.torch import load_file
 
         checkpoint_dir = Path(checkpoint_dir)

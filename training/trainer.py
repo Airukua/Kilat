@@ -38,6 +38,7 @@ from .trainer_utils import (
     should_log,
     should_save,
 )
+from utils.report import count_parameters
 
 logger = logging.getLogger(__name__)
 
@@ -210,6 +211,8 @@ class KilatTrainer:
         eval_fn: Optional[Callable] = None,
         compute_loss_fn: Optional[Callable] = None,
         callbacks: Optional[list] = None,
+        tokenizer: Optional[Any] = None,         
+        tokenizer_config: Optional[Any] = None,  
     ) -> None:
         """
         Initialise the trainer without starting the training loop.
@@ -243,7 +246,13 @@ class KilatTrainer:
         callbacks : Optional[list]
             Additional `TrainerCallback` instances. They are appended after the
             automatic callbacks (integrations, early stopping) but before the
-            default `ProgressCallback`.
+            default `ConsoleCallback`.
+        tokenizer : Optional[Any]
+            Tokenizer instance for saving checkpoints. If provided, the tokenizer
+            will be saved alongside the model checkpoint.
+        tokenizer_config : Optional[Any]
+            Tokenizer configuration (e.g., from MainConfig.tokenizer) used to
+            determine if the tokenizer needs to be saved (local vs Hub).
         """
         self.model = model
         self.args = args
@@ -251,6 +260,8 @@ class KilatTrainer:
         self.eval_dataloader = eval_dataloader
         self.eval_fn = eval_fn
         self.compute_loss_fn = compute_loss_fn
+        self.tokenizer = tokenizer                    
+        self.tokenizer_config = tokenizer_config      
 
         self.device = get_device(model)
 
@@ -382,6 +393,7 @@ class KilatTrainer:
                     checkpoint_path=resume_path,
                     device=self.device,
                     early_stopping=self.early_stopping,
+                    tokenizer_config=self.tokenizer_config, 
                 )
                 # Keep the newly computed step budget from the current args.
                 # load_checkpoint restores TrainerState from disk, including the
@@ -389,6 +401,14 @@ class KilatTrainer:
                 self.state.max_steps = total_steps
                 # If load_checkpoint returned a new model, we replace it.
                 # Otherwise, the original model was modified in place.
+
+        total_params = count_parameters(self.model)
+        trainable_params = count_parameters(self.model, trainable_only=True)
+        logger.info(
+            "Model parameters | total=%s | trainable=%s",
+            f"{total_params:,}",
+            f"{trainable_params:,}",
+        )
 
         # ─── Notify callbacks that training is about to start ─────────────
         self.callback_handler.on_train_begin(
@@ -477,6 +497,8 @@ class KilatTrainer:
                     postfix["eval_loss"] = f"{metrics['eval_loss']:.4f}"
                 if "perplexity" in metrics:
                     postfix["ppl"] = f"{metrics['perplexity']:.2f}"
+                if "ppl" in metrics:
+                    postfix["ppl"] = f"{metrics['ppl']:.2f}"
                 epoch_bar.set_postfix(**postfix)
 
             # Epoch‑end checkpoint (tagged with epoch number)
@@ -557,7 +579,11 @@ class KilatTrainer:
                 acc_steps = 0
 
                 step_bar.update(1)
-                step_bar.set_postfix(loss=f"{avg_loss:.4f}", lr=f"{get_current_lr(self.optimizer):.2e}")
+                step_bar.set_postfix(
+                    loss=f"{avg_loss:.4f}",
+                    ppl=f"{compute_perplexity(avg_loss):.2f}",
+                    lr=f"{get_current_lr(self.optimizer):.2e}",
+                )
 
                 self.callback_handler.on_step_end(self.state, self.control)
                 self._handle_step_end(avg_loss)
@@ -633,6 +659,7 @@ class KilatTrainer:
 
                 step_bar.set_postfix(
                     loss=f"{avg_loss:.4f}",
+                    ppl=f"{compute_perplexity(avg_loss):.2f}",
                     lr=f"{get_current_lr(self.optimizer):.2e}",
                 )
 
@@ -890,8 +917,6 @@ class KilatTrainer:
 
         # Always log evaluation metrics (even if no improvement)
         self._log(metrics)
-        # Explicitly print evaluation results so they are always visible
-        logger.info("Evaluation results: %s", metrics)
 
         self.callback_handler.on_evaluate(
             self.state, self.control, metrics=metrics
@@ -931,6 +956,7 @@ class KilatTrainer:
                 logs["grad_scale"] = self.scaler.get_scale()
             # Add perplexity for immediate feedback
             logs["perplexity"] = compute_perplexity(avg_loss)
+            logs["ppl"] = logs["perplexity"]
 
             self._log(logs)
 
@@ -992,6 +1018,8 @@ class KilatTrainer:
             tag=tag,
             early_stopping=self.early_stopping,
             training_args=self.args,
+            tokenizer=getattr(self, 'tokenizer', None),          
+            tokenizer_config=getattr(self, 'tokenizer_config', None), 
             atomic=getattr(self.args, "atomic_checkpoint", True),
         )
         self.callback_handler.on_save(self.state, self.control)

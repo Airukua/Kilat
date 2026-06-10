@@ -28,24 +28,29 @@ Edge Cases Handled:
 
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 
 import numpy as np
 import torch
-from torchinfo import summary
 
 # Add project root to Python path to enable absolute imports.
 # This allows importing modules like 'data.dataset', 'training.trainer', etc.
-project_root = Path.cwd().parent
+project_root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(project_root))
 
 # Kilat components
 from data.dataset import PretrainingDataset
 from data.dataloader import build_train_dataloader, build_eval_dataloader
-from training.trainer import KilatTrainer, TrainingArguments
-from utils.config import MainConfig, KilatConfig
+from data.collator import KilatDataCollator
+from training.trainer import KilatTrainer
+from training.args import TrainingArguments
+from configs.main_config import MainConfig
 from arc.model import KilatTransformer
+
+logging.basicConfig(level=logging.INFO, format="%(message)s", force=True)
+
 
 # ---------------------------------------------------------------------------
 # 1. Device detection
@@ -55,100 +60,107 @@ from arc.model import KilatTransformer
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
 
-# ---------------------------------------------------------------------------
-# 2. Load configuration
-# ---------------------------------------------------------------------------
-# MainConfig reads from YAML (includes model architecture, training hyperparameters,
-# dataloader settings, and paths). KilatConfig converts it to the format expected
-# by KilatTransformer (e.g., embedding dimensions, number of heads, layers).
-#
-# WHY separate configs? MainConfig is user-friendly (YAML), KilatConfig is
-# optimised for fast internal access (dict/attribute lookup).
-main_config = MainConfig.from_yaml('configs/small_dense.yaml')
-config = KilatConfig.from_main_config(main_config)
 
 # ---------------------------------------------------------------------------
-# 3. Model initialisation
+# 2. Load configuration (MainConfig as single source of truth)
+# ---------------------------------------------------------------------------
+config = MainConfig.from_yaml('configs/sample/small_dense.yaml')
+
+
+# ---------------------------------------------------------------------------
+# 3. Build tokenizer automatically from config
+# ---------------------------------------------------------------------------
+print("Building tokenizer...")
+tokenizer = config.build_tokenizer()
+
+# Verify tokenizer works (optional)
+test_text = "Hello, world!"
+test_tokens = tokenizer.encode(test_text)
+print(f"Tokenizer test: '{test_text[:20]}...' -> {len(test_tokens)} tokens")
+
+
+# ---------------------------------------------------------------------------
+# 4. Model initialisation
 # ---------------------------------------------------------------------------
 # Create transformer model with the specified architecture.
+# KilatTransformer.__init__ handles MainConfig automatically (extracts .model)
 model = KilatTransformer(config)
 model.to(device)
 
-# Display model architecture summary (depth=3 shows nested module breakdown).
-# Useful for verifying parameter count and layer dimensions.
-sample_input = torch.randint(0, config.vocab_size, (8, 1024), device=device)
-print("\nModel Architecture Summary:")
-summary(model, input_data=sample_input, depth=3)
+print(f"Model created with {sum(p.numel() for p in model.parameters()):,} parameters")
+
 
 # ---------------------------------------------------------------------------
-# 4. Dataset preparation (memory-mapped)
+# 5. Dataset preparation (memory-mapped)
 # ---------------------------------------------------------------------------
 # PretrainingDataset loads a flat .npy file containing concatenated token IDs.
 # It slices the flat array into chunks of `max_seq_length` tokens.
-#
-# WHY memmap: The file is memory-mapped (zero-copy), allowing datasets larger
-# than RAM. The OS page cache loads only the pages needed for current batches.
-train = PretrainingDataset(
-    source="data/fine-web/train/tokens.npy",
+train_dataset = PretrainingDataset(
+    source=config.dataloader.train_data_path,
     key_name="input_ids",
-    chunk_size=main_config.dataloader.max_seq_length,  # Matches model's context length
+    chunk_size=config.dataloader.max_seq_length,
     dtype=np.int32,  # Token IDs fit in 32-bit signed integer
 )
 
-val = PretrainingDataset(
-    source="data/fine-web/val/tokens.npy",
+eval_dataset = PretrainingDataset(
+    source=config.dataloader.eval_data_path,
     key_name="input_ids",
-    chunk_size=main_config.dataloader.max_seq_length,
+    chunk_size=config.dataloader.max_seq_length,
     dtype=np.int32,
 )
 
+print(f"Train samples: {len(train_dataset):,}")
+print(f"Eval samples: {len(eval_dataset):,}")
+
+
 # ---------------------------------------------------------------------------
-# 5. DataLoader setup
+# 6. DataLoader setup with collator
 # ---------------------------------------------------------------------------
+# KilatDataCollator handles padding and label masking for causal LM
+collator = KilatDataCollator(
+    pad_token_id=config.model.pad_token_id,
+    max_length=config.dataloader.max_seq_length,
+    ignore_index=-100,
+)
+
 # build_train_dataloader: shuffles, uses DistributedSampler in DDP, drop_last=True.
 # build_eval_dataloader: no shuffle, drop_last=False (preserve all samples).
-#
-# Both functions automatically handle:
-# - Padding to batch's longest sequence (via KilatDataCollator)
-# - Multi-GPU distribution (DistributedSampler when torch.distributed is initialised)
-# - Worker initialisation for reproducible randomness
 train_loader = build_train_dataloader(
-    train,
-    batch_size=main_config.dataloader.train_batch_size,
-    pad_token_id=config.pad_token_id,
-    max_length=main_config.dataloader.max_seq_length,
-    num_workers=main_config.dataloader.num_workers,
-    pin_memory=main_config.dataloader.pin_memory,
-    drop_last=main_config.dataloader.drop_last,
+    train_dataset,
+    batch_size=config.dataloader.train_batch_size,
+    collate_fn=collator,
+    num_workers=config.dataloader.num_workers,
+    pin_memory=config.dataloader.pin_memory,
+    drop_last=config.dataloader.drop_last,
+    seed=config.training.seed,
 )
 
 eval_loader = build_eval_dataloader(
-    val,
-    batch_size=main_config.dataloader.eval_batch_size,
-    pad_token_id=config.pad_token_id,
-    max_length=main_config.dataloader.max_seq_length,
-    num_workers=main_config.dataloader.num_workers,
-    pin_memory=main_config.dataloader.pin_memory,
+    eval_dataset,
+    batch_size=config.dataloader.eval_batch_size,
+    collate_fn=collator,
+    num_workers=config.dataloader.num_workers,
+    pin_memory=config.dataloader.pin_memory,
     drop_last=False,  # Keep all validation samples for accurate metrics
+    seed=config.training.seed,
 )
 
+
 # ---------------------------------------------------------------------------
-# 6. TrainingArguments setup
+# 7. TrainingArguments setup
 # ---------------------------------------------------------------------------
-# Convert MainConfig.training dataclass to a dictionary.
-# Remove batch size fields because they are already passed via DataLoader.
-# This avoids duplicate/conflicting configuration.
-training_dict = main_config.training.to_dict()
+# Convert TrainingConfig to dictionary and remove batch size fields
+# because they are already passed via DataLoader
+training_dict = config.training.to_dict()
 training_dict.pop('per_device_train_batch_size', None)
 training_dict.pop('per_device_eval_batch_size', None)
 
 # Create TrainingArguments (dataclass) for the trainer.
-# Fields include: learning_rate, weight_decay, warmup_steps, scheduler_type,
-# precision (fp16/bf16), logging/save/eval intervals, early stopping, etc.
 args = TrainingArguments(**training_dict)
 
+
 # ---------------------------------------------------------------------------
-# 7. Trainer initialisation and execution
+# 8. Trainer initialisation and execution
 # ---------------------------------------------------------------------------
 # KilatTrainer orchestrates:
 # - Training loop (epochs or steps)
@@ -157,17 +169,28 @@ args = TrainingArguments(**training_dict)
 # - Periodic evaluation and checkpointing
 # - Callback dispatching (logging, early stopping, integrations)
 # - Model saving (best, final, and periodic checkpoints)
+# - Tokenizer saving (for local/custom tokenizers)
 trainer = KilatTrainer(
     model=model,
     args=args,
     train_dataloader=train_loader,
     eval_dataloader=eval_loader,
+    tokenizer=tokenizer,                    # <-- for checkpoint saving
+    tokenizer_config=config.tokenizer,      # <-- for tokenizer metadata
 )
 
 # Start training. This method blocks until training finishes (or early stops).
-# Returns the final TrainerState containing best metrics and checkpoint paths.
 final_state = trainer.train()
 
-print("\nTraining completed successfully!")
+
+# ---------------------------------------------------------------------------
+# 9. Training complete
+# ---------------------------------------------------------------------------
+print("\n" + "=" * 60)
+print("TRAINING COMPLETED SUCCESSFULLY")
+print("=" * 60)
 print(f"Best metric ({args.metric_for_best_model}): {final_state.best_metric:.6f}")
 print(f"Best checkpoint: {final_state.best_model_checkpoint}")
+print(f"Final step: {final_state.global_step}")
+print(f"Total elapsed time: {final_state.log_history[-1].get('step', 'N/A')} steps")
+print("=" * 60)

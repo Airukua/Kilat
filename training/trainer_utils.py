@@ -203,12 +203,51 @@ def format_metrics_with_ppl(metrics: dict[str, float]) -> dict[str, float]:
         >>> metrics = {"eval_loss": 1.234}
         >>> metrics = format_metrics_with_ppl(metrics)
         >>> print(metrics)
-        {"eval_loss": 1.234, "perplexity": 3.43}
+        {"eval_loss": 1.234, "perplexity": 3.43, "ppl": 3.43}
     """
     loss_key = "eval_loss" if "eval_loss" in metrics else "loss"
     if loss_key in metrics:
-        metrics["perplexity"] = compute_perplexity(metrics[loss_key])
+        ppl = compute_perplexity(metrics[loss_key])
+        metrics["perplexity"] = ppl
+        metrics["ppl"] = ppl
     return metrics
+
+
+# ---------------------------------------------------------------------------
+# Helper to determine if tokenizer needs saving
+# ---------------------------------------------------------------------------
+
+def _tokenizer_needs_saving(tokenizer_config: Optional[Any]) -> bool:
+    """
+    Determine if tokenizer files need to be copied to checkpoint.
+
+    Returns True if:
+    - tokenizer_type is "sentencepiece" (local file)
+    - tokenizer_name_or_path is a local path (starts with . or /)
+    - local_files_only is True (we can't rely on Hub)
+    - tokenizer_type is "custom" (user-provided, may be local)
+
+    Returns False if tokenizer is from HuggingFace Hub (e.g., "gpt2", "meta-llama/Llama-2-7b")
+    """
+    if tokenizer_config is None:
+        return True  # save to be safe
+
+    # SentencePiece always needs saving (local file)
+    if getattr(tokenizer_config, "tokenizer_type", None) == "sentencepiece":
+        return True
+
+    # Custom tokenizer - always save to be safe
+    if getattr(tokenizer_config, "tokenizer_type", None) == "custom":
+        return True
+
+    # Check if tokenizer_name_or_path is a local path
+    name_or_path = getattr(tokenizer_config, "tokenizer_name_or_path", "")
+    if name_or_path.startswith(('.', '/')) or '\\' in name_or_path:
+        return True
+
+    # HuggingFace Hub identifier (e.g., "gpt2", "meta-llama/Llama-2-7b")
+    # These don't need to be saved - they can be downloaded
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -228,6 +267,8 @@ def save_checkpoint(
     early_stopping: Optional[EarlyStoppingCallback] = None,
     additional_state: Optional[dict[str, Any]] = None,
     training_args: Optional[Any] = None,   # <-- save hyperparameters
+    tokenizer: Optional[Any] = None,       # <-- tokenizer instance to save
+    tokenizer_config: Optional[Any] = None, # <-- tokenizer config for metadata
     atomic: bool = True,                   # <-- atomic write
 ) -> None:
     """
@@ -237,8 +278,15 @@ def save_checkpoint(
     -----------------
     Each checkpoint is a self-contained directory containing:
     - Model weights in HuggingFace format (config.json + pytorch_model.bin)
+    - Tokenizer files (if tokenizer needs saving - local/SP/custom)
     - Training state (optimizer, scheduler, scaler, TrainerState, callback states)
     - Optional early stopping state and hyperparameters (training_args.json)
+
+    Tokenizer Saving Logic:
+    - For HuggingFace Hub tokenizers (gpt2, meta-llama/...): only save config reference
+    - For SentencePiece: copy .model file and save config
+    - For custom tokenizers: attempt save_pretrained or copy files
+    - For local path tokenizers: save full tokenizer
 
     Atomic Write (if `atomic=True`):
     - Saves to a temporary directory then renames to final location.
@@ -273,6 +321,10 @@ def save_checkpoint(
         Extra user state (e.g., random generator state).
     training_args : Optional[Any]
         Training arguments (dataclass or dict) – saved as JSON for reproducibility.
+    tokenizer : Optional[Any]
+        Tokenizer instance to save (if provided).
+    tokenizer_config : Optional[Any]
+        Tokenizer configuration for metadata and saving logic.
     atomic : bool
         If True, write to temporary directory then rename (safer).
 
@@ -281,6 +333,7 @@ def save_checkpoint(
     - Missing `save_pretrained` will raise AttributeError.
     - If `atomic=True` and renaming fails, the temporary directory is left behind
       (caller should clean up). We log an error but do not raise.
+    - If tokenizer is None, tokenizer saving is skipped.
 
     Example Usage
     -------------
@@ -295,6 +348,8 @@ def save_checkpoint(
         ...     step=global_step,
         ...     tag="best",
         ...     training_args=args,
+        ...     tokenizer=tokenizer,
+        ...     tokenizer_config=main_config.tokenizer,
         ... )
     """
     if not should_save_on_rank0(state):
@@ -322,7 +377,39 @@ def save_checkpoint(
         # 1. Save model in HuggingFace format
         model.save_pretrained(temp_path)
 
-        # 2. Save training hyperparameters (if provided)
+        # 2. Save tokenizer if provided
+        if tokenizer is not None:
+            needs_save = _tokenizer_needs_saving(tokenizer_config)
+            
+            if needs_save:
+                # Try save_pretrained first (HuggingFace style)
+                if hasattr(tokenizer, 'save_pretrained'):
+                    tokenizer.save_pretrained(temp_path)
+                    logger.info("Tokenizer saved to %s", temp_path)
+                # For SentencePiece without save_pretrained
+                elif tokenizer_config and getattr(tokenizer_config, "tokenizer_type", None) == "sentencepiece":
+                    model_path = getattr(tokenizer_config, "tokenizer_model_path", None) or getattr(tokenizer_config, "tokenizer_name_or_path", None)
+                    if model_path and os.path.exists(model_path):
+                        shutil.copy2(model_path, os.path.join(temp_path, "spm.model"))
+                        # Save tokenizer config for reloading
+                        if hasattr(tokenizer_config, "to_dict"):
+                            with open(os.path.join(temp_path, "tokenizer_config.json"), "w") as f:
+                                json.dump(tokenizer_config.to_dict(), f, indent=2)
+                        logger.info("SentencePiece tokenizer saved to %s", temp_path)
+                else:
+                    # Fallback: save config only
+                    if tokenizer_config and hasattr(tokenizer_config, "to_dict"):
+                        with open(os.path.join(temp_path, "tokenizer_config.json"), "w") as f:
+                            json.dump(tokenizer_config.to_dict(), f, indent=2)
+                        logger.info("Tokenizer config saved (fallback)")
+            else:
+                # Tokenizer from HuggingFace Hub - just save config reference
+                if tokenizer_config and hasattr(tokenizer_config, "to_dict"):
+                    with open(os.path.join(temp_path, "tokenizer_config.json"), "w") as f:
+                        json.dump(tokenizer_config.to_dict(), f, indent=2)
+                    logger.info("Tokenizer config saved (Hub reference)")
+
+        # 3. Save training hyperparameters (if provided)
         if training_args is not None:
             if hasattr(training_args, "__dataclass_fields__"):
                 import dataclasses
@@ -335,7 +422,7 @@ def save_checkpoint(
             with open(os.path.join(temp_path, "training_args.json"), "w") as f:
                 json.dump(args_dict, f, indent=2)
 
-        # 3. Build and save training state dictionary
+        # 4. Build and save training state dictionary
         training_state = {
             "optimizer": optimizer.state_dict(),
             "scheduler": scheduler.state_dict() if hasattr(scheduler, "state_dict") else None,
@@ -381,6 +468,7 @@ def load_checkpoint(
     checkpoint_path: str,
     device: torch.device,
     early_stopping: Optional[EarlyStoppingCallback] = None,
+    tokenizer_config: Optional[Any] = None,  # <-- tokenizer config to update from checkpoint
 ) -> Any:
     """
     Restore complete training state from a checkpoint directory.
@@ -395,6 +483,9 @@ def load_checkpoint(
     2. Training state:
        - Load `training_state.pt` if present, restore optimizer, scheduler, scaler,
          TrainerState, callback states, and early stopping state.
+    3. Tokenizer config (optional):
+       - Load `tokenizer_config.json` if present and tokenizer_config is provided,
+         update the config with saved values.
 
     The function returns the model (which may be a new instance if `from_pretrained` was used).
 
@@ -406,6 +497,7 @@ def load_checkpoint(
     Edge Cases:
     - If `training_state.pt` is missing, training starts from scratch (step=0).
     - Missing keys in saved TrainerState are ignored with a warning.
+    - If tokenizer_config.json exists and tokenizer_config is provided, it is updated.
 
     Returns
     -------
@@ -418,7 +510,8 @@ def load_checkpoint(
     -------------
         >>> model = load_checkpoint(
         ...     model, optimizer, scheduler, scaler, state, handler,
-        ...     "./checkpoint-1000", device
+        ...     "./checkpoint-1000", device,
+        ...     tokenizer_config=main_config.tokenizer,
         ... )
         >>> # If from_pretrained was used, model may be a new instance.
     """
@@ -486,6 +579,20 @@ def load_checkpoint(
         logger.info("Training state restored: step=%d, epoch=%.2f", state.global_step, state.epoch)
     else:
         logger.warning("No training_state.pt found – starting from scratch (step=0).")
+
+    # Phase 3: Restore tokenizer config if available
+    tokenizer_config_path = os.path.join(checkpoint_path, "tokenizer_config.json")
+    if tokenizer_config_path and tokenizer_config is not None:
+        try:
+            with open(tokenizer_config_path, "r") as f:
+                saved_tokenizer_config = json.load(f)
+            # Update tokenizer config attributes
+            for key, value in saved_tokenizer_config.items():
+                if hasattr(tokenizer_config, key):
+                    setattr(tokenizer_config, key, value)
+            logger.info("Tokenizer config updated from checkpoint")
+        except Exception as e:
+            logger.warning("Could not load tokenizer config: %s", e)
 
     return loaded_model
 

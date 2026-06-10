@@ -100,7 +100,7 @@ class KilatTeacher(BaseTeacher):
           so we can instantiate `KilatTransformer(main_cfg.model)` directly.
         """
         from arc.model import KilatTransformer
-        from utils.config import MainConfig
+        from config import MainConfig
         from safetensors.torch import load_file
 
         checkpoint_dir = Path(checkpoint_dir)

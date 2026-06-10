@@ -746,9 +746,9 @@ class CometMLCallback(IntegrationCallback):
 # Console / progress logger (always-on, no external dependency)
 # ---------------------------------------------------------------------------
 
-class ProgressCallback(IntegrationCallback):
+class ConsoleCallback(IntegrationCallback):
     """
-    Logs training progress to the Python ``logging`` module.
+    Logs training progress and validation results to the Python ``logging`` module.
 
     WHY: Provides immediate, human‑readable output in the terminal/logs without
     any external dependencies. Essential for debugging and for users who don't
@@ -756,8 +756,10 @@ class ProgressCallback(IntegrationCallback):
 
     Behaviour
     ---------
-    - `on_log`: logs every entry in the `logs` dict at INFO level, formatted as
-      `step=N | loss=1.234 | lr=3e-05 | epoch=1.00`.
+    - `on_log`: logs every scalar entry in the `logs` dict at INFO level, formatted as
+      `step=N | loss=1.234 | ppl=3.45 | lr=3e-05 | epoch=1.00`.
+    - `on_evaluate`: logs validation metrics as a dedicated block so they are easy
+      to spot in plain console output.
     - `on_train_begin`: logs total steps and epoch count.
     - `on_train_end`: logs a training complete summary with best metric and checkpoint.
 
@@ -780,7 +782,7 @@ class ProgressCallback(IntegrationCallback):
 
     Example Usage
     -------------
-        >>> callback = ProgressCallback()
+        >>> callback = ConsoleCallback()
         >>> # Automatically added via DEFAULT_CALLBACKS; no need to instantiate manually.
     """
 
@@ -813,14 +815,69 @@ class ProgressCallback(IntegrationCallback):
     ) -> None:
         if not self._should_log(state) or logs is None:
             return
-        # Format: step=500 | loss=1.2345 | lr=3.0e-05 | epoch=1.00
+        # Keep scalar metrics in a deterministic order so logs are easy to scan.
         parts = [f"step={state.global_step}"]
-        for k, v in logs.items():
-            if isinstance(v, float):
-                parts.append(f"{k}={v:.4g}")
-            elif isinstance(v, int):
-                parts.append(f"{k}={v}")
+        preferred_order = ["loss", "ppl", "lr", "grad_scale", "epoch"]
+        seen: set[str] = set()
+        for key in preferred_order:
+            if key in logs and isinstance(logs[key], (int, float)):
+                value = logs[key]
+                parts.append(f"{key}={value:.4g}" if isinstance(value, float) else f"{key}={value}")
+                seen.add(key)
+        if "ppl" in seen and "perplexity" in logs:
+            seen.add("perplexity")
+        if "ppl" not in seen and "perplexity" in logs and isinstance(logs["perplexity"], (int, float)):
+            value = logs["perplexity"]
+            parts.append(f"ppl={value:.4g}" if isinstance(value, float) else f"ppl={value}")
+            seen.add("perplexity")
+        for key, value in logs.items():
+            if key in seen:
+                continue
+            if isinstance(value, float):
+                parts.append(f"{key}={value:.4g}")
+            elif isinstance(value, int):
+                parts.append(f"{key}={value}")
         logger.info(" | ".join(parts))
+
+    def on_evaluate(
+        self,
+        args: Any,
+        state: TrainerState,
+        control: TrainerControl,
+        metrics: Optional[dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> None:
+        if not self._should_log(state) or not metrics:
+            return
+        parts = [f"step={state.global_step}"]
+        preferred_order = [
+            "eval_loss",
+            "ppl",
+            "accuracy",
+            "f1",
+            "precision",
+            "recall",
+        ]
+        seen: set[str] = set()
+        for key in preferred_order:
+            if key in metrics and isinstance(metrics[key], (int, float)):
+                value = metrics[key]
+                parts.append(f"{key}={value:.4g}" if isinstance(value, float) else f"{key}={value}")
+                seen.add(key)
+        if "ppl" in seen and "perplexity" in metrics:
+            seen.add("perplexity")
+        if "ppl" not in seen and "perplexity" in metrics and isinstance(metrics["perplexity"], (int, float)):
+            value = metrics["perplexity"]
+            parts.append(f"ppl={value:.4g}" if isinstance(value, float) else f"ppl={value}")
+            seen.add("perplexity")
+        for key, value in metrics.items():
+            if key in seen:
+                continue
+            if isinstance(value, float):
+                parts.append(f"{key}={value:.4g}")
+            elif isinstance(value, int):
+                parts.append(f"{key}={value}")
+        logger.info("Validation | %s", " | ".join(parts))
 
     def on_train_end(
         self,
@@ -839,12 +896,15 @@ class ProgressCallback(IntegrationCallback):
         )
 
 
+# Backwards-compatible alias for older imports and docs.
+ProgressCallback = ConsoleCallback
+
+
 # ---------------------------------------------------------------------------
 # Registry and factory
 # ---------------------------------------------------------------------------
 
 # Maps report_to string → integration class.
-# Order matters: ProgressCallback is last so it's appended after the others.
 _INTEGRATION_REGISTRY: dict[str, type[IntegrationCallback]] = {
     "tensorboard": TensorBoardCallback,
     "wandb": WandbCallback,
@@ -853,7 +913,7 @@ _INTEGRATION_REGISTRY: dict[str, type[IntegrationCallback]] = {
 }
 
 # Always active regardless of report_to.
-DEFAULT_CALLBACKS: list[TrainerCallback] = [ProgressCallback()]
+DEFAULT_CALLBACKS: list[TrainerCallback] = [ConsoleCallback()]
 
 
 def get_reporting_integration_callbacks(
@@ -885,7 +945,7 @@ def get_reporting_integration_callbacks(
     - If a backend is requested but its library is not installed, a warning is logged
       and it is skipped (no exception). This allows the same code to run in different
       environments with different optional dependencies.
-    - The `ProgressCallback` is NOT included here – it's added separately via
+    - The `ConsoleCallback` is NOT included here – it's added separately via
       `DEFAULT_CALLBACKS` because it has no external dependency and should always
       be present.
     - Backend names are case‑insensitive (normalised to lower case).
@@ -916,8 +976,10 @@ def get_reporting_integration_callbacks(
     normalized_report_to = [
         name.strip().lower()
         for name in report_to
-        if name.strip().lower() != "all"
+        if name.strip().lower() not in {"all", "none"}
     ]
+    if not normalized_report_to:
+        return []
     if any(name.strip().lower() == "all" for name in report_to):
         for name in _INTEGRATION_REGISTRY.keys():
             if name not in normalized_report_to:

@@ -83,7 +83,7 @@ import yaml
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from utils.config import KilatConfig
+from config import KilatConfig
 from arc.model import KilatTransformer
 
 # Configure logging for both console and file.

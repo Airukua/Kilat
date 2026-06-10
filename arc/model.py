@@ -6,7 +6,8 @@ from typing import Tuple, Optional, Union
 from transformers import PreTrainedModel
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from .blocks import Block, RMSNorm
-from utils.config import KilatConfig
+from configs.model_config import KilatConfig
+from configs.main_config import MainConfig
 from utils.validators import (
     validate_finite_tensor,
     validate_tensor_rank,
@@ -146,9 +147,19 @@ class KilatTransformer(KilatPreTrainedModel):
     """
 
     def __init__(self, config: KilatConfig):
+        if isinstance(config, MainConfig):
+            config = config.model
+        
+        # Ensure config is either KilatConfig or MainConfig
+        if not isinstance(config, KilatConfig):
+            raise TypeError(
+                f"Parameter config must be a KilatConfig or MainConfig instance, "
+                f"got {type(config)}. If you want to load a pretrained model, "
+                f"use `KilatTransformer.from_pretrained(...)`."
+            )
+        
         super().__init__(config)
         self.config = config
-
         # Token embeddings: maps token IDs → dense vectors.
         # Padding index is typically 0 for most tokenizers, but the embedding
         # layer doesn't need to know this — the loss function's ignore_index
