@@ -25,4 +25,4 @@ reporting = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["arc*", "data*", "training*", "utils*", "generation*", "distiliation*"]
+include = ["arc*", "data*", "training*", "utils*", "pipeline*", "generation*", "distiliation*"]
