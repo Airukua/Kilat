@@ -318,7 +318,7 @@ class KilatTransformer(KilatPreTrainedModel):
             should use -100 (ignored by cross‑entropy).
         return_dict : Optional[bool]
             Whether to return CausalLMOutputWithPast or a tuple. If None,
-            uses self.config.use_return_dict.
+            uses self.config.return_dict.
         **kwargs : dict
             Absorbs extra arguments from HF Trainer (attention_mask, etc.)
             to prevent TypeError. These are intentionally ignored.
@@ -332,7 +332,7 @@ class KilatTransformer(KilatPreTrainedModel):
             (logits, past_key_values) or (loss, logits) depending on flags.
         """
         return_dict = (
-            return_dict if return_dict is not None else self.config.use_return_dict
+            return_dict if return_dict is not None else self.config.return_dict
         )
         # ---------- ADDED: handle use_cache default ----------
         use_cache = use_cache if use_cache is not None else self.config.use_cache

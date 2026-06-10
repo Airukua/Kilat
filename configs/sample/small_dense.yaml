@@ -52,7 +52,7 @@ dataloader:
   distributed_shuffle: true
   train_data_path: data/fine-web/train/tokens.npy
   eval_data_path: data/fine-web/val/tokens.npy
-  dataset_format: parquet
+  dataset_format: memmap
   cache_dir: null
   prefetch_batches: 2
 

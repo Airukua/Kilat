@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 Convert KilatTransformer checkpoint to Hugging Face compatible format.
 
@@ -6,12 +7,12 @@ WHY THIS CONVERTER EXISTS:
     - Model weights (via save_pretrained for HF compatibility)
     - Training state (optimizer, scheduler, scaler, callback states)
     - Configuration (YAML or JSON)
+    - Tokenizer files (for local/custom tokenizers)
     
-    However, when users want to deploy the model for inference only, they don't need
-    the training state. This converter extracts the pure model weights and saves them
+    This converter extracts the pure model weights AND tokenizer, saving them
     in a format that Hugging Face's transformers library can load directly via
-    `AutoModel.from_pretrained()`. This eliminates the dependency on Kilat's training
-    code for inference.
+    `AutoModel.from_pretrained()` and `AutoTokenizer.from_pretrained()`.
+    This eliminates the dependency on Kilat's training code for inference.
 
 CONVERSION STRATEGY:
     The converter follows a priority-based approach to handle diverse checkpoint formats:
@@ -27,6 +28,11 @@ CONVERSION STRATEGY:
     Priority 2: pytorch_model.bin (standard HF format)
     Priority 3: training_state.pt (Kilat trainer format with model_state_dict)
 
+    For tokenizer:
+    Priority 1: tokenizer files in checkpoint directory (saved by KilatTrainer)
+    Priority 2: tokenizer_config.json in checkpoint (reference to Hub tokenizer)
+    Priority 3: Create from config.tokenizer_name_or_path (fallback)
+
 ERROR HANDLING PHILOSOPHY:
     - Never crash silently: always provide actionable error messages
     - Fail gracefully: try all possible fallbacks before giving up
@@ -38,6 +44,7 @@ Assumptions:
     - The checkpoint directory contains at least one valid weight file
     - The model architecture matches the configuration (same vocab_size, n_embd, etc.)
     - For weight tying, lm_head.weight may be missing and should be copied from wte.weight
+    - Tokenizer may be saved in checkpoint (spm.model, tokenizer_config.json, or HF files)
 
 Edge Cases Handled:
     - DDP training prefixes ('module.') are automatically stripped
@@ -46,6 +53,7 @@ Edge Cases Handled:
     - Corrupted weight files raise specific errors with recovery suggestions
     - CUDA memory errors suggest using CPU instead
     - Device-side assert errors point to vocabulary size mismatch
+    - Tokenizer from Hub vs local tokenizer
 
 Performance:
     - Model is loaded on CPU by default to avoid GPU memory issues
@@ -70,6 +78,7 @@ import argparse
 import json
 import logging
 import os
+import shutil
 import sys
 import traceback
 from pathlib import Path
@@ -79,15 +88,13 @@ import torch
 import yaml
 
 # Add project root to path for local imports.
-# This allows the script to run from any directory while still finding Kilat modules.
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from config import KilatConfig
+from configs.model_config import KilatConfig
 from arc.model import KilatTransformer
 
-# Configure logging for both console and file.
-# The format includes timestamp, module name, severity, and message for easy debugging.
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -97,7 +104,7 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================================
-# Custom Exceptions (following HF pattern)
+# Custom Exceptions
 # ============================================================================
 
 class ConversionError(Exception):
@@ -126,17 +133,104 @@ class ValidationError(ConversionError):
 
 
 # ============================================================================
-# Configuration Loading (with graceful fallbacks)
+# Tokenizer Handling (NEW)
+# ============================================================================
+
+def copy_tokenizer_from_checkpoint(
+    checkpoint_dir: Path,
+    output_dir: Path,
+    config: KilatConfig,
+) -> bool:
+    """
+    Copy tokenizer files from checkpoint to output directory.
+    
+    WHY: When users save checkpoints with KilatTrainer, tokenizer files may be
+    saved alongside the model (for local/custom tokenizers) or referenced via
+    config (for Hub tokenizers). This function copies the tokenizer files to
+    the output directory so the converted model is self-contained.
+    
+    Priority:
+        1. If tokenizer files exist in checkpoint (spm.model, tokenizer.json, etc.)
+        2. If tokenizer_config.json exists with reference to Hub tokenizer
+        3. Skip (tokenizer will be loaded from Hub during inference)
+    
+    Returns:
+        True if tokenizer was copied, False otherwise.
+    """
+    tokenizer_copied = False
+    
+    # Check for SentencePiece model file
+    spm_path = checkpoint_dir / "spm.model"
+    if spm_path.exists():
+        shutil.copy2(spm_path, output_dir / "spm.model")
+        logger.info(f"Copied SentencePiece tokenizer: {spm_path}")
+        tokenizer_copied = True
+    
+    # Check for HuggingFace tokenizer files
+    hf_tokenizer_files = ["tokenizer.json", "vocab.json", "merges.txt", "tokenizer_config.json"]
+    for filename in hf_tokenizer_files:
+        src = checkpoint_dir / filename
+        if src.exists():
+            shutil.copy2(src, output_dir / filename)
+            logger.info(f"Copied tokenizer file: {filename}")
+            tokenizer_copied = True
+    
+    # Check for tokenizer_config.json (reference to Hub tokenizer)
+    tokenizer_config_path = checkpoint_dir / "tokenizer_config.json"
+    if tokenizer_config_path.exists() and not tokenizer_copied:
+        # This may contain reference to Hub tokenizer (e.g., "gpt2")
+        # Copy it so inference can use the same config
+        shutil.copy2(tokenizer_config_path, output_dir / "tokenizer_config.json")
+        logger.info("Copied tokenizer_config.json (Hub tokenizer reference)")
+        tokenizer_copied = True
+    
+    return tokenizer_copied
+
+
+def save_tokenizer_config(
+    output_dir: Path,
+    config: KilatConfig,
+    checkpoint_dir: Path,
+) -> None:
+    """
+    Save tokenizer configuration for inference.
+    
+    Creates a tokenizer_config.json file that can be used to load the tokenizer
+    during inference with `AutoTokenizer.from_pretrained(output_dir)`.
+    """
+    # First try to copy existing tokenizer config from checkpoint
+    existing_config = checkpoint_dir / "tokenizer_config.json"
+    if existing_config.exists():
+        shutil.copy2(existing_config, output_dir / "tokenizer_config.json")
+        logger.info(f"Using existing tokenizer config from checkpoint")
+        return
+    
+    # Otherwise create a new one from model config
+    # This is a fallback for checkpoints without tokenizer files
+    tokenizer_config = {
+        "tokenizer_type": "auto",  # default to auto
+        "tokenizer_name_or_path": getattr(config, "tokenizer_name_or_path", "gpt2"),
+        "use_fast": True,
+        "local_files_only": False,
+        "pad_token_id": getattr(config, "pad_token_id", 0),
+        "eos_token_id": getattr(config, "eos_token_id", 2),
+        "bos_token_id": getattr(config, "bos_token_id", 1),
+    }
+    
+    # Also save as YAML for human readability
+    with open(output_dir / "tokenizer_config.json", "w") as f:
+        json.dump(tokenizer_config, f, indent=2)
+    
+    logger.info(f"Created tokenizer_config.json (from model config)")
+
+
+# ============================================================================
+# Configuration Loading
 # ============================================================================
 
 def load_config_from_checkpoint(checkpoint_dir: Path) -> KilatConfig:
     """
     Load KilatConfig from checkpoint directory with priority ordering.
-    
-    WHY THIS EXISTS: Checkpoint directories may contain config in various formats
-    depending on when the checkpoint was saved. This function tries all possible
-    locations to find valid configuration, making the converter tolerant of
-    different save formats.
     
     Priority (highest to lowest):
         1. config.yaml - Human-readable YAML, preferred for manual inspection
@@ -144,21 +238,13 @@ def load_config_from_checkpoint(checkpoint_dir: Path) -> KilatConfig:
         3. training_args.json - May embed model config inside training args
         4. Default config - Last resort, may produce mismatched model
     
-    Edge Cases:
-        - If config.yaml exists but is malformed, we log warning and continue
-        - If training_args.json contains model config under 'model_config' key
-        - If none found, return default config with warning (better than crashing)
-    
     Args:
         checkpoint_dir: Path to checkpoint directory
         
     Returns:
         KilatConfig instance
-        
-    Raises:
-        ConfigNotFoundError: If no valid config found and no defaults usable
     """
-    # Priority 1: config.yaml (human-readable, preferred)
+    # Priority 1: config.yaml
     yaml_path = checkpoint_dir / "config.yaml"
     if yaml_path.exists():
         logger.info(f"Loading config from {yaml_path}")
@@ -166,16 +252,14 @@ def load_config_from_checkpoint(checkpoint_dir: Path) -> KilatConfig:
             return KilatConfig.from_yaml(str(yaml_path))
         except Exception as e:
             logger.warning(f"Failed to load config.yaml: {e}")
-            # Continue to next option instead of failing immediately
 
-    # Priority 2: config.json (HF standard format)
+    # Priority 2: config.json
     json_path = checkpoint_dir / "config.json"
     if json_path.exists():
         logger.info(f"Loading config from {json_path}")
         try:
             with open(json_path, 'r') as f:
                 config_dict = json.load(f)
-            # Clean HF internal fields that may cause issues
             config_dict.pop("_name_or_path", None)
             config_dict.pop("transformers_version", None)
             config_dict.pop("model_type", None)
@@ -183,7 +267,7 @@ def load_config_from_checkpoint(checkpoint_dir: Path) -> KilatConfig:
         except (json.JSONDecodeError, TypeError, KeyError) as e:
             logger.warning(f"Failed to load config.json: {e}")
 
-    # Priority 3: training_args.json (may contain model config)
+    # Priority 3: training_args.json
     training_args_path = checkpoint_dir / "training_args.json"
     if training_args_path.exists():
         logger.info(f"Attempting to load config from {training_args_path}")
@@ -192,8 +276,7 @@ def load_config_from_checkpoint(checkpoint_dir: Path) -> KilatConfig:
                 args_dict = json.load(f)
             if "model_config" in args_dict:
                 return KilatConfig(**args_dict["model_config"])
-            # Try to extract model parameters by matching known keys
-            model_keys = ["vocab_size", "n_embd", "n_head", "n_layer", "n_embd"]
+            model_keys = ["vocab_size", "n_embd", "n_head", "n_layer"]
             if any(k in args_dict for k in model_keys):
                 logger.info("Found model parameters in training_args.json")
                 config_dict = {k: v for k, v in args_dict.items() if k in model_keys}
@@ -202,54 +285,31 @@ def load_config_from_checkpoint(checkpoint_dir: Path) -> KilatConfig:
         except (json.JSONDecodeError, Exception) as e:
             logger.warning(f"Failed to load training_args.json: {e}")
 
-    # Fallback to defaults with warning
+    # Fallback to defaults
     logger.warning(f"No valid config found in {checkpoint_dir}, using default KilatConfig")
     logger.warning("Model may not work correctly if default config doesn't match training")
     return KilatConfig()
 
 
 # ============================================================================
-# Weight Loading (handling tied weights and DDP prefixes)
+# Weight Loading
 # ============================================================================
 
 def _clean_state_dict(state_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
-    """
-    Clean state dict by handling DDP prefixes and tied weights.
-    
-    WHY THIS EXISTS: 
-        - Distributed Data Parallel (DDP) saves weights with 'module.' prefix
-        - Weight tying saves lm_head and wte separately but they should share weights
-        - The converter must normalise these to match the model's expected keys
-    
-    What this function does:
-        1. Remove 'module.' prefix from all keys (from DDP training)
-        2. Add lm_head.weight from wte.weight if missing (weight tying)
-        3. Log warnings for missing critical keys
-    
-    Edge Cases:
-        - If 'module.' appears in middle of key (not just prefix) – not handled, rare
-        - If both wte.weight and lm_head.weight are missing – warning but continue
-        - If only wte.weight exists and lm_head.weight expected – we copy it
-    
-    Returns:
-        Cleaned state dict with proper key names
-    """
+    """Clean state dict by handling DDP prefixes and tied weights."""
     cleaned = {}
     
-    # Handle DDP 'module.' prefix
     for key, value in state_dict.items():
         if key.startswith('module.'):
-            new_key = key[7:]  # Remove 'module.'
+            new_key = key[7:]
         else:
             new_key = key
         cleaned[new_key] = value
     
-    # Handle weight tying: if lm_head.weight missing but wte.weight exists
     if "lm_head.weight" not in cleaned and "wte.weight" in cleaned:
-        logger.info("  lm_head.weight not found in checkpoint, using wte.weight (weight tying)")
+        logger.info("  lm_head.weight not found, using wte.weight (weight tying)")
         cleaned["lm_head.weight"] = cleaned["wte.weight"]
     
-    # Handle potential tied weights keys mapping
     if "lm_head.weight" not in cleaned and "wte.weight" not in cleaned:
         logger.warning("  Neither lm_head.weight nor wte.weight found in checkpoint")
     
@@ -262,42 +322,11 @@ def load_model_weights(
     device: str = "cpu",
     strict: bool = False
 ) -> Tuple[KilatTransformer, Dict[str, Union[list, str]]]:
-    """
-    Load model weights from checkpoint directory with robust error handling.
-    
-    WHY THREE FORMATS: Different training scripts save weights differently:
-        - KilatTrainer saves training_state.pt with full training state
-        - Hugging Face save_pretrained saves pytorch_model.bin or model.safetensors
-        - This converter supports all to be compatible with various sources
-    
-    Priority order (tries each format until one succeeds):
-        1. model.safetensors – fastest, secure, recommended
-        2. pytorch_model.bin – standard HF format
-        3. training_state.pt – Kilat trainer format
-    
-    Error Handling Strategy:
-        - If safetensors requested but package not installed, explicit error with install command
-        - If file exists but corrupt, specific error with recovery steps
-        - If no weight file found, raise actionable error listing expected files
-        - Use strict=False by default to allow missing/unexpected keys
-    
-    Args:
-        model: Initialized KilatTransformer model
-        checkpoint_dir: Directory containing checkpoint files
-        device: Device to load weights to (use 'cpu' for conversion)
-        strict: If True, fail on missing/unexpected keys
-        
-    Returns:
-        Tuple of (model, metadata dict with loading info)
-        
-    Raises:
-        WeightFileNotFoundError: If no weight file found
-        WeightLoadingError: If weights cannot be loaded with specific details
-    """
+    """Load model weights from checkpoint directory."""
     checkpoint_path = Path(checkpoint_dir)
     metadata = {"source": None, "missing_keys": [], "unexpected_keys": []}
     
-    # Priority 1: safetensors (recommended, safer, faster)
+    # Priority 1: safetensors
     safetensors_path = checkpoint_path / "model.safetensors"
     if safetensors_path.exists():
         logger.info(f"Loading weights from {safetensors_path}")
@@ -306,13 +335,11 @@ def load_model_weights(
             state_dict = load_file(str(safetensors_path))
             metadata["source"] = "safetensors"
         except ImportError:
-            raise WeightLoadingError(
-                "safetensors package not installed. Please install with: pip install safetensors"
-            )
+            raise WeightLoadingError("safetensors not installed. Run: pip install safetensors")
         except Exception as e:
-            raise WeightLoadingError(f"Failed to load safetensors file: {e}")
+            raise WeightLoadingError(f"Failed to load safetensors: {e}")
 
-    # Priority 2: pytorch_model.bin (HF standard)
+    # Priority 2: pytorch_model.bin
     elif (checkpoint_path / "pytorch_model.bin").exists():
         bin_path = checkpoint_path / "pytorch_model.bin"
         logger.info(f"Loading weights from {bin_path}")
@@ -322,13 +349,12 @@ def load_model_weights(
         except Exception as e:
             raise WeightLoadingError(f"Failed to load pytorch_model.bin: {e}")
 
-    # Priority 3: training_state.pt (Kilat trainer format)
+    # Priority 3: training_state.pt
     elif (checkpoint_path / "training_state.pt").exists():
         training_state_path = checkpoint_path / "training_state.pt"
         logger.info(f"Loading weights from {training_state_path}")
         try:
             training_state = torch.load(str(training_state_path), map_location=device)
-            # Extract state dict from training state (different possible structures)
             if "model_state_dict" in training_state:
                 state_dict = training_state["model_state_dict"]
             elif "model" in training_state:
@@ -342,28 +368,24 @@ def load_model_weights(
     else:
         raise WeightFileNotFoundError(
             f"No weight file found in {checkpoint_dir}. "
-            f"Expected one of: model.safetensors, pytorch_model.bin, or training_state.pt"
+            f"Expected: model.safetensors, pytorch_model.bin, or training_state.pt"
         )
     
-    # Clean and prepare state dict
     state_dict = _clean_state_dict(state_dict)
     logger.info(f"Loaded state dict with {len(state_dict)} keys")
     
-    # Load with strict=False to capture missing/unexpected keys without crashing
     missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
     
     metadata["missing_keys"] = missing_keys
     metadata["unexpected_keys"] = unexpected_keys
     
     if missing_keys:
-        logger.warning(f"Missing keys in checkpoint: {missing_keys[:10]}{'...' if len(missing_keys) > 10 else ''}")
+        logger.warning(f"Missing keys: {missing_keys[:10]}{'...' if len(missing_keys) > 10 else ''}")
     if unexpected_keys:
-        logger.warning(f"Unexpected keys in checkpoint: {unexpected_keys[:10]}{'...' if len(unexpected_keys) > 10 else ''}")
+        logger.warning(f"Unexpected keys: {unexpected_keys[:10]}{'...' if len(unexpected_keys) > 10 else ''}")
     
     if strict and (missing_keys or unexpected_keys):
-        raise WeightLoadingError(
-            f"Strict loading failed. Missing: {missing_keys}, Unexpected: {unexpected_keys}"
-        )
+        raise WeightLoadingError(f"Strict loading failed. Missing: {missing_keys}")
     
     return model, metadata
 
@@ -378,45 +400,12 @@ def validate_model(
     device: str = "cpu",
     num_tokens: int = 10
 ) -> Dict[str, Any]:
-    """
-    Validate model with dummy input to catch initialization issues.
-    
-    WHY VALIDATION: After loading weights, we need to ensure the model can
-    actually perform a forward pass. This catches:
-        - Shape mismatches between config and weights
-        - Device compatibility issues (CUDA vs CPU)
-        - Vocabulary size problems (input tokens out of range)
-        - Missing or corrupted weights
-    
-    The validation runs a single forward pass with:
-        - Batch size = 1 (minimal memory)
-        - Sequence length = min(num_tokens, vocab_size - 1) (prevents out-of-range)
-        - No gradient computation (torch.no_grad() for speed)
-    
-    Edge Cases Handled:
-        - CUDA out of memory -> suggests using CPU or smaller input
-        - Device-side assert -> indicates vocab size mismatch, provides helpful hint
-        - Any other RuntimeError -> wrapped with context for debugging
-    
-    Args:
-        model: Loaded model
-        config: Model configuration
-        device: Device to run validation on
-        num_tokens: Number of tokens in dummy input
-        
-    Returns:
-        Dictionary with validation results including success status and logits shape
-        
-    Raises:
-        ValidationError: If validation fails with actionable error message
-    """
+    """Validate model with dummy input."""
     logger.info("Validating model with dummy input...")
     
     try:
         model.eval()
         with torch.no_grad():
-            # Create dummy input with safe values (within vocab range)
-            # Using min() ensures we never request a token ID beyond vocab_size
             dummy_input = torch.randint(
                 0, config.vocab_size, 
                 (1, min(num_tokens, config.vocab_size - 1)), 
@@ -424,13 +413,9 @@ def validate_model(
             )
             output = model(dummy_input)
             
-            # Check output shape matches expectations
             expected_shape = (1, dummy_input.shape[1], config.vocab_size)
             if output.logits.shape != expected_shape:
-                raise ValidationError(
-                    f"Output logits shape mismatch. Expected {expected_shape}, "
-                    f"got {output.logits.shape}"
-                )
+                raise ValidationError(f"Shape mismatch. Expected {expected_shape}, got {output.logits.shape}")
             
             logger.info(f"Validation successful - logits shape: {output.logits.shape}")
             
@@ -441,22 +426,14 @@ def validate_model(
             }
             
     except RuntimeError as e:
-        # Check for CUDA-specific errors with user-friendly messages
         if "CUDA out of memory" in str(e):
-            raise ValidationError(
-                f"CUDA out of memory during validation. Try running on CPU by setting "
-                f"device='cpu' in the script or reducing num_tokens."
-            ) from e
+            raise ValidationError("CUDA OOM. Try running on CPU with --device cpu")
         elif "device-side assert" in str(e):
-            raise ValidationError(
-                f"CUDA device-side assert triggered. This often indicates a mismatch between "
-                f"model vocabulary size ({config.vocab_size}) and the tokenizer or input values. "
-                f"Try running on CPU first for more detailed error message."
-            ) from e
+            raise ValidationError(f"Vocab size mismatch. Model vocab: {config.vocab_size}")
         else:
-            raise ValidationError(f"Validation failed: {e}") from e
+            raise ValidationError(f"Validation failed: {e}")
     except Exception as e:
-        raise ValidationError(f"Validation failed: {e}") from e
+        raise ValidationError(f"Validation failed: {e}")
 
 
 # ============================================================================
@@ -471,38 +448,28 @@ def convert_checkpoint_to_hf(
     device: str = "cpu",
     strict: bool = False,
     skip_validation: bool = False,
+    skip_tokenizer: bool = False,
     verbose: bool = False,
 ) -> Dict[str, Any]:
     """
     Convert KilatTransformer checkpoint to Hugging Face format.
     
-    This is the main entry point for programmatic conversion. It performs
-    these steps in order:
-        1. Load or infer configuration
-        2. Create model with that configuration
-        3. Load weights from checkpoint (trying multiple formats)
-        4. Optionally validate with dummy forward pass
-        5. Save model in HF format using save_pretrained
-        6. Verify saved model can be loaded by AutoModel
+    Now includes tokenizer copying alongside model conversion.
     
     Args:
         checkpoint_dir: Directory containing checkpoint files
         output_dir: Output directory for converted model
         config_path: Optional path to config file (overrides checkpoint config)
-        use_safetensors: Whether to save in safetensors format (recommended)
-        device: Device to load model on ('cpu' recommended for conversion)
+        use_safetensors: Whether to save in safetensors format
+        device: Device to load model on ('cpu' recommended)
         strict: If True, fail on missing/unexpected keys
         skip_validation: If True, skip dummy forward pass validation
+        skip_tokenizer: If True, skip copying tokenizer files
         verbose: If True, enable debug logging
         
     Returns:
-        Dictionary with conversion metadata including success status,
-        config source, weight source, missing/unexpected keys, and validation results
-        
-    Raises:
-        ConversionError: If conversion fails at any step
+        Dictionary with conversion metadata
     """
-    
     if verbose:
         logging.getLogger().setLevel(logging.DEBUG)
     
@@ -518,6 +485,7 @@ def convert_checkpoint_to_hf(
         "output_dir": str(output_dir),
         "config_source": None,
         "weight_source": None,
+        "tokenizer_copied": False,
         "missing_keys": [],
         "unexpected_keys": [],
         "validation": None
@@ -549,7 +517,7 @@ def convert_checkpoint_to_hf(
             model = model.to(device)
             model.eval()
         except Exception as e:
-            raise ConversionError(f"Failed to initialize model: {e}") from e
+            raise ConversionError(f"Failed to initialize model: {e}")
         
         # Step 3: Load weights
         logger.info("Loading weights...")
@@ -559,7 +527,7 @@ def convert_checkpoint_to_hf(
             results["missing_keys"] = weight_metadata["missing_keys"]
             results["unexpected_keys"] = weight_metadata["unexpected_keys"]
         except (WeightFileNotFoundError, WeightLoadingError) as e:
-            raise ConversionError(f"Weight loading failed: {e}") from e
+            raise ConversionError(f"Weight loading failed: {e}")
         
         # Step 4: Validate model (optional)
         if not skip_validation:
@@ -578,12 +546,21 @@ def convert_checkpoint_to_hf(
                 str(output_dir),
                 safe_serialization=use_safetensors,
             )
-            # Also save YAML config for human readability
             config.to_yaml(output_dir / "config.yaml")
         except Exception as e:
-            raise ConversionError(f"Failed to save model: {e}") from e
+            raise ConversionError(f"Failed to save model: {e}")
         
-        # Step 6: Verify saved model (attempt to load back with HF AutoModel)
+        # Step 6: Copy tokenizer (NEW)
+        if not skip_tokenizer:
+            results["tokenizer_copied"] = copy_tokenizer_from_checkpoint(
+                checkpoint_dir, output_dir, config
+            )
+            if not results["tokenizer_copied"]:
+                # Create tokenizer config from model config
+                save_tokenizer_config(output_dir, config, checkpoint_dir)
+                logger.info("Created tokenizer config (fallback)")
+        
+        # Step 7: Verify saved model
         logger.info("Verifying saved model...")
         try:
             from transformers import AutoModel
@@ -592,10 +569,9 @@ def convert_checkpoint_to_hf(
             results["auto_model_verification"] = True
         except Exception as e:
             logger.warning(f"AutoModel verification failed: {e}")
-            logger.warning("Model saved but may require custom loading code")
             results["auto_model_verification"] = False
         
-        # Log output structure with file sizes
+        # Log output structure
         logger.info("\n" + "="*60)
         logger.info("CONVERSION COMPLETED SUCCESSFULLY")
         logger.info(f"Model saved to: {output_dir}")
@@ -616,9 +592,9 @@ def convert_checkpoint_to_hf(
     except ConversionError:
         raise
     except Exception as e:
-        logger.error(f"Unexpected error during conversion: {e}")
+        logger.error(f"Unexpected error: {e}")
         logger.debug(traceback.format_exc())
-        raise ConversionError(f"Conversion failed: {e}") from e
+        raise ConversionError(f"Conversion failed: {e}")
 
 
 # ============================================================================
@@ -626,69 +602,36 @@ def convert_checkpoint_to_hf(
 # ============================================================================
 
 def main():
-    """
-    Command-line interface for checkpoint conversion.
-    
-    Parses command-line arguments and calls convert_checkpoint_to_hf().
-    Provides helpful error messages and troubleshooting guidance on failure.
-    """
+    """Command-line interface for checkpoint conversion."""
     parser = argparse.ArgumentParser(
         description="Convert KilatTransformer checkpoint to Hugging Face format",
         epilog="""
 Examples:
-  %(prog)s -c ./checkpoints/checkpoint-best -o ./converted_model
-  %(prog)s -c ./checkpoints/checkpoint-best -o ./converted_model --config ./configs/model.yaml
-  %(prog)s -c ./checkpoints/checkpoint-best -o ./converted_model -v --skip-validation
+  python convert_to_hf.py -c ./checkpoints/checkpoint-best -o ./converted_model
+  python convert_to_hf.py -c ./checkpoints/checkpoint-best -o ./converted_model --config ./configs/model.yaml
+  python convert_to_hf.py -c ./checkpoints/checkpoint-best -o ./converted_model --skip-tokenizer
         """,
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     
-    parser.add_argument(
-        "-c", "--checkpoint_dir",
-        type=str,
-        required=True,
-        help="Path to checkpoint directory (e.g., ./checkpoints/checkpoint-best)"
-    )
-    parser.add_argument(
-        "-o", "--output_dir",
-        type=str,
-        required=True,
-        help="Output directory for converted model"
-    )
-    parser.add_argument(
-        "--config",
-        type=str,
-        default=None,
-        dest="config_path",
-        help="Optional path to config file (overrides checkpoint config)"
-    )
-    parser.add_argument(
-        "--no_safetensors",
-        action="store_true",
-        help="Use pytorch_model.bin instead of safetensors (not recommended)"
-    )
-    parser.add_argument(
-        "--device",
-        type=str,
-        default="cpu",
-        choices=["cpu", "cuda"],
-        help="Device to load model on (default: cpu)"
-    )
-    parser.add_argument(
-        "--strict",
-        action="store_true",
-        help="Fail on missing or unexpected keys in checkpoint"
-    )
-    parser.add_argument(
-        "--skip-validation",
-        action="store_true",
-        help="Skip dummy forward pass validation"
-    )
-    parser.add_argument(
-        "-v", "--verbose",
-        action="store_true",
-        help="Enable verbose/debug logging"
-    )
+    parser.add_argument("-c", "--checkpoint_dir", type=str, required=True,
+                       help="Path to checkpoint directory")
+    parser.add_argument("-o", "--output_dir", type=str, required=True,
+                       help="Output directory for converted model")
+    parser.add_argument("--config", type=str, default=None, dest="config_path",
+                       help="Optional path to config file")
+    parser.add_argument("--no_safetensors", action="store_true",
+                       help="Use pytorch_model.bin instead of safetensors")
+    parser.add_argument("--device", type=str, default="cpu", choices=["cpu", "cuda"],
+                       help="Device to load model on")
+    parser.add_argument("--strict", action="store_true",
+                       help="Fail on missing/unexpected keys")
+    parser.add_argument("--skip-validation", action="store_true",
+                       help="Skip dummy forward pass validation")
+    parser.add_argument("--skip-tokenizer", action="store_true",
+                       help="Skip copying tokenizer files")
+    parser.add_argument("-v", "--verbose", action="store_true",
+                       help="Enable verbose logging")
     
     args = parser.parse_args()
     
@@ -701,10 +644,10 @@ Examples:
             device=args.device,
             strict=args.strict,
             skip_validation=args.skip_validation,
+            skip_tokenizer=args.skip_tokenizer,
             verbose=args.verbose,
         )
         
-        # Print summary on success
         print("\n" + "="*60)
         print("CONVERSION SUMMARY")
         print("="*60)
@@ -712,10 +655,9 @@ Examples:
         print(f"Output: {results['output_dir']}")
         print(f"Config source: {results['config_source']}")
         print(f"Weight source: {results['weight_source']}")
+        print(f"Tokenizer copied: {results.get('tokenizer_copied', False)}")
         if results.get("missing_keys"):
             print(f"Missing keys: {len(results['missing_keys'])}")
-        if results.get("unexpected_keys"):
-            print(f"Unexpected keys: {len(results['unexpected_keys'])}")
         print("="*60)
         
         sys.exit(0)
@@ -725,7 +667,6 @@ Examples:
         if args.verbose:
             traceback.print_exc()
         
-        # Provide troubleshooting guidance
         print("\n" + "="*60)
         print("TROUBLESHOOTING")
         print("="*60)
@@ -734,7 +675,7 @@ Examples:
         print("  2. Verify config.yaml or config.json matches model architecture")
         print("  3. Try running with --device cpu if using GPU")
         print("  4. Use --skip-validation to bypass forward pass check")
-        print("  5. Enable verbose mode with -v for more details")
+        print("  5. Use --skip-tokenizer if tokenizer files are missing")
         print("="*60)
         
         sys.exit(1)
