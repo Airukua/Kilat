@@ -812,15 +812,6 @@ python -m pipeline.converter.convert_to_hf \
   -o ./converted_model
 ```
 
-The converted model can be loaded with:
-
-```python
-from transformers import AutoModel, AutoTokenizer
-
-model = AutoModel.from_pretrained("./converted_model", trust_remote_code=True)
-tokenizer = AutoTokenizer.from_pretrained("./converted_model")
-```
-
 ---
 
 ## Roadmap
