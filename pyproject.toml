@@ -13,6 +13,9 @@ dependencies = [
   "tqdm>=4.66",
   "pyarrow>=14.0",
   "triton>=2.0",
+  "sentencepiece>=0.2.0",
+  "numpy>=1.24",
+  "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
@@ -25,4 +28,13 @@ reporting = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["arc*", "data*", "training*", "utils*", "pipeline*", "generation*", "distiliation*"]
+include = [
+  "arc*",
+  "configs*",         
+  "data*",
+  "training*",
+  "utils*",
+  "pipeline*",
+  "generation*",
+  "distiliation*",
+]

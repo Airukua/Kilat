@@ -1,16 +1,16 @@
-# Kilat experiment config: small dense baseline (minimal for quick testing)
+# Kilat experiment config: small dense baseline
 experiment:
-  name: test-run
-  description: Minimal test to verify checkpoint saving
-  tags: ["test", "quick"]
+  name: small-dense-baseline
+  description: Small dense baseline for quick smoke tests and local experiments.
+  tags: ["dense", "baseline", "smoke-test"]
 
 model:
   vocab_size: 50257
-  n_embd: 128          # diperkecil dari 768
-  n_layer: 2           # diperkecil dari 12
-  n_head: 4            # diperkecil dari 12 (128/4=32)
+  n_embd: 768
+  n_layer: 12
+  n_head: 12
   recall_ratio: 0.5
-  latent_dim: 32
+  latent_dim: 192
   attn_drop: 0.0
   ffn_mode: dense
   ff_mult: 2.6666666667
@@ -32,19 +32,19 @@ model:
 
 tokenizer:
   tokenizer_type: auto
-  tokenizer_name_or_path: gpt2
+  tokenizer_name_or_path: gpt2  
   use_fast: true
-  local_files_only: true
+  local_files_only: true 
 
 dataloader:
-  train_batch_size: 2
-  eval_batch_size: 2
-  num_workers: 0        # 0 untuk debugging lebih mudah
-  pin_memory: false
+  train_batch_size: 8
+  eval_batch_size: 8
+  num_workers: 4
+  pin_memory: true
   prefetch_factor: 2
   persistent_workers: false
   drop_last: true
-  max_seq_length: 128   # diperkecil dari 1024
+  max_seq_length: 1024
   truncation: right
   use_packing: false
   packed_block_size: null
@@ -62,27 +62,28 @@ training:
   save_checkpoints: true
   atomic_checkpoint: true
   training_mode: steps
-  learning_rate: 1.5e-3
+  learning_rate: 1.0e-3
   beta1: 0.9
   beta2: 0.95
   epsilon: 1.0e-8
-  gradient_accumulation_steps: 1    # dikurangi dari 2
+  gradient_accumulation_steps: 2
   weight_decay: 0.1
   max_grad_norm: 1.0
-  max_steps: 100                    # kecil: hanya 100 step
+  max_steps: 50000
   num_train_epochs: 1
-  warmup_steps: 10
-  scheduler_type: cosine
-  scheduler_kwargs: {}
-  logging_steps: 10
-  eval_steps: 50
-  save_steps: 50                    # checkpoint setiap 50 step
-  save_total_limit: 2
+  warmup_steps: 1000
+  scheduler_type: cosine_with_min_lr
+  scheduler_kwargs: 
+    min_lr_ratio: 0.1
+  logging_steps: 100
+  eval_steps: 500
+  save_steps: 500
+  save_total_limit: 3
   early_stopping_patience: 3
   early_stopping_threshold: 0.0
   metric_for_best_model: eval_loss
   greater_is_better: null
-  precision: bf16
+  precision: fp16
   report_to: "none"
-  run_name: test-run
+  run_name: small-dense-baseline
   seed: 42

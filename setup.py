@@ -1,4 +1,4 @@
-from setuptools import setup
+from setuptools import setup, find_packages
 
 setup(
     name="kilat",
@@ -11,6 +11,9 @@ setup(
         "tqdm>=4.66",
         "pyarrow>=14.0",
         "triton>=2.0",
+        "sentencepiece>=0.2.0",
+        "numpy>=1.24",
+        "pyyaml>=6.0",
     ],
     extras_require={
         "reporting": [
@@ -20,16 +23,26 @@ setup(
             "comet_ml>=3.45",
         ],
     },
-    packages=[
-        "arc",
-        "data",
-        "training",
-        "utils",
-        "pipeline",
-        "pipeline.converter",
-        "pipeline.generation",
-        "generation",
-        "distiliation",
-    ],
+    packages=find_packages(
+        where=".",
+        include=[
+            "arc",
+            "arc.*",
+            "configs",         
+            "configs.*",       
+            "data",
+            "data.*",
+            "training",
+            "training.*",
+            "utils",
+            "utils.*",
+            "pipeline",
+            "pipeline.*",
+            "generation",
+            "generation.*",
+            "distiliation",
+            "distiliation.*",
+        ],
+    ),
     include_package_data=True,
 )
