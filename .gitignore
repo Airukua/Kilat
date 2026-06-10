@@ -24,7 +24,6 @@ data/fine-web-edu/
 data/fine-web-edu/**/*.parquet
 data/fine-web-edu/**/tokenizer/
 
-
 # checkpoints and logs
 checkpoints/
 logs/
@@ -42,8 +41,63 @@ dist/
 .DS_Store
 Thumbs.db
 *.log
-*.tmp
 
-# Memmap files (NumPy .npy and associated metadata)
+# ===== ADDITIONS FOR LARGE MODEL FILES =====
+
+# PyTorch model files
+*.pt
+*.pth
+*.bin
+*.ckpt
+*.h5
+*.hdf5
+
+# Model directories (common names)
+models/
+model/
+saved_models/
+saved_model/
+pretrained_models/
+pretrained_model/
+trained_models/
+trained_model/
+model_checkpoints/
+model_weights/
+weights/
+checkpoint/
+
+# Specific to your kilat project
+./model/
+kilat_model/
+kilat_weights/
+
+# Hugging Face cache directory (often large)
+.huggingface/
+cache/huggingface/
+
+# Large binary files
+*.joblib
+*.pickle
+*.pkl
+
+# Quantized or optimized models
+*.onnx
+*.tflite
+*.trt
+
+# Deep learning framework specific
+*.mlmodel  # Core ML
+*.pb       # TensorFlow protobuf
+*.safetensors  # SafeTensors format
+
+# Optional: Compressed model archives
+*.tar.gz
+*.zip
+*.7z
+# Large binary files
 *.npy
 *.npy_meta.json
+*.safetensors
+model/
+data/fine-web/
+pipeline/converter/__pycache__/

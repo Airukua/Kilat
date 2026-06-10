@@ -25,9 +25,9 @@ from .optimizer import create_optimizer, resolve_amp_dtype
 from .scheduler import get_scheduler
 from .trainer_utils import (
     clip_grad_norm_,
-    compute_perplexity,                     # <-- added for PPL in training logs
+    compute_perplexity,                    
     compute_total_steps,
-    format_metrics_with_ppl,               # <-- added for evaluation metrics
+    format_metrics_with_ppl,             
     get_current_lr,
     get_device,
     get_latest_checkpoint,

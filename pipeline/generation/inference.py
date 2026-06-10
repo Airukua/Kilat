@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Command‑line interface for KilatTransformer inference.
 
@@ -19,7 +18,6 @@ import argparse
 import json
 import time
 from pathlib import Path
-
 from .generation_config import GenerationConfig
 from .generator import KilatGenerator
 from .chat_session import ChatSession
