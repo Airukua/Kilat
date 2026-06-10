@@ -137,10 +137,10 @@ The generation module consists of several components:
 | `GenerationMixin` | `generation_mixin.py` | Mixin class adding `generate()` method to models |
 | `AutoTokenizer` | `auto_tokenizer.py` | Custom tokenizer loader for Kilat checkpoints |
 | `TextGenerator` | `wrapper.py` | High-level wrapper for easy generation |
-| `sampler.py` | Sampling strategies (multinomial, top-k, top-p, etc.) |
-| `logit_processor.py` | Logits processors (temperature, repetition penalty, etc.) |
-| `stopping_criteria.py` | Stopping criteria (max length, EOS token, etc.) |
-| `beam_search.py` | Beam search implementation |
+| `Sampler` | `sampler.py` | Base sampler and sampling strategies (multinomial, greedy, top-k, top-p, typical, contrastive, mirostat, adaptive) |
+| `LogitsProcessor` | `logit_processor.py` | Logits processors and warpers (temperature, top-k, top-p, repetition penalty, min length, etc.) |
+| `StoppingCriteria` | `stopping_criteria.py` | Stopping criteria (max length, max new tokens, EOS token, timeout, custom) |
+| `BeamSearchScorer` | `beam_search.py` | Beam search scorer and main beam search algorithm |
 
 ### Basic Generation
 
