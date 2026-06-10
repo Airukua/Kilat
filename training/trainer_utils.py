@@ -219,7 +219,7 @@ def save_checkpoint(
     model: Any,  # PreTrainedModel from transformers (has save_pretrained)
     optimizer: torch.optim.Optimizer,
     scheduler: Any,  # can be LambdaLR or our LRScheduler
-    scaler: Optional[torch.cuda.amp.GradScaler],
+    scaler: Optional[torch.amp.GradScaler],
     state: TrainerState,
     callback_handler: CallbackHandler,
     output_dir: str,
@@ -255,7 +255,7 @@ def save_checkpoint(
         Optimizer whose state_dict will be saved.
     scheduler : Any
         Scheduler with `state_dict` method.
-    scaler : Optional[torch.cuda.amp.GradScaler]
+    scaler : Optional[torch.amp.GradScaler]
         AMP scaler (if used).
     state : TrainerState
         Current training state.
@@ -375,7 +375,7 @@ def load_checkpoint(
     model: Any,
     optimizer: torch.optim.Optimizer,
     scheduler: Any,
-    scaler: Optional[torch.cuda.amp.GradScaler],
+    scaler: Optional[torch.amp.GradScaler],
     state: TrainerState,
     callback_handler: CallbackHandler,
     checkpoint_path: str,

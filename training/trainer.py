@@ -25,7 +25,9 @@ from .optimizer import create_optimizer, resolve_amp_dtype
 from .scheduler import get_scheduler
 from .trainer_utils import (
     clip_grad_norm_,
+    compute_perplexity,                     # <-- added for PPL in training logs
     compute_total_steps,
+    format_metrics_with_ppl,               # <-- added for evaluation metrics
     get_current_lr,
     get_device,
     get_latest_checkpoint,
@@ -257,8 +259,8 @@ class KilatTrainer:
 
         # Mixed precision setup
         self.amp_dtype: Optional[torch.dtype] = resolve_amp_dtype(args.precision)
-        self.scaler: Optional[torch.cuda.amp.GradScaler] = (
-            torch.cuda.amp.GradScaler() if args.use_grad_scaler else None
+        self.scaler: Optional[torch.amp.GradScaler] = (
+            torch.amp.GradScaler() if args.use_grad_scaler else None
         )
 
         # Optimizer – independent of scheduler
@@ -465,6 +467,17 @@ class KilatTrainer:
             if self.eval_dataloader is not None:
                 metrics = self._evaluate()
                 self._handle_evaluation(metrics)
+
+                # Update epoch progress bar with evaluation results
+                postfix = {
+                    "step": self.state.global_step,
+                    "best": f"{self.state.best_metric:.4f}" if self.state.best_metric is not None else "n/a",
+                }
+                if "eval_loss" in metrics:
+                    postfix["eval_loss"] = f"{metrics['eval_loss']:.4f}"
+                if "perplexity" in metrics:
+                    postfix["ppl"] = f"{metrics['perplexity']:.2f}"
+                epoch_bar.set_postfix(**postfix)
 
             # Epoch‑end checkpoint (tagged with epoch number)
             if args.save_checkpoints:
@@ -837,7 +850,8 @@ class KilatTrainer:
                 num_batches += 1
 
         eval_loss = total_loss / max(1, num_batches)
-        return {"eval_loss": eval_loss}
+        # Add perplexity automatically via the utility
+        return format_metrics_with_ppl({"eval_loss": eval_loss})
 
     def _handle_evaluation(self, metrics: dict[str, float]) -> None:
         """
@@ -876,6 +890,8 @@ class KilatTrainer:
 
         # Always log evaluation metrics (even if no improvement)
         self._log(metrics)
+        # Explicitly print evaluation results so they are always visible
+        logger.info("Evaluation results: %s", metrics)
 
         self.callback_handler.on_evaluate(
             self.state, self.control, metrics=metrics
@@ -913,6 +929,8 @@ class KilatTrainer:
             }
             if self.scaler is not None:
                 logs["grad_scale"] = self.scaler.get_scale()
+            # Add perplexity for immediate feedback
+            logs["perplexity"] = compute_perplexity(avg_loss)
 
             self._log(logs)
 
