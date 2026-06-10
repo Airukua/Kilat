@@ -1,4 +1,5 @@
-<!-- <div align="center">
+```markdown
+<div align="center">
 
 # ⚡ Kilat 
 
@@ -23,7 +24,7 @@ Kilat (*Indonesian: lightning*) is a modular toolkit for training and deploying 
 
 ```python
 from arc.model import KilatTransformer
-from utils.config import KilatConfig
+from configs.model_config import KilatConfig
 
 model = KilatTransformer(KilatConfig(vocab_size=50_000, n_embd=640, n_layer=8, ffn_mode="dense"))
 print(f"{sum(p.numel() for p in model.parameters()) / 1e6:.1f}M parameters")
@@ -53,160 +54,82 @@ Verify:
 python -c "from arc.model import KilatTransformer; print('✓ Kilat ready')"
 ```
 
-### Train a model in ~20 lines
+### Train a model
 
 ```python
 from arc.model import KilatTransformer
-from utils.config import KilatConfig
+from configs.main_config import MainConfig
 from training.trainer import KilatTrainer
 from training.args import TrainingArguments
 from data.dataset import PretrainingDataset
 from data.dataloader import build_train_dataloader, build_eval_dataloader
+from data.collator import KilatDataCollator
 
-config = KilatConfig(vocab_size=50_000, n_embd=640, n_layer=8, n_head=10, ffn_mode="dense")
-model  = KilatTransformer(config)
+# Load configuration from YAML (or build programmatically)
+config = MainConfig.from_yaml("configs/small_dense.yaml")
+model = KilatTransformer(config)
 
-train_dataset = PretrainingDataset("data/train.parquet", key_name="input_ids")
-eval_dataset  = PretrainingDataset("data/eval.parquet",  key_name="input_ids")
+# Build tokenizer automatically from config
+tokenizer = config.build_tokenizer()
+
+# Create datasets
+train_dataset = PretrainingDataset(
+    source=config.dataloader.train_data_path,
+    key_name="input_ids",
+    chunk_size=config.dataloader.max_seq_length,
+)
+eval_dataset = PretrainingDataset(
+    source=config.dataloader.eval_data_path,
+    key_name="input_ids",
+    chunk_size=config.dataloader.max_seq_length,
+)
+
+# Create collator and dataloaders
+collator = KilatDataCollator(
+    pad_token_id=config.model.pad_token_id,
+    max_length=config.dataloader.max_seq_length,
+)
+
 train_loader = build_train_dataloader(
     train_dataset,
-    batch_size=32,
-    pad_token_id=config.pad_token_id,
+    batch_size=config.dataloader.train_batch_size,
+    collate_fn=collator,
+    num_workers=config.dataloader.num_workers,
 )
 eval_loader = build_eval_dataloader(
     eval_dataset,
-    batch_size=32,
-    pad_token_id=config.pad_token_id,
+    batch_size=config.dataloader.eval_batch_size,
+    collate_fn=collator,
+    num_workers=config.dataloader.num_workers,
 )
 
-args = TrainingArguments(
-    output_dir="./checkpoints",
-    training_mode="epochs",
-    num_train_epochs=3,
-    per_device_train_batch_size=32,
-    learning_rate=5e-5,
-    precision="bf16",
-)
+# Training arguments
+args = TrainingArguments(**config.training.to_dict())
 
-KilatTrainer(model=model, args=args, train_dataloader=train_loader, eval_dataloader=eval_loader).train()
+# Train
+trainer = KilatTrainer(
+    model=model,
+    args=args,
+    train_dataloader=train_loader,
+    eval_dataloader=eval_loader,
+    tokenizer=tokenizer,
+    tokenizer_config=config.tokenizer,
+)
+trainer.train()
 ```
 
-To continue a stopped run, point `resume_from_checkpoint` to the checkpoint directory you want to restore:
-
-```python
-args = TrainingArguments(
-    output_dir="./checkpoints",
-    resume_from_checkpoint="./checkpoints/checkpoint-best",
-    training_mode="epochs",
-    num_train_epochs=3,
-)
-```
-
-When you use `MainConfig.from_yaml(...)`, put the same path under:
+To resume a stopped run, set `resume_from_checkpoint` in the YAML config:
 
 ```yaml
 training:
   resume_from_checkpoint: "./checkpoints/checkpoint-best"
 ```
 
-That restores model weights, optimizer, scheduler, scaler, and training counters so training continues from the exact saved state.
-
-### Distillation
-
-Coming soon.
-
-### Data pipeline
-
-The `data/` folder is split into four layers:
-
-- `data/converter.py` turns Parquet shards into flat `.npy` memmaps for fast training.
-- `data/dataset.py` provides the dataset primitives:
-  - `PretrainingDataset` for random access over memmap, Parquet, JSON, JSONL, or in-memory samples.
-  - `StreamingDataset` for large Parquet corpora that should be read sequentially.
-  - `PackedDataset` for bin-packing short sequences into fixed-length blocks.
-  - `ConcatDataset` for mixing multiple map-style datasets with optional sampling weights.
-- `data/collator.py` pads/truncates batches for causal language modeling.
-- `data/dataloader.py` builds train/eval `DataLoader` objects with sensible defaults.
-
-For a quick smoke test, you can use the included dummy Parquet file:
-
-```python
-from data.dataset import StreamingDataset
-
-ds = StreamingDataset("data/dummy_test.parquet", pad_token_id=0)
-print(ds._has_mask)
-print(next(iter(ds)))
-```
-
-Recommended data formats:
-
-- Parquet file: `*.parquet` or `*.parq`
-- Directory of Parquet shards
-- JSON file: `*.json`
-- JSONL file: `*.jsonl`
-- In-memory `list` of token dicts or token lists
-
-Each sample should contain token IDs under a key such as `input_ids`:
-
-```python
-{"input_ids": [101, 2023, 2003, 1037, 3978]}
-```
-
-For normal training, pass a `KilatDataCollator`:
-
-```python
-from data.collator import KilatDataCollator
-
-collator = KilatDataCollator(
-    pad_token_id=0,
-    max_length=512,
-    ignore_index=-100,
-)
-```
-
-- It left-pads sequences and truncates to `max_length`.
-- It creates `labels` for causal language modeling.
-- Padding positions in `labels` are set to `ignore_index` and excluded from the loss.
-
-Use `collator=None` only when the dataset already yields ready-to-train batches or when you are using a custom streaming pipeline that performs collation itself.
-
-If you want a higher-level constructor, use the helpers in `data/dataloader.py`:
-
-```python
-from data.dataloader import build_train_dataloader
-from data.dataset import PretrainingDataset
-
-train_ds = PretrainingDataset("data/train.parquet", key_name="input_ids")
-train_loader = build_train_dataloader(train_ds, batch_size=8, pad_token_id=0)
-```
-
-`build_train_dataloader` and `build_eval_dataloader` both accept optional `max_length` and `ignore_index` arguments that are forwarded to `KilatDataCollator`. They also handle distributed training automatically: when `torch.distributed` is initialised, a `DistributedSampler` is used unless you pass `use_distributed_sampler=False`.
-
-For large corpora that start as Parquet, the usual path is:
-
-1. Convert Parquet to memmap with `data.converter.parquet_to_memmap(...)`.
-2. Load the resulting `.npy` with `PretrainingDataset`.
-3. Use `build_train_dataloader(...)` with `KilatDataCollator`.
+The trainer restores model weights, optimizer, scheduler, scaler, callback states, and training counters exactly.
 
 ### Run inference
 
-Inference reuses the shared tokenizer wrapper from `data/tokenizer.py`, so the checkpoint and preprocessing pipeline stay aligned.
-
-```bash
-# Single prompt
-python -m inference.inference \
-  --checkpoint ./checkpoints/best \
-  --mode generate \
-  --prompt "Pada zaman dahulu" \
-  --max_new_tokens 128 --temperature 0.8
-
-# Interactive chat
-python -m inference.inference --checkpoint ./checkpoints/best --mode chat
-
-# Batch (prompts.txt → completions.json)
-python -m inference.inference --checkpoint ./checkpoints/best \
-  --mode batch --input_file prompts.txt --output_file completions.json
-```
+Comming Soon!
 
 ---
 
@@ -214,96 +137,18 @@ python -m inference.inference --checkpoint ./checkpoints/best \
 
 ### FFN modes
 
-Kilat supports two FFN modes, switchable via a single config field:
-
 | Mode | Description | When to use |
 |------|-------------|-------------|
 | `dense` | Standard SwiGLU FFN | Baselines, small models |
 | `moe` | Mixture-of-Experts with optional shared experts | Scalable training, DeepSeek-V2 style |
 
-> **Note:** The previous `moe_shared` mode has been unified into `moe`. Shared experts are now controlled by `num_shared_experts` in `KilatConfig` — set it to `0` for standard MoE, or `>0` for DeepSeek-V2 style MoE with always-active shared experts.
-
----
+Shared experts are controlled by `num_shared_experts` in `KilatConfig` — set to `0` for standard MoE, or `>0` for DeepSeek-V2 style MoE with always-active shared experts.
 
 ### KilatAttention
 
 The attention module splits `n_head` heads into two specialised paths that run in parallel and merge via a learned gate. This hybrid design trades a fraction of precise-recall capacity for O(N) compute and dramatically reduced KV-cache memory.
 
-```
-                     Input x  [B, N, D]
-                          │
-          ┌───────────────┴────────────────┐
-          │                                │
-          ▼                                ▼
-  ╔═══════════════════╗           ╔════════════════════╗
-  ║   PATH 1          ║           ║   PATH 2           ║
-  ║   Global Decay    ║           ║   Latent MLA       ║
-  ║   (linear, O(N))  ║           ║   (softmax, O(N²)) ║
-  ╚═══════════════════╝           ╚════════════════════╝
-          │                                │
-          ▼                                ▼
-   ┌─────────────┐                 ┌──────────────────┐
-   │  v_proj     │                 │  q_a → LN → q_b  │
-   │  (values)   │                 │  kv_a → LN → kv_b│
-   └──────┬──────┘                 └────────┬─────────┘
-          │  [B, N, H_g·Dh]                 │  Q [B, H_r, N, Dh]
-          ▼                                 │  K,V from latent cache
-   ┌─────────────────┐                      ▼
-   │  λ = σ(log_λ)   │             ┌─────────────────────┐
-   │  per-head decay │             │  KV-cache in latent │
-   └──────┬──────────┘             │  space (B, N, L)    │
-          │                        │  4–8× smaller than  │
-          ▼                        │  full K,V matrices  │
-   ┌──────────────────────┐        └──────────┬──────────┘
-   │  Triton causal decay │                   │
-   │                      │                   ▼
-   │  full seq:           │        ┌─────────────────────┐
-   │    Σ λ^(i-j)·V[j]   │        │  SDPA (is_causal)   │
-   │    O(N) kernel       │        │  Q·Kᵀ/√Dh → V      │
-   │                      │        └──────────┬──────────┘
-   │  incremental:        │                   │
-   │    λ·state + V_new   │                   │
-   │    O(1) per step     │                   │
-   └──────────┬───────────┘                   │
-              │  out_global                   │  out_recall
-              │  [B, N, H_g·Dh]              │  [B, N, H_r·Dh]
-              └──────────────┬────────────────┘
-                             │
-                             ▼
-                  ┌─────────────────────┐
-                  │  cat along head dim │
-                  │  [B, N, D]          │
-                  └──────────┬──────────┘
-                             │
-              x (residual) ──┤
-                             ▼
-                  ┌─────────────────────────────┐
-                  │  γ_net([x, out_combined])    │
-                  │                             │
-                  │  Linear → ReLU → Linear → σ │
-                  │  gate ∈ (0,1)^D, elem-wise  │
-                  └──────────┬──────────────────┘
-                             │  out * gate
-                             ▼
-                  ┌─────────────────────┐
-                  │  c_proj             │
-                  │  Linear(D → D)      │
-                  └──────────┬──────────┘
-                             │
-                     output [B, N, D]
-                   + cache (optional)
-```
-
-**Cache structure** during autoregressive generation:
-
-```
-past_key_values = (
-    global_state,   # (B, H_g, Dh)  — 1 state vector per head, entire history
-    latent_kv,      # (B, total_len, latent_dim)  — compressed, not full K,V
-)
-```
-
-**Head allocation** is controlled by `recall_ratio` in `KilatConfig`:
+**Head allocation** is controlled by `recall_ratio`:
 
 ```
 recall_ratio = 0.0  →  all global-decay heads  (fastest, least precise)
@@ -311,17 +156,13 @@ recall_ratio = 0.5  →  50/50 split             (default)
 recall_ratio = 1.0  →  all latent MLA heads    (most precise)
 ```
 
----
-
-### KV-cache memory comparison
-
-For a 1024-token sequence with `n_embd=1024`, `n_recall_heads=8`, `head_dim=128`, `latent_dim=256`:
+**Cache structure** during autoregressive generation:
 
 ```
-Standard attention KV-cache:  2 × 8 × 128 × 1024  =  2,097,152 floats
-Kilat latent KV-cache:              256 × 1024     =    262,144 floats
-                                                       ─────────────────
-                                                            8× reduction
+past_key_values = (
+    global_state,   # (B, H_g, Dh) — 1 state vector per head
+    latent_kv,      # (B, total_len, latent_dim) — compressed
+)
 ```
 
 ---
@@ -333,159 +174,67 @@ kilat/
 ├── LICENSE
 ├── README.md
 ├── pyproject.toml
-├── requirements.txt
 ├── setup.py
 ├── arc/                               # Model architecture
-│   ├── __init__.py
-│   ├── attention.py                   # KilatAttention (hybrid global-decay + latent MLA)
+│   ├── attention.py                   # KilatAttention (hybrid)
 │   ├── blocks.py                      # Transformer blocks
 │   ├── ffn.py                         # Dense / MoE FFN
 │   ├── model.py                       # KilatTransformer
 │   └── triton_ops.py                  # Triton causal decay kernel
-├── configs/
-│   ├── moe_standart.yaml              # MoE configuration
-│   └── small_dense.yaml               # Dense baseline config
+├── configs/                           # Configuration classes
+│   ├── __init__.py
+│   ├── base.py                        # Base YAML utilities
+│   ├── main_config.py                 # MainConfig (aggregator)
+│   ├── model_config.py                # KilatConfig
+│   ├── tokenizer_config.py            # TokenizerConfig
+│   ├── dataloader_config.py           # DataLoaderConfig
+│   ├── training_config.py             # TrainingConfig
+│   └── sample/                        # Example YAML configs
+│       ├── moe_standart.yaml
+│       └── small_dense.yaml
 ├── data/                              # Data pipeline
-│   ├── __init__.py
-│   ├── converter.py                   # Dataset conversion helpers
+│   ├── converter.py                   # Parquet → memmap conversion
 │   ├── collator.py                    # KilatDataCollator
-│   ├── dataloader.py                  # Train/eval dataloader builders (DDP-aware)
-│   ├── dataset.py                     # Parquet, JSON, in-memory, packing, concat
-│   └── tokenizer.py                   # Shared tokenizer wrapper
-├── distiliation/                      # Knowledge distillation (coming soon)
-│   ├── __init__.py
-│   ├── losses.py
-│   ├── student.py
-│   └── teacher.py
-├── experiments/                       # Notebooks and scripts
-│   ├── 01_dataset.Ipynb
-│   ├── alkitab_text.txt
-│   ├── kilat1.0.py
-│   └── tinyshakespeare.txt
-├── images/
-│   └── illustration.png
-├── generation/                        # Inference & CLI
-│   ├── __init__.py
+│   ├── dataloader.py                  # DDP-aware DataLoader builders
+│   ├── dataset.py                     # PretrainingDataset, StreamingDataset, etc.
+│   └── tokenizer.py                   # Unified tokenizer wrapper
+├── training/                          # Training infrastructure
+│   ├── args.py                        # TrainingArguments
+│   ├── callbacks.py                   # Callback system
+│   ├── integration.py                 # Logging integrations
+│   ├── optimizer.py                   # AdamW with parameter groups
+│   ├── scheduler.py                   # LR schedulers (cosine, linear, etc.)
+│   ├── trainer.py                     # KilatTrainer
+│   └── trainer_utils.py               # Checkpointing, metrics, helpers
+├── generation/                        # Inference
 │   ├── chat_session.py
 │   ├── generation_config.py
-│   ├── generator.py                   # KilatGenerator
-│   ├── inference.py                   # CLI entry point
+│   ├── generator.py
+│   ├── inference.py
 │   └── model_loader.py
-├── training/                          # Training infrastructure
-│   ├── __init__.py
-│   ├── args.py                        # TrainingArguments
-│   ├── callbacks.py
-│   ├── integration.py
-│   ├── optimizer.py
-│   ├── scheduler.py
-│   ├── trainer.py                     # KilatTrainer
-│   └── trainer_utils.py
-└── utils/
-    ├── __init__.py
-    ├── config.py                      # KilatConfig / TokenizerConfig / DataLoaderConfig / TrainingConfig / MainConfig
-    └── validators.py
+├── pipeline/                          # Conversion utilities
+│   └── converter/
+│       ├── convert_to_hf.py           # Checkpoint → HuggingFace format
+│       └── to_memmap.py               # Parquet → .npy memmap
+├── experiments/                       # Notebooks and scripts
+├── utils/
+│   ├── config.py                      # Legacy config (deprecated)
+│   ├── report.py                      # Parameter counting
+│   └── validators.py                  # Tensor validation utilities
+└── images/
+    └── illustration.png
 ```
 
 ---
 
 ## Configuration
 
-Kilat keeps configuration in five small objects:
-
-- `KilatConfig` for model architecture
-- `TokenizerConfig` for tokenization metadata
-- `DataLoaderConfig` for data loading performance settings
-- `TrainingConfig` for training hyperparameters and runtime settings
-- `MainConfig` for bundling all four together into one YAML file
-
-### Python-first workflow
-
-```python
-from arc.model import KilatTransformer
-from utils.config import KilatConfig, TokenizerConfig, DataLoaderConfig, TrainingConfig, MainConfig
-from training.args import TrainingArguments
-from data.dataset import PretrainingDataset
-from data.dataloader import build_train_dataloader, build_eval_dataloader
-
-model_cfg = KilatConfig(
-    vocab_size=50_000,
-    n_embd=768,
-    n_layer=12,
-    n_head=12,
-    ffn_mode="moe",
-    num_experts=8,
-    active_experts=2,
-    num_shared_experts=0,   # set > 0 for DeepSeek-V2 style shared experts
-    recall_ratio=0.5,
-    latent_dim=192,
-)
-
-tokenizer_cfg = TokenizerConfig(
-    tokenizer_type="gpt2",
-    tokenizer_name_or_path="gpt2",
-    local_files_only=True,
-)
-
-dataloader_cfg = DataLoaderConfig(
-    train_batch_size=8,
-    eval_batch_size=8,
-    num_workers=4,
-    max_seq_length=1024,
-    pin_memory=True,
-    use_distributed_sampler=True,
-)
-
-train_cfg = TrainingConfig(
-    output_dir="./checkpoints",
-    training_mode="steps",
-    max_steps=100_000,
-    per_device_train_batch_size=8,
-    scheduler_type="cosine",
-    atomic_checkpoint=True,
-    precision="bf16",
-    report_to="none",
-)
-
-config = MainConfig(
-    model=model_cfg,
-    tokenizer=tokenizer_cfg,
-    dataloader=dataloader_cfg,
-    training=train_cfg,
-)
-config.to_yaml("configs/my_experiment.yaml")  # optional
-
-model = KilatTransformer(config.model)
-args = TrainingArguments(**config.training.to_dict())
-
-train_dataset = PretrainingDataset("data/train.parquet", key_name="input_ids")
-eval_dataset  = PretrainingDataset("data/eval.parquet",  key_name="input_ids")
-train_loader  = build_train_dataloader(
-    train_dataset,
-    batch_size=config.dataloader.train_batch_size,
-    pad_token_id=config.model.pad_token_id,
-    num_workers=config.dataloader.num_workers,
-    pin_memory=config.dataloader.pin_memory,
-)
-eval_loader = build_eval_dataloader(
-    eval_dataset,
-    batch_size=config.dataloader.eval_batch_size,
-    pad_token_id=config.model.pad_token_id,
-)
-```
-
-`TrainingConfig.to_dict()` mirrors `TrainingArguments`, so the same YAML-backed configuration can be passed directly into the trainer:
-
-```python
-trainer = KilatTrainer(model=model, args=args, train_dataloader=train_loader, eval_dataloader=eval_loader)
-```
-
-See `configs/` for ready-made examples, or keep everything in Python for Kaggle / Colab workflows.
+Kilat uses `MainConfig` as the single source of truth, bundling model, tokenizer, dataloader, and training configurations.
 
 ### YAML workflow
 
-`MainConfig` now requires four top-level sections. Minimal shape:
-
 ```yaml
+# configs/my_experiment.yaml
 experiment:
   name: "my-experiment"
 
@@ -497,86 +246,179 @@ model:
   ffn_mode: moe
   num_experts: 8
   active_experts: 2
-  num_shared_experts: 0
+  recall_ratio: 0.5
 
 tokenizer:
-  tokenizer_type: gpt2
+  tokenizer_type: auto
   tokenizer_name_or_path: gpt2
+  local_files_only: true
 
 dataloader:
   train_batch_size: 8
   eval_batch_size: 8
   num_workers: 4
   max_seq_length: 1024
+  pin_memory: true
+  train_data_path: data/train/tokens.npy
+  eval_data_path: data/val/tokens.npy
 
 training:
   output_dir: ./checkpoints
   training_mode: epochs
   num_train_epochs: 3
-  per_device_train_batch_size: 8
+  learning_rate: 5e-5
   precision: bf16
+  report_to: "none"
 ```
 
-Load it with:
+Load with:
 
 ```python
+from configs.main_config import MainConfig
+
 config = MainConfig.from_yaml("configs/my_experiment.yaml")
+model = KilatTransformer(config)
+tokenizer = config.build_tokenizer()
+args = TrainingArguments(**config.training.to_dict())
 ```
-
-> **Breaking change:** `MainConfig.from_yaml` now raises `ValueError` if the `dataloader` section is missing. Add a `dataloader:` block to any existing YAML configs before upgrading.
-
-Notable training fields:
-
-- `resume_from_checkpoint` — continue from a saved run
-- `scheduler_type` / `scheduler_kwargs` — choose the LR schedule
-- `atomic_checkpoint` — write checkpoints safely via temp-directory rename
-- `report_to` — pick logging backends; install `.[reporting]` first for `["wandb", "tensorboard", "mlflow", "comet_ml"]`
-- `metric_for_best_model` / `greater_is_better` — control early stopping and best-checkpoint selection
-
-Notable dataloader fields:
-
-- `num_workers` / `persistent_workers` / `prefetch_factor` — tune I/O throughput
-- `pin_memory` — faster host-to-GPU transfers (requires CUDA)
-- `use_packing` / `packed_block_size` — enable bin-packing for zero padding waste
-- `use_distributed_sampler` — auto-enable `DistributedSampler` in DDP runs
-- `train_data_path` / `eval_data_path` / `dataset_format` — dataset source metadata
 
 ### Tokenizer configuration
 
-Supported tokenizer styles:
+Supported tokenizer types:
 
-- `tokenizer_type: "auto"` — load any Hugging Face tokenizer via `AutoTokenizer.from_pretrained(...)`
-- `tokenizer_type: "sentencepiece"` — load a local SentencePiece model via `tokenizer_model_path`
+- `auto`: Load via `AutoTokenizer.from_pretrained()` (HuggingFace Hub or local)
+- `sentencepiece`: Load a local SentencePiece model
 
-```python
+```yaml
 # HuggingFace tokenizer
-tokenizer_cfg = TokenizerConfig(
-    tokenizer_type="auto",
-    tokenizer_name_or_path="gpt2",
-    local_files_only=True,
-)
+tokenizer:
+  tokenizer_type: auto
+  tokenizer_name_or_path: gpt2
+  local_files_only: true
 
-# Local tokenizer trained yourself
-tokenizer_cfg = TokenizerConfig(
-    tokenizer_type="auto",
-    tokenizer_name_or_path="./tokenizers/my_tokenizer",
-    local_files_only=True,
-)
+# Local tokenizer
+tokenizer:
+  tokenizer_type: auto
+  tokenizer_name_or_path: ./tokenizers/my_tokenizer
 
 # SentencePiece
-tokenizer_cfg = TokenizerConfig(
-    tokenizer_type="sentencepiece",
-    tokenizer_name_or_path="./tokenizers/my_spm",
-    tokenizer_model_path="./tokenizers/my_spm/sp_tokenizer.model",
-    local_files_only=True,
+tokenizer:
+  tokenizer_type: sentencepiece
+  tokenizer_model_path: ./tokenizers/spm.model
+```
+
+`MainConfig.from_yaml` will warn if the tokenizer vocabulary size does not match `model.vocab_size`.
+
+### DataLoader configuration
+
+Key fields for performance tuning:
+
+- `num_workers`: CPU processes for data loading
+- `pin_memory`: Faster GPU transfer (requires CUDA)
+- `prefetch_factor`: Batches to preload per worker
+- `persistent_workers`: Keep workers alive across epochs
+- `use_packing`: Enable bin‑packing to eliminate padding waste
+
+### Training configuration
+
+Notable fields:
+
+- `resume_from_checkpoint`: Path to resume from, or `"latest"`
+- `scheduler_type`: `cosine`, `linear`, `polynomial`, `inverse_sqrt`, `wsdlr`, `rex`
+- `precision`: `fp32`, `fp16`, `bf16`
+- `report_to`: `"none"`, `"all"`, or list of backends (`wandb`, `tensorboard`, `mlflow`, `comet_ml`)
+- `atomic_checkpoint`: Use atomic rename to prevent corrupted checkpoints
+- `metric_for_best_model` / `greater_is_better`: Control early stopping
+
+---
+
+## Data Pipeline
+
+The `data/` folder provides four layers:
+
+1. **`converter.py`** – Converts Parquet shards to flat `.npy` memmaps for fast training
+2. **`dataset.py`** – Dataset primitives:
+   - `PretrainingDataset`: Random access over memmap, Parquet, JSON, JSONL
+   - `StreamingDataset`: Sequential reading for large Parquet corpora
+   - `PackedDataset`: Bin‑packing short sequences into fixed blocks
+   - `ConcatDataset`: Mix multiple sources with optional weights
+3. **`collator.py`** – `KilatDataCollator` for padding/truncation and causal LM labels
+4. **`dataloader.py`** – DDP‑aware `build_train_dataloader` / `build_eval_dataloader` helpers
+
+### Example: Convert Parquet to memmap
+
+```python
+from data.converter import parquet_to_memmap
+
+parquet_to_memmap(
+    input_path="./data/tokenized/",
+    output_path="./data/tokens.npy",
+    key_name="input_ids",
+    verbose=True,
 )
 ```
 
-`MainConfig.from_yaml` will emit a `UserWarning` if the tokenizer's vocabulary size does not match `model.vocab_size`, since a mismatch produces garbled decoded text.
+### Example: Packed dataset (zero padding waste)
 
-### Distributed training
+```python
+from data.dataset import PretrainingDataset, PackedDataset
 
-`build_train_dataloader` and `build_eval_dataloader` detect an active `torch.distributed` process group and automatically use `DistributedSampler`. No additional configuration is needed beyond launching with `torchrun`. Call `set_dataloader_epoch(loader, epoch)` at the start of each epoch to advance the sampler's shuffle seed:
+base = PretrainingDataset("tokens.npy", chunk_size=256)
+packed = PackedDataset(base, block_size=1024, eos_token_id=2)
+```
+
+### Example: Weighted mixing
+
+```python
+from data.dataset import ConcatDataset
+
+web = PretrainingDataset("web.npy", chunk_size=1024)
+books = PretrainingDataset("books.npy", chunk_size=1024)
+code = PretrainingDataset("code.npy", chunk_size=1024)
+
+mixed = ConcatDataset([web, books, code], weights=[0.7, 0.2, 0.1])
+```
+
+---
+
+## Checkpointing
+
+Kilat saves atomic, self-contained checkpoints:
+
+```
+checkpoint-best/
+├── config.json              # HF model config
+├── config.yaml              # Human‑readable config
+├── model.safetensors        # Model weights
+├── training_state.pt        # Optimizer, scheduler, scaler, state
+├── training_args.json       # Training hyperparameters
+└── tokenizer_config.json    # Tokenizer metadata
+```
+
+To resume:
+
+```yaml
+training:
+  resume_from_checkpoint: "./checkpoints/checkpoint-best"
+```
+
+Or programmatically:
+
+```python
+args.resume_from_checkpoint = "./checkpoints/checkpoint-best"
+```
+
+---
+
+## Distributed Training
+
+`build_train_dataloader` and `build_eval_dataloader` automatically detect an active `torch.distributed` process group and use `DistributedSampler`. Launch with `torchrun`:
+
+```bash
+torchrun --nproc_per_node=8 experiments/train.py
+```
+
+Call `set_dataloader_epoch(loader, epoch)` at the start of each epoch:
 
 ```python
 from data.dataloader import set_dataloader_epoch
@@ -587,7 +429,26 @@ for epoch in range(num_epochs):
         ...
 ```
 
-`KilatTrainer` does not initialise `torch.distributed` itself; use `torchrun` or your own launcher.
+> KilatTrainer does **not** initialise `torch.distributed` itself — use `torchrun` or your own launcher.
+
+---
+
+## Converting to HuggingFace Format
+
+```bash
+python -m pipeline.converter.convert_to_hf \
+  -c ./checkpoints/checkpoint-best \
+  -o ./converted_model
+```
+
+The converted model can be loaded with:
+
+```python
+from transformers import AutoModel, AutoTokenizer
+
+model = AutoModel.from_pretrained("./converted_model", trust_remote_code=True)
+tokenizer = AutoTokenizer.from_pretrained("./converted_model")
+```
 
 ---
 
@@ -601,11 +462,12 @@ for epoch in range(num_epochs):
 - [x] Bin-packing (`PackedDataset`) and weighted mixing (`ConcatDataset`)
 - [x] DDP-aware `DataLoader` builders with `DistributedSampler`
 - [x] WandB / TensorBoard / MLflow / Comet integration
-- [ ] Optimize Gate fused
+- [x] Unified configuration system (`MainConfig`, YAML)
+- [x] Tokenizer saving in checkpoints
+- [x] HuggingFace conversion with tokenizer
 - [ ] Flash Attention 2 integration
-- [ ] Multi-GPU (DDP / FSDP) — trainer hooks ready, launcher not included
+- [ ] Multi-GPU (FSDP) support
 - [ ] ONNX / TorchScript export
-- [ ] Additional sampling strategies (beam search, contrastive decoding)
 - [ ] Knowledge distillation (`distilation/`)
 
 ---
@@ -615,17 +477,14 @@ for epoch in range(num_epochs):
 PRs are welcome. Useful areas:
 
 - Triton kernel optimizations
-- Distributed training (DDP/FSDP)
+- FSDP integration
 - Additional sampling strategies
-- Training scripts for common public datasets
-- Documentation
+- Training scripts for public datasets
 
 ```bash
 git checkout -b feature/your-feature
-# make changes
-git commit -m "feat: describe what you did"
+git commit -m "feat: describe your change"
 git push origin feature/your-feature
-# open a PR
 ```
 
 ---
@@ -656,6 +515,5 @@ Focus: efficient sequence modeling, Indonesian NLP, low-resource language techno
 
 ---
 
-*Licensed under MIT. See [LICENSE](LICENSE) for details.* -->
-
-We Still Updating the code, thank you for waiting!
+*Licensed under MIT. See [LICENSE](LICENSE) for details.*
+```
