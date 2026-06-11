@@ -6,7 +6,6 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Optional
 
-
 @dataclass
 class DistillLossOutput:
     """Container for distillation loss components – all values are logged."""

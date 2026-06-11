@@ -19,7 +19,7 @@ from pipeline.generation.generator import TextGenerator
 
 
 def main():
-    model_path = "/home/a_rkk/kilat/model"
+    model_path = "AiRukua/BabyKilat"
     
     print("=" * 60)
     print("Loading Model")
