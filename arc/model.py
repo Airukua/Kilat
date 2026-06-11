@@ -241,6 +241,71 @@ class KilatTransformer(KilatPreTrainedModel, GenerationMixin):
         # additional initialization registered by PreTrainedModel.
         self.post_init()
 
+    def _tie_weights(self):
+        """
+        Tie the weights between input embeddings and output embeddings.
+        
+        This method is called automatically by Hugging Face's `from_pretrained`
+        after loading the weights. It ensures weight tying is restored even if
+        the checkpoint doesn't contain lm_head.weight.
+        
+        WHY: Older checkpoints may not have lm_head.weight saved due to weight tying.
+        This method automatically restores the tie without user intervention.
+        """
+        if self.config.tie_word_embeddings:
+            self.lm_head.weight = self.wte.weight
+
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path, *args, **kwargs):
+        """
+        Load a pretrained KilatTransformer model with automatic weight tying restoration.
+        
+        This method overrides the default HF from_pretrained to:
+        1. Load with strict=False (handles missing lm_head.weight)
+        2. Automatically restore weight tying after loading
+        3. Log a warning if weight tying was missing
+        
+        WHY: Older checkpoints uploaded to Hugging Face Hub may not have lm_head.weight
+        saved due to the way PyTorch handles shared tensors. This method ensures
+        users never see the confusing "lm_head.weight | MISSING" warning and the
+        model always works correctly out of the box.
+        
+        Parameters
+        ----------
+        pretrained_model_name_or_path : str
+            Hugging Face model ID or local path.
+        *args, **kwargs
+            Additional arguments passed to the parent from_pretrained.
+        
+        Returns
+        -------
+        KilatTransformer
+            Loaded model with properly restored weight tying.
+        """
+        import warnings
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        # Load with strict=False to allow missing lm_head.weight
+        kwargs['strict'] = False
+        model = super().from_pretrained(pretrained_model_name_or_path, *args, **kwargs)
+        
+        # Check if weight tying needs to be restored
+        if model.config.tie_word_embeddings:
+            # Check if lm_head.weight is a separate tensor (not tied to wte)
+            if model.lm_head.weight is not model.wte.weight:
+                warnings.warn(
+                    "lm_head.weight not tied to wte.weight. "
+                    "This is expected for older checkpoints. "
+                    "Automatically restoring weight tying...",
+                    UserWarning,
+                    stacklevel=2
+                )
+                model.lm_head.weight = model.wte.weight
+                logger.info("Weight tying restored successfully: lm_head.weight = wte.weight")
+        
+        return model
+
     def get_input_embeddings(self) -> nn.Embedding:
         """
         Return input embedding layer for HF generation pipeline compatibility.
