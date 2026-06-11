@@ -31,6 +31,7 @@ USAGE:
 
 from __future__ import annotations
 import os
+import json
 from pathlib import Path
 from typing import Any, Optional, Union
 from configs.tokenizer_config import TokenizerConfig
@@ -83,7 +84,10 @@ class AutoTokenizer:
         Priority order:
             1. tokenizer_config.json in checkpoint directory (FULL SUPPORT)
             2. config.yaml (MainConfig) in checkpoint directory
-            3. Default GPT-2 tokenizer (fallback)
+            3. config.json (HF standard format) with tokenizer info
+            4. Auto-detect from tokenizer files in directory
+            5. Custom builder from environment variable
+            6. Default GPT-2 tokenizer (fallback)
         
         Parameters
         ----------
@@ -109,70 +113,128 @@ class AutoTokenizer:
             If custom builder module cannot be imported.
         AttributeError
             If custom builder function or class not found in module.
-        
-        Example
-        -------
-            >>> # Load tokenizer from checkpoint
-            >>> tokenizer = AutoTokenizer.from_pretrained("./checkpoints/checkpoint-best")
-            >>>
-            >>> # For custom tokenizer, the builder function is called automatically
-            >>> tokens = tokenizer.encode("Hello world")
-            >>> text = tokenizer.decode(tokens)
         """
         checkpoint_path = Path(pretrained_model_name_or_path)
         
-        # Priority 1: tokenizer_config.json (saved by Trainer)
+        # ================================================================
+        # PRIORITY 1: tokenizer_config.json (saved by Trainer or Converter)
+        # ================================================================
         tokenizer_config_path = checkpoint_path / "tokenizer_config.json"
         if tokenizer_config_path.exists():
             print(f"Loading tokenizer config from: {tokenizer_config_path}")
-            tokenizer_config = TokenizerConfig.from_yaml(tokenizer_config_path)
-            
-            # Debug: show what type of tokenizer we're loading
-            if tokenizer_config.tokenizer_type == "custom":
-                if tokenizer_config.custom_builder:
-                    print(f"  Custom tokenizer with builder: {tokenizer_config.custom_builder}")
-                elif tokenizer_config.custom_module and tokenizer_config.custom_class:
-                    print(f"  Custom tokenizer with class: {tokenizer_config.custom_module}.{tokenizer_config.custom_class}")
-            else:
-                print(f"  Tokenizer type: {tokenizer_config.tokenizer_type}")
-                print(f"  Name/path: {tokenizer_config.tokenizer_name_or_path}")
-            
-            # Merge kwargs with config
-            if kwargs:
-                for key, value in kwargs.items():
-                    if hasattr(tokenizer_config, key):
-                        setattr(tokenizer_config, key, value)
-            
-            # Build tokenizer using TokenizerConfig.build()
-            return tokenizer_config.build()
+            try:
+                # Load the JSON config
+                with open(tokenizer_config_path, 'r') as f:
+                    config_dict = json.load(f)
+                
+                # Create TokenizerConfig from dict
+                tokenizer_config = TokenizerConfig(**config_dict)
+                
+                # Debug: show what type of tokenizer we're loading
+                if tokenizer_config.tokenizer_type == "custom":
+                    if tokenizer_config.custom_builder:
+                        print(f"  Custom tokenizer with builder: {tokenizer_config.custom_builder}")
+                    elif tokenizer_config.custom_module and tokenizer_config.custom_class:
+                        print(f"  Custom tokenizer with class: {tokenizer_config.custom_module}.{tokenizer_config.custom_class}")
+                else:
+                    print(f"  Tokenizer type: {tokenizer_config.tokenizer_type}")
+                    print(f"  Name/path: {tokenizer_config.tokenizer_name_or_path}")
+                
+                # Merge kwargs with config
+                if kwargs:
+                    for key, value in kwargs.items():
+                        if hasattr(tokenizer_config, key):
+                            setattr(tokenizer_config, key, value)
+                
+                # Build tokenizer using TokenizerConfig.build()
+                return tokenizer_config.build()
+            except Exception as e:
+                print(f"  Warning: Failed to load tokenizer_config.json: {e}")
         
-        # Priority 2: config.yaml (MainConfig style)
+        # ================================================================
+        # PRIORITY 2: config.yaml (MainConfig style)
+        # ================================================================
         config_path = checkpoint_path / "config.yaml"
         if config_path.exists():
             print(f"Loading config from: {config_path}")
-            from configs.main_config import MainConfig
-            main_config = MainConfig.from_yaml(config_path)
-            
-            if hasattr(main_config, 'build_tokenizer'):
-                print(f"  Using MainConfig.build_tokenizer()")
-                return main_config.build_tokenizer()
-            
-            print(f"  Using MainConfig.tokenizer.build()")
-            return main_config.tokenizer.build()
+            try:
+                import yaml
+                with open(config_path, 'r') as f:
+                    config_dict = yaml.safe_load(f)
+                
+                # Check if config has tokenizer section
+                if "tokenizer" in config_dict:
+                    tokenizer_dict = config_dict["tokenizer"]
+                    print(f"  Found tokenizer section in config.yaml")
+                    print(f"  Tokenizer type: {tokenizer_dict.get('tokenizer_type', 'unknown')}")
+                    print(f"  Name/path: {tokenizer_dict.get('tokenizer_name_or_path', 'unknown')}")
+                    
+                    tokenizer_config = TokenizerConfig(**tokenizer_dict)
+                    return tokenizer_config.build()
+                elif "model" in config_dict and "tokenizer_name_or_path" in config_dict["model"]:
+                    # Some configs store tokenizer info in model section
+                    tokenizer_name = config_dict["model"].get("tokenizer_name_or_path")
+                    if tokenizer_name:
+                        print(f"  Found tokenizer_name_or_path in model section: {tokenizer_name}")
+                        tokenizer_config = TokenizerConfig(
+                            tokenizer_type="auto",
+                            tokenizer_name_or_path=tokenizer_name,
+                            local_files_only=local_files_only,
+                        )
+                        return tokenizer_config.build()
+            except Exception as e:
+                print(f"  Warning: Failed to load config.yaml: {e}")
         
-        # Priority 3: Look for tokenizer files directly
+        # ================================================================
+        # PRIORITY 3: config.json (HF standard format)
+        # ================================================================
+        config_json_path = checkpoint_path / "config.json"
+        if config_json_path.exists():
+            print(f"Checking config.json for tokenizer info...")
+            try:
+                with open(config_json_path, 'r') as f:
+                    config_dict = json.load(f)
+                
+                # Look for tokenizer info in config.json
+                tokenizer_name = None
+                if "tokenizer_name_or_path" in config_dict:
+                    tokenizer_name = config_dict["tokenizer_name_or_path"]
+                elif "_name_or_path" in config_dict:
+                    # Sometimes tokenizer info is in _name_or_path
+                    tokenizer_name = config_dict["_name_or_path"]
+                
+                if tokenizer_name and tokenizer_name != "gpt2":
+                    print(f"  Found tokenizer_name_or_path in config.json: {tokenizer_name}")
+                    tokenizer_config = TokenizerConfig(
+                        tokenizer_type="auto",
+                        tokenizer_name_or_path=tokenizer_name,
+                        local_files_only=local_files_only,
+                        **kwargs,
+                    )
+                    return tokenizer_config.build()
+            except Exception as e:
+                print(f"  Warning: Failed to load config.json: {e}")
+        
+        # ================================================================
+        # PRIORITY 4: Auto-detect from tokenizer files
+        # ================================================================
         if cls._has_tokenizer_files(checkpoint_path):
-            print(f"Found tokenizer files in {checkpoint_path}, attempting to load...")
+            print(f"Found tokenizer files in {checkpoint_path}, auto-detecting...")
             
+            # Check for SentencePiece
             if (checkpoint_path / "spm.model").exists():
-                print(f"  Detected SentencePiece tokenizer")
+                print(f"  Detected SentencePiece tokenizer (spm.model)")
                 tokenizer_config = TokenizerConfig(
                     tokenizer_type="sentencepiece",
                     tokenizer_model_path=str(checkpoint_path / "spm.model"),
                     local_files_only=local_files_only,
                     **kwargs,
                 )
-            else:
+                return tokenizer_config.build()
+            
+            # Check for HuggingFace tokenizer files
+            hf_files = ["tokenizer.json", "vocab.json", "merges.txt"]
+            if any((checkpoint_path / f).exists() for f in hf_files):
                 print(f"  Detected HuggingFace tokenizer files")
                 tokenizer_config = TokenizerConfig(
                     tokenizer_type="auto",
@@ -180,9 +242,11 @@ class AutoTokenizer:
                     local_files_only=local_files_only,
                     **kwargs,
                 )
-            return tokenizer_config.build()
+                return tokenizer_config.build()
         
-        # Priority 4: Check for custom builder in environment variable
+        # ================================================================
+        # PRIORITY 5: Custom builder from environment variable
+        # ================================================================
         custom_builder_env = os.environ.get("KILAT_TOKENIZER_BUILDER")
         if custom_builder_env:
             print(f"Using custom tokenizer builder from env: {custom_builder_env}")
@@ -194,7 +258,9 @@ class AutoTokenizer:
             )
             return tokenizer_config.build()
         
-        # Fallback: try default GPT-2 tokenizer
+        # ================================================================
+        # FALLBACK: GPT-2 tokenizer (last resort)
+        # ================================================================
         print("No tokenizer config found, using default GPT-2 tokenizer")
         return cls._fallback_tokenizer(local_files_only, **kwargs)
     
@@ -235,6 +301,13 @@ def save_tokenizer(
     """
     Save tokenizer to a directory for later use with AutoTokenizer.from_pretrained().
     
+    This function saves both the tokenizer instance AND the configuration
+    so that the tokenizer can be faithfully reconstructed later.
+    
+    For HuggingFace tokenizers: saves via save_pretrained()
+    For SentencePiece tokenizers: saves the .model file
+    For custom tokenizers: saves config only (user must provide builder)
+    
     Parameters
     ----------
     tokenizer : Any
@@ -261,7 +334,7 @@ def save_tokenizer(
     if tokenizer_config is None:
         tokenizer_config = _create_tokenizer_config_from_tokenizer(tokenizer)
     
-    # Save tokenizer config as YAML
+    # Save tokenizer config as JSON (for easy loading)
     tokenizer_config.to_yaml(save_path / "tokenizer_config.json")
     print(f"Saved tokenizer config to {save_path / 'tokenizer_config.json'}")
     
@@ -287,17 +360,32 @@ def save_tokenizer(
 
 
 def _create_tokenizer_config_from_tokenizer(tokenizer: Any) -> TokenizerConfig:
-    """Infer TokenizerConfig from tokenizer instance."""
+    """
+    Infer TokenizerConfig from tokenizer instance.
+    
+    This attempts to extract tokenizer configuration from an existing
+    tokenizer object, which is useful when saving a tokenizer that was
+    created manually rather than from a config.
+    """
     tokenizer_type = "auto"
     tokenizer_name_or_path = "gpt2"
     tokenizer_model_path = None
     
+    # Detect SentencePiece tokenizer
     if hasattr(tokenizer, "GetPieceSize") and hasattr(tokenizer, "Load"):
         tokenizer_type = "sentencepiece"
+        tokenizer_model_path = getattr(tokenizer, "model_file", None)
+    
+    # Detect HuggingFace tokenizer
     elif hasattr(tokenizer, "name_or_path"):
         tokenizer_name_or_path = tokenizer.name_or_path
+        # Check if it's a local path or a Hub model
         if Path(tokenizer_name_or_path).exists():
             tokenizer_type = "auto"
+    
+    # Detect if it's a custom tokenizer with vocab_size attribute
+    elif hasattr(tokenizer, "vocab_size") and not hasattr(tokenizer, "name_or_path"):
+        tokenizer_type = "custom"
     
     return TokenizerConfig(
         tokenizer_type=tokenizer_type,
@@ -312,7 +400,10 @@ def get_vocab_size(tokenizer: Any) -> int:
     """
     Get vocabulary size from tokenizer instance.
     
-    Handles different tokenizer types uniformly.
+    Handles different tokenizer types uniformly:
+    - HuggingFace tokenizers: tokenizer.vocab_size or len(tokenizer)
+    - SentencePiece: tokenizer.GetPieceSize()
+    - Custom: tokenizer.vocab_size or len(tokenizer.vocab)
     
     Example
     -------
@@ -328,4 +419,8 @@ def get_vocab_size(tokenizer: Any) -> int:
     elif hasattr(tokenizer, "GetPieceSize"):
         return tokenizer.GetPieceSize()
     else:
-        return len(tokenizer)
+        # Last resort: try len()
+        try:
+            return len(tokenizer)
+        except TypeError:
+            raise ValueError(f"Cannot determine vocabulary size for {type(tokenizer).__name__}")

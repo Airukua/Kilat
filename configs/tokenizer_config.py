@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Literal, Optional, Callable, Any, Union
 import warnings
 import yaml
+import json
 from .base import dump_yaml_file, load_yaml_file
 
 
@@ -82,9 +83,9 @@ class TokenizerConfig:
         >>> # Build tokenizer instance
         >>> tokenizer_instance = tokenizer.build()
         >>>
-        >>> # Save for later use
-        >>> tokenizer.to_yaml("tokenizer_config.yaml")
-        >>> loaded = TokenizerConfig.from_yaml("tokenizer_config.yaml")
+        >>> # Save for later use (JSON format for AutoTokenizer compatibility)
+        >>> tokenizer.to_json("tokenizer_config.json")
+        >>> loaded = TokenizerConfig.from_json("tokenizer_config.json")
     """
 
     def __init__(
@@ -366,6 +367,8 @@ class TokenizerConfig:
         This method handles saving both HuggingFace tokenizers, SentencePiece
         tokenizers, and custom tokenizers (if they implement save_pretrained).
 
+        IMPORTANT: Also saves tokenizer_config.json for AutoTokenizer compatibility.
+
         Parameters
         ----------
         tokenizer : Any
@@ -380,7 +383,10 @@ class TokenizerConfig:
         save_dir = Path(save_directory)
         save_dir.mkdir(parents=True, exist_ok=True)
 
-        # Save the tokenizer config itself for reproducibility
+        # Save the tokenizer config itself for reproducibility (JSON format for AutoTokenizer)
+        self.to_json(save_dir / "tokenizer_config.json")
+        
+        # Also save as YAML for human readability
         self.to_yaml(save_dir / "tokenizer_config.yaml")
 
         if self.tokenizer_type == "sentencepiece":
@@ -434,31 +440,57 @@ class TokenizerConfig:
             result["custom_kwargs"] = self.custom_kwargs
         return result
 
-    @classmethod
-    def from_yaml(cls, yaml_path: str | Path) -> "TokenizerConfig":
+    def to_json(self, path: str | Path) -> None:
         """
-        Load tokenizer configuration from a YAML file.
+        Export tokenizer configuration to JSON format.
+
+        WHY JSON: This is the standard format expected by HuggingFace's
+        AutoTokenizer and our custom AutoTokenizer. JSON is machine-friendly
+        and widely supported.
 
         Parameters
         ----------
-        yaml_path : str | Path
-            Path to YAML tokenizer configuration file.
+        path : str | Path
+            Path to write the JSON file.
+
+        Example
+        -------
+            >>> tokenizer_config.to_json("tokenizer_config.json")
+        """
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(self.to_dict(), f, indent=2, ensure_ascii=False)
+
+    @classmethod
+    def from_json(cls, json_path: str | Path) -> "TokenizerConfig":
+        """
+        Load tokenizer configuration from a JSON file.
+
+        This is the primary method for loading tokenizer configs saved by
+        the converter or trainer. Used by AutoTokenizer.from_pretrained().
+
+        Parameters
+        ----------
+        json_path : str | Path
+            Path to JSON tokenizer configuration file.
 
         Returns
         -------
         TokenizerConfig
             Validated tokenizer configuration instance.
 
-        Raises
-        ------
-        FileNotFoundError
-            If the YAML file does not exist.
-        yaml.YAMLError
-            If the YAML file is malformed.
-        ValueError
-            If the loaded configuration contains invalid values.
+        Example
+        -------
+            >>> tokenizer_config = TokenizerConfig.from_json("tokenizer_config.json")
         """
-        config_dict = load_yaml_file(yaml_path)
+        json_path = Path(json_path)
+        if not json_path.exists():
+            raise FileNotFoundError(f"Tokenizer config not found: {json_path}")
+        
+        with open(json_path, 'r', encoding='utf-8') as f:
+            config_dict = json.load(f)
+        
         return cls(**config_dict)
 
     def to_yaml(self, path: Optional[str | Path] = None) -> str:
@@ -488,6 +520,33 @@ class TokenizerConfig:
             allow_unicode=True,
             width=120,
         )
+
+    @classmethod
+    def from_yaml(cls, yaml_path: str | Path) -> "TokenizerConfig":
+        """
+        Load tokenizer configuration from a YAML file.
+
+        Parameters
+        ----------
+        yaml_path : str | Path
+            Path to YAML tokenizer configuration file.
+
+        Returns
+        -------
+        TokenizerConfig
+            Validated tokenizer configuration instance.
+
+        Raises
+        ------
+        FileNotFoundError
+            If the YAML file does not exist.
+        yaml.YAMLError
+            If the YAML file is malformed.
+        ValueError
+            If the loaded configuration contains invalid values.
+        """
+        config_dict = load_yaml_file(yaml_path)
+        return cls(**config_dict)
 
     def warn_if_vocab_mismatch(self, expected_vocab_size: int) -> None:
         """

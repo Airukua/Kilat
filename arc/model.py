@@ -3,19 +3,19 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Tuple, Optional, Union
-from transformers import PreTrainedModel
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from .blocks import Block, RMSNorm
 from configs.model_config import KilatConfig
 from configs.main_config import MainConfig
 from pipeline.generation.generation_mixin import GenerationMixin
+from utils.base_model import BasePreTrainedModel
 from utils.validators import (
     validate_finite_tensor,
     validate_tensor_rank,
 )
 
 
-class KilatPreTrainedModel(PreTrainedModel):
+class KilatPreTrainedModel(BasePreTrainedModel):
     """
     Abstract base for KilatTransformer – handles weight init and HF integration.
 
@@ -285,8 +285,6 @@ class KilatTransformer(KilatPreTrainedModel, GenerationMixin):
         import warnings
         import logging
         logger = logging.getLogger(__name__)
-        print(f"Loading model from: {pretrained_model_name_or_path}")
-        print(f"kwargs: {kwargs}")
         
         # Load with strict=False to allow missing lm_head.weight
         model = super().from_pretrained(pretrained_model_name_or_path, *args, **kwargs)

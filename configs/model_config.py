@@ -3,15 +3,15 @@ from pathlib import Path
 from typing import Optional, Literal
 import warnings
 import yaml
-from transformers import PretrainedConfig
 from .base import dump_yaml_file, load_yaml_file
+from utils.base_model import BaseConfig
 
-class KilatConfig(PretrainedConfig):
+class KilatConfig(BaseConfig):
     """
     Configuration class for KilatTransformer model architecture.
 
-    WHY THIS EXTENDS PRETRAINEDCONFIG:
-        Inheriting from HuggingFace's PretrainedConfig provides:
+    WHY THIS EXTENDS BaseConfig:
+        Inheriting from HuggingFace's BaseConfig provides:
         - Seamless integration with transformers ecosystem (save_pretrained/from_pretrained)
         - Automatic serialisation to JSON (config.json) for model hub compatibility
         - Support for push_to_hub, AutoModel, and other HF tooling
@@ -84,6 +84,7 @@ class KilatConfig(PretrainedConfig):
         pad_token_id: int = 0,
         bos_token_id: int = 1,
         eos_token_id: int = 2,
+        return_dict: bool = True,
         tie_word_embeddings: bool = True,
         use_cache: bool = False,
         initializer_range: float = 0.02,
@@ -138,6 +139,7 @@ class KilatConfig(PretrainedConfig):
         # Other
         self.use_cache = use_cache
         self.initializer_range = initializer_range
+        self.return_dict = return_dict 
 
         # Run validation after all attributes are set
         self._validate()
@@ -294,7 +296,7 @@ class KilatConfig(PretrainedConfig):
         save_directory : str | Path
             Directory to save configuration files.
         **kwargs : dict
-            Additional arguments passed to PretrainedConfig.save_pretrained.
+            Additional arguments passed to BaseConfig.save_pretrained.
         """
         # Save standard HF JSON config (required for from_pretrained)
         super().save_pretrained(save_directory, **kwargs)
