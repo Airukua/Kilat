@@ -229,6 +229,22 @@ def flash_decay_fwd_kernel(
     out_block_ptrs = out_ptrs + offs_m[:, None] * stride_on + offs_d[None, :] * stride_od
     tl.store(out_block_ptrs, out, mask=(offs_m[:, None] < N))
 
+def _cpu_global_decay(lam: "torch.Tensor", V: "torch.Tensor") -> "torch.Tensor":
+    """
+    Pure-PyTorch CPU fallback for triton_global_decay.
+    Computes: out[i] = (sum_{j<=i} lam^(i-j) * V[j]) / z_i
+    where z_i = (1 - lam^(i+1)) / (1 - lam)
+    """
+    import torch
+    B, H, N, D = V.shape
+    out   = torch.zeros_like(V)
+    lam_b = lam.view(1, H, 1)          # (1, H, 1) for broadcast over D
+    state = torch.zeros(B, H, D, device=V.device, dtype=V.dtype)
+    for t in range(N):
+        state = lam_b * state + V[:, :, t, :]          # (B, H, D)
+        z     = (1.0 - lam_b ** (t + 1)) / (1.0 - lam_b + 1e-6)
+        out[:, :, t, :] = state / z
+    return out
 
 def triton_global_decay(lam_scores, V):
     """
@@ -286,6 +302,9 @@ def triton_global_decay(lam_scores, V):
         Normalized exponentially decayed values. Shape: (B, H, N, D),
         same dtype as V.
     """
+    if not V.is_cuda:
+        return _cpu_global_decay(lam_scores, V)
+
     B, H, N, D = V.shape
     out = torch.empty_like(V)
     

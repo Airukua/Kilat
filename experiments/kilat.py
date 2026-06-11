@@ -62,7 +62,7 @@ print(f"Using device: {device}")
 # ---------------------------------------------------------------------------
 # 2. Load configuration (MainConfig as single source of truth)
 # ---------------------------------------------------------------------------
-config = MainConfig.from_yaml('configs/sample/small_dense.yaml')
+config = MainConfig.from_yaml('configs/sample/small_moe.yaml')
 
 
 # ---------------------------------------------------------------------------

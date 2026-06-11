@@ -1,4 +1,4 @@
-<!-- 
+
 <div align="center">
 
 # ⚡ Kilat 
@@ -878,5 +878,3 @@ Focus: efficient sequence modeling, Indonesian NLP, low-resource language techno
 ---
 
 *Licensed under MIT. See [LICENSE](LICENSE) for details.*
- -->
-there was a catasthropic bug

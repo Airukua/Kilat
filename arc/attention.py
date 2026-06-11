@@ -150,6 +150,7 @@ class KilatAttention(nn.Module):
         # Head allocation: recall_ratio controls the precision-vs-efficiency trade-off.
         # Global heads (linear decay): O(N) compute, O(H_g·Dh) cache — recurrent state vector
         # Recall heads (latent MLA): O(N²) compute, O(N·latent_dim) cache — compressed KV
+        
         self.n_recall_heads = int(n_head * recall_ratio)
         self.n_global_heads = n_head - self.n_recall_heads
 
@@ -346,10 +347,16 @@ class KilatAttention(nn.Module):
             
             # Recurrent update: new_state = λ * old_state + V_current
             new_global_state = lam_bc * past_global_state + V_current
-            
-            # The output is the unnormalized state reshaped to match expected format.
-            # The gate network and final projection will handle scale adjustments.
-            out_global = new_global_state.reshape(B, 1, self.n_global_heads * Dh)
+
+            # Normalize output to match full-sequence Triton kernel behavior.
+            # Triton computes: out[i] = state[i] / z_i
+            # where z_i = (1 - lam^(i+1)) / (1 - lam)
+            # We need the same normalization here. We track position via cache length.
+            # cached_len = number of tokens processed so far BEFORE this step.
+            cached_len = past_latent_kv.shape[1] if past_latent_kv is not None else 0
+            t_pos = cached_len  # 0-indexed position of current token
+            z_inc = (1 - lam_bc ** (t_pos + 1)) / (1 - lam_bc + 1e-6)
+            out_global = (new_global_state / z_inc).reshape(B, 1, self.n_global_heads * Dh)
         else:
             # -----------------------------------------------------------------
             # FULL SEQUENCE MODE: Triton kernel for batched processing
@@ -359,9 +366,6 @@ class KilatAttention(nn.Module):
             # the kernel for efficient memory access patterns.
             V_global = V_global_flat.view(B, N, self.n_global_heads, Dh).transpose(1, 2).contiguous()
             
-            # Invoke custom Triton causal decay kernel.
-            # Computes: out[i] = Σ_{j≤i} λ^(i-j) · V[j] / z_i
-            # with analytical normalization z_i = (1 - λ^(i+1)) / (1 - λ)
             out_global = triton_global_decay(lam, V_global)
             
             # Reshape back to standard attention output format:
@@ -376,7 +380,17 @@ class KilatAttention(nn.Module):
             # For generation quality, the gating network's dynamic weighting
             # compensates for this approximation.
             if use_cache:
-                new_global_state = V_global[:, :, -1, :].clone()  # (B, H_g, Dh)
+                # Compute true accumulated decay state instead of just V[-1].
+                # state_t = lam * state_{t-1} + V_t  (recurrence)
+                # Saving only V[-1] was an approximation with ~88% error.
+                lam_bc = lam.view(1, self.n_global_heads, 1)
+                acc_state = torch.zeros(
+                    B, self.n_global_heads, Dh,
+                    device=x.device, dtype=x.dtype
+                )
+                for t in range(N):
+                    acc_state = lam_bc * acc_state + V_global[:, :, t, :]
+                new_global_state = acc_state  # (B, H_g, Dh)
 
         # ---------------------------------------------------------------------
         # EXECUTION - PATH 2: LATENT MLA
@@ -443,11 +457,17 @@ class KilatAttention(nn.Module):
         # the Q positions are at the end of the concatenated sequence,
         # and the causal mask correctly allows attention to all previous
         # positions (both cached and current).
+        # is_causal=True is WRONG in incremental mode:
+        # SDPA builds causal mask based on Q/KV tensor positions, not sequence positions.
+        # When Q=(B,H,1,Dh) and KV=(B,H,total_len,Dh), is_causal=True means
+        # Q[0] can only attend KV[0] — all past cached tokens are blocked.
+        # Fix: use is_causal=False in incremental mode (no future tokens exist
+        # to leak anyway), and is_causal=True only for full-sequence training.
         out_recall = F.scaled_dot_product_attention(
             Q_rec, K_rec, V_rec,
             attn_mask=None,
             dropout_p=self.attn_drop if self.training else 0.0,
-            is_causal=True
+            is_causal=not is_incremental,
         )
         
         # Reshape to channel-last format for concatenation with global path:
