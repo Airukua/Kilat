@@ -287,7 +287,6 @@ class KilatTransformer(KilatPreTrainedModel, GenerationMixin):
         logger = logging.getLogger(__name__)
         
         # Load with strict=False to allow missing lm_head.weight
-        kwargs['strict'] = False
         model = super().from_pretrained(pretrained_model_name_or_path, *args, **kwargs)
         
         # Check if weight tying needs to be restored
