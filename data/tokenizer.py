@@ -66,7 +66,7 @@ class AutoTokenizer:
     def from_pretrained(
         cls,
         pretrained_model_name_or_path: Union[str, Path],
-        local_files_only: bool = True,
+        local_files_only: Optional[bool] = None,  # <-- CHANGE: None = auto-detect
         **kwargs,
     ) -> Any:
         """
@@ -89,13 +89,20 @@ class AutoTokenizer:
             5. Custom builder from environment variable
             6. Default GPT-2 tokenizer (fallback)
         
+        DYNAMIC MODE:
+            - If local_files_only = None (default): Auto-detect
+              * If checkpoint has tokenizer files → local_files_only=True
+              * If tokenizer needs download → local_files_only=False
+            - If local_files_only = True: Force use local files only
+            - If local_files_only = False: Force download from Hub
+        
         Parameters
         ----------
         pretrained_model_name_or_path : str or Path
             Path to the checkpoint directory containing tokenizer_config.json
             or config.yaml.
-        local_files_only : bool
-            If True, only use local files (no download from Hub).
+        local_files_only : bool or None
+            If None, auto-detect. If True, only use local files. If False, download.
         **kwargs
             Additional arguments passed to tokenizer builder.
         
@@ -140,6 +147,16 @@ class AutoTokenizer:
                     print(f"  Tokenizer type: {tokenizer_config.tokenizer_type}")
                     print(f"  Name/path: {tokenizer_config.tokenizer_name_or_path}")
                 
+                # Auto-detect local_files_only for this tokenizer
+                auto_local_only = cls._should_use_local_only(tokenizer_config, checkpoint_path)
+                
+                # Override if user specified
+                if local_files_only is not None:
+                    auto_local_only = local_files_only
+                
+                # Set local_files_only in config
+                tokenizer_config.local_files_only = auto_local_only
+                
                 # Merge kwargs with config
                 if kwargs:
                     for key, value in kwargs.items():
@@ -170,16 +187,29 @@ class AutoTokenizer:
                     print(f"  Name/path: {tokenizer_dict.get('tokenizer_name_or_path', 'unknown')}")
                     
                     tokenizer_config = TokenizerConfig(**tokenizer_dict)
+                    
+                    # Auto-detect local_files_only
+                    auto_local_only = cls._should_use_local_only(tokenizer_config, checkpoint_path)
+                    if local_files_only is not None:
+                        auto_local_only = local_files_only
+                    tokenizer_config.local_files_only = auto_local_only
+                    
                     return tokenizer_config.build()
                 elif "model" in config_dict and "tokenizer_name_or_path" in config_dict["model"]:
                     # Some configs store tokenizer info in model section
                     tokenizer_name = config_dict["model"].get("tokenizer_name_or_path")
                     if tokenizer_name:
                         print(f"  Found tokenizer_name_or_path in model section: {tokenizer_name}")
+                        # Auto-detect: check if this is a local path
+                        tokenizer_path = Path(tokenizer_name)
+                        auto_local_only = tokenizer_path.exists()
+                        if local_files_only is not None:
+                            auto_local_only = local_files_only
+                        
                         tokenizer_config = TokenizerConfig(
                             tokenizer_type="auto",
                             tokenizer_name_or_path=tokenizer_name,
-                            local_files_only=local_files_only,
+                            local_files_only=auto_local_only,
                         )
                         return tokenizer_config.build()
             except Exception as e:
@@ -205,10 +235,17 @@ class AutoTokenizer:
                 
                 if tokenizer_name and tokenizer_name != "gpt2":
                     print(f"  Found tokenizer_name_or_path in config.json: {tokenizer_name}")
+                    
+                    # Auto-detect: check if this is a local path
+                    tokenizer_path = Path(tokenizer_name)
+                    auto_local_only = tokenizer_path.exists() or (checkpoint_path / tokenizer_name).exists()
+                    if local_files_only is not None:
+                        auto_local_only = local_files_only
+                    
                     tokenizer_config = TokenizerConfig(
                         tokenizer_type="auto",
                         tokenizer_name_or_path=tokenizer_name,
-                        local_files_only=local_files_only,
+                        local_files_only=auto_local_only,
                         **kwargs,
                     )
                     return tokenizer_config.build()
@@ -224,10 +261,15 @@ class AutoTokenizer:
             # Check for SentencePiece
             if (checkpoint_path / "spm.model").exists():
                 print(f"  Detected SentencePiece tokenizer (spm.model)")
+                # SentencePiece is always local
+                auto_local_only = True
+                if local_files_only is not None:
+                    auto_local_only = local_files_only
+                    
                 tokenizer_config = TokenizerConfig(
                     tokenizer_type="sentencepiece",
                     tokenizer_model_path=str(checkpoint_path / "spm.model"),
-                    local_files_only=local_files_only,
+                    local_files_only=auto_local_only,
                     **kwargs,
                 )
                 return tokenizer_config.build()
@@ -236,10 +278,15 @@ class AutoTokenizer:
             hf_files = ["tokenizer.json", "vocab.json", "merges.txt"]
             if any((checkpoint_path / f).exists() for f in hf_files):
                 print(f"  Detected HuggingFace tokenizer files")
+                # Local HF tokenizer files exist
+                auto_local_only = True
+                if local_files_only is not None:
+                    auto_local_only = local_files_only
+                    
                 tokenizer_config = TokenizerConfig(
                     tokenizer_type="auto",
                     tokenizer_name_or_path=str(checkpoint_path),
-                    local_files_only=local_files_only,
+                    local_files_only=auto_local_only,
                     **kwargs,
                 )
                 return tokenizer_config.build()
@@ -253,7 +300,7 @@ class AutoTokenizer:
             tokenizer_config = TokenizerConfig(
                 tokenizer_type="custom",
                 custom_builder=custom_builder_env,
-                local_files_only=local_files_only,
+                local_files_only=local_files_only if local_files_only is not None else False,
                 **kwargs,
             )
             return tokenizer_config.build()
@@ -262,7 +309,67 @@ class AutoTokenizer:
         # FALLBACK: GPT-2 tokenizer (last resort)
         # ================================================================
         print("No tokenizer config found, using default GPT-2 tokenizer")
-        return cls._fallback_tokenizer(local_files_only, **kwargs)
+        # For fallback, auto-detect if GPT-2 is cached
+        auto_local_only = cls._is_gpt2_cached()
+        if local_files_only is not None:
+            auto_local_only = local_files_only
+            
+        return cls._fallback_tokenizer(auto_local_only, **kwargs)
+    
+    @classmethod
+    def _should_use_local_only(cls, tokenizer_config: TokenizerConfig, checkpoint_path: Path) -> bool:
+        """
+        Auto-detect whether to use local_files_only based on tokenizer configuration.
+        
+        Returns:
+            True if tokenizer files exist locally, False if needs download.
+        """
+        # Custom tokenizers are always "local" (defined by code)
+        if tokenizer_config.tokenizer_type == "custom":
+            return True
+        
+        # SentencePiece always uses local model file
+        if tokenizer_config.tokenizer_type == "sentencepiece":
+            if tokenizer_config.tokenizer_model_path:
+                return Path(tokenizer_config.tokenizer_model_path).exists()
+            return False
+        
+        # For HuggingFace tokenizers (gpt2, auto)
+        tokenizer_path = Path(tokenizer_config.tokenizer_name_or_path)
+        
+        # Check if it's a local directory
+        if tokenizer_path.exists():
+            return True
+        
+        # Check if it's a file in checkpoint directory
+        if (checkpoint_path / tokenizer_config.tokenizer_name_or_path).exists():
+            return True
+        
+        # Check if it's in HuggingFace cache
+        if cls._is_model_cached(tokenizer_config.tokenizer_name_or_path):
+            return True
+        
+        # Otherwise, needs download
+        return False
+    
+    @classmethod
+    def _is_model_cached(cls, model_name: str) -> bool:
+        """Check if a HuggingFace model is already cached locally."""
+        try:
+            from transformers import AutoTokenizer
+            # Try to load with local_files_only=True
+            tokenizer = AutoTokenizer.from_pretrained(
+                model_name,
+                local_files_only=True,
+            )
+            return True
+        except Exception:
+            return False
+    
+    @classmethod
+    def _is_gpt2_cached(cls) -> bool:
+        """Check if GPT-2 tokenizer is cached locally."""
+        return cls._is_model_cached("gpt2")
     
     @classmethod
     def _has_tokenizer_files(cls, path: Path) -> bool:
@@ -274,15 +381,30 @@ class AutoTokenizer:
         return any((path / f).exists() for f in tokenizer_files)
     
     @classmethod
-    def _fallback_tokenizer(cls, local_files_only: bool = True, **kwargs) -> Any:
+    def _fallback_tokenizer(cls, local_files_only: bool = False, **kwargs) -> Any:
         """Fallback to default GPT-2 tokenizer."""
         try:
             from transformers import AutoTokenizer
-            tokenizer = AutoTokenizer.from_pretrained(
-                "gpt2",
-                local_files_only=local_files_only,
-                **kwargs,
-            )
+            
+            # Try with local_files_only first, fallback to download if needed
+            try:
+                tokenizer = AutoTokenizer.from_pretrained(
+                    "gpt2",
+                    local_files_only=local_files_only,
+                    **kwargs,
+                )
+            except Exception as e:
+                if local_files_only:
+                    # Local only failed, try downloading
+                    print(f"  GPT-2 not found locally, downloading from HuggingFace...")
+                    tokenizer = AutoTokenizer.from_pretrained(
+                        "gpt2",
+                        local_files_only=False,
+                        **kwargs,
+                    )
+                else:
+                    raise e
+            
             if tokenizer.pad_token is None:
                 tokenizer.pad_token = tokenizer.eos_token
             print(f"  Fallback tokenizer: GPT-2, vocab size: {len(tokenizer)}")

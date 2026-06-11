@@ -6,7 +6,6 @@ import yaml
 import json
 from .base import dump_yaml_file, load_yaml_file
 
-
 class TokenizerConfig:
     """
     Tokenizer configuration for preprocessing and decode-time inspection.
