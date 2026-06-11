@@ -285,6 +285,8 @@ class KilatTransformer(KilatPreTrainedModel, GenerationMixin):
         import warnings
         import logging
         logger = logging.getLogger(__name__)
+        print(f"Loading model from: {pretrained_model_name_or_path}")
+        print(f"kwargs: {kwargs}")
         
         # Load with strict=False to allow missing lm_head.weight
         model = super().from_pretrained(pretrained_model_name_or_path, *args, **kwargs)
