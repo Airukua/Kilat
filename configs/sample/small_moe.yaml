@@ -6,9 +6,9 @@ experiment:
 
 model:
   vocab_size: 50257
-  n_embd: 512          
-  n_layer: 8         
-  n_head: 8           
+  n_embd: 768  
+  n_layer: 10        
+  n_head: 12         
   recall_ratio: 0.5
   latent_dim: 128      
   attn_drop: 0.0
