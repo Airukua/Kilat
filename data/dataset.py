@@ -44,6 +44,44 @@ def _discover_parquet_files(path: str) -> List[str]:
     return files
 
 
+def _discover_memmap_files(path: str) -> List[str]:
+    """
+    Return a sorted list of all .npy / .bin files under ``path`` or from a pattern.
+
+    WHY: Extended to support multiple memmap files (e.g., sharded datasets).
+    This allows PretrainingDataset to load all .npy files from a directory
+    or to expand glob patterns like "/path/to/*.npy".
+
+    Edge Cases:
+    - If path is a single file, returns a one-element list.
+    - If path contains glob wildcards (*, ?, [..]), expands them.
+    - If directory contains no .npy/.bin files, raises ValueError.
+    - Hidden files (starting with .) are ignored because glob does not match them.
+    """
+    if not isinstance(path, str):
+        raise TypeError(f"path must be a string, got {type(path)}")
+    
+    # Check if path contains glob patterns
+    if any(c in path for c in ('*', '?', '[', ']')):
+        files = sorted(glob.glob(path))
+        if not files:
+            raise ValueError(f"No files matching pattern: {path}")
+        return files
+    
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Path does not exist: {path}")
+    
+    if os.path.isfile(path):
+        return [path]
+    
+    # Directory: find all .npy and .bin files
+    files = sorted(glob.glob(os.path.join(path, "*.npy")))
+    files += sorted(glob.glob(os.path.join(path, "*.bin")))
+    if not files:
+        raise ValueError(f"No .npy / .bin files found in directory: {path}")
+    return files
+
+
 def _to_list(token_ids: Any, idx: int) -> List[int]:
     """
     Normalise any token sequence type to a plain Python list.
@@ -95,6 +133,8 @@ class PretrainingDataset(Dataset):
        - Sequences are sliced at `[idx * chunk_size : (idx+1) * chunk_size]`.
        - Zero-copy: OS page cache shared across DataLoader workers.
        - Ideal for large pretraining corpora that exceed RAM.
+       - **NEW:** Supports multiple memmap files (directory or glob pattern).
+         Files are concatenated virtually into a single logical token stream.
 
     2. **Apache Parquet** (``.parquet`` / directory)
        - Column-selective loading via Arrow. Fetch row `i` with `table.column(key)[i]`.
@@ -117,7 +157,7 @@ class PretrainingDataset(Dataset):
     Parameters
     ----------
     source : str | List[dict]
-        Path to a file or directory, or a list of dicts.
+        Path to a file, directory, glob pattern (e.g., "/path/*.npy"), or a list of dicts.
     key_name : str
         Column / dict key containing token IDs. Default "input_ids".
     chunk_size : int
@@ -127,7 +167,15 @@ class PretrainingDataset(Dataset):
 
     Example Usage
     -------------
+        >>> # Single file
         >>> ds = PretrainingDataset("tokens.npy", chunk_size=1024)
+        >>> 
+        >>> # Multiple files (directory)
+        >>> ds = PretrainingDataset("data/train/", chunk_size=1024)
+        >>> 
+        >>> # Multiple files (glob pattern)
+        >>> ds = PretrainingDataset("data/train/*.npy", chunk_size=1024)
+        >>> 
         >>> len(ds)          # total_tokens // chunk_size
         >>> ds[0]            # {"input_ids": [3, 17, 42, ...]}
     """
@@ -143,7 +191,9 @@ class PretrainingDataset(Dataset):
         self.chunk_size = chunk_size
 
         self._backend: str          # "memmap" | "parquet" | "memory"
-        self._memmap: Optional[np.ndarray] = None
+        self._memmap_files: Optional[List[np.ndarray]] = None  # NEW: list of memmap arrays
+        self._memmap_cumsum: Optional[List[int]] = None        # NEW: cumulative token counts
+        self._single_memmap: Optional[np.ndarray] = None       # Legacy single memmap
         self._table: Optional[pa.Table] = None
         self._samples: Optional[List[Dict[str, Any]]] = None
         self._memory_is_dicts = False
@@ -155,7 +205,13 @@ class PretrainingDataset(Dataset):
             self._memory_is_dicts = bool(source) and isinstance(source[0], dict)
 
         elif isinstance(source, str):
-            if os.path.isdir(source):
+            # Try to detect if it's a memmap source (file, directory, or glob pattern)
+            # We'll attempt memmap first, then fall back to parquet if no .npy/.bin found
+            memmap_files = self._try_discover_memmap_files(source)
+            
+            if memmap_files:
+                self._init_multifile_memmap(memmap_files, dtype)
+            elif os.path.isdir(source):
                 self._init_parquet(source)
             else:
                 _, ext = os.path.splitext(source)
@@ -163,13 +219,9 @@ class PretrainingDataset(Dataset):
 
                 if ext in (".parquet", ".parq"):
                     self._init_parquet(source)
-                elif ext in (".npy", ".bin"):
-                    self._init_memmap(source, dtype)
                 elif ext in (".jsonl", ".json"):
                     self._init_json(source, ext)
                 elif ext == "":
-                    # A path without extension is ambiguous. Prefer treating
-                    # it as a parquet source only if it is an actual directory.
                     raise ValueError(
                         f"Unsupported path without extension: {source}. "
                         "Use a .parquet/.parq file, a directory of parquet files, "
@@ -184,11 +236,68 @@ class PretrainingDataset(Dataset):
         if self._length == 0:
             raise ValueError("Dataset is empty after loading.")
 
+    def _try_discover_memmap_files(self, source: str) -> Optional[List[str]]:
+        """
+        Attempt to discover memmap files from source.
+        Returns None if no .npy/.bin files found.
+        """
+        try:
+            return _discover_memmap_files(source)
+        except (FileNotFoundError, ValueError):
+            return None
+
     # ── backend initialisers ──────────────────────────────────────────────
+
+    def _init_multifile_memmap(self, files: List[str], dtype: np.dtype) -> None:
+        """
+        Memory-map multiple files and treat them as a single logical token stream.
+
+        WHY: Many pretraining datasets are sharded into multiple .npy files
+        (e.g., fineweb_edu_0000.npy, fineweb_edu_0001.npy, ...). This method
+        memory-maps all files individually and builds a cumulative index for
+        O(log n) lookup to find which file contains a given token index.
+
+        Performance:
+        - Each file is memory-mapped individually (no concatenation needed).
+        - Lookup uses binary search on cumulative token counts.
+        - __getitem__ uses the same chunk slicing as single-file mode.
+        - Memory overhead: O(num_files) for cumulative sums.
+        """
+        if not files:
+            raise ValueError("No memmap files provided.")
+        
+        self._memmap_files = []
+        self._memmap_cumsum = []
+        total_tokens = 0
+        
+        for file_path in files:
+            if not os.path.exists(file_path):
+                raise FileNotFoundError(f"Memmap file not found: {file_path}")
+            
+            # Memory-map the file
+            mmap = np.load(file_path, mmap_mode='r') if file_path.endswith(".npy") else \
+                   np.memmap(file_path, dtype=dtype, mode='r')
+            
+            self._memmap_files.append(mmap)
+            total_tokens += len(mmap)
+            self._memmap_cumsum.append(total_tokens)
+        
+        self._total_tokens = total_tokens
+        self._length = total_tokens // self.chunk_size
+        self._backend = "multifile_memmap"
+        
+        if self._length == 0:
+            raise ValueError(
+                f"Memmap files have {total_tokens} total tokens but chunk_size={self.chunk_size}. "
+                "Not enough tokens for even one chunk."
+            )
+        
+        # Store dtype for potential future use
+        self._dtype = dtype
 
     def _init_memmap(self, path: str, dtype: np.dtype) -> None:
         """
-        Memory-map a flat integer array and slice into fixed-size chunks.
+        Memory-map a single flat integer array and slice into fixed-size chunks.
 
         WHY: Memmap gives O(1) index → byte offset, no parsing overhead.
         The file is opened read-only; data pages are loaded on first access
@@ -205,9 +314,9 @@ class PretrainingDataset(Dataset):
         """
         if not os.path.exists(path):
             raise FileNotFoundError(f"Memmap file not found: {path}")
-        self._memmap = np.load(path, mmap_mode="r") if path.endswith(".npy") else \
-                       np.memmap(path, dtype=dtype, mode="r")
-        total_tokens = len(self._memmap)
+        self._single_memmap = np.load(path, mmap_mode="r") if path.endswith(".npy") else \
+                              np.memmap(path, dtype=dtype, mode="r")
+        total_tokens = len(self._single_memmap)
         self._length = total_tokens // self.chunk_size
         self._backend = "memmap"
         if self._length == 0:
@@ -260,6 +369,60 @@ class PretrainingDataset(Dataset):
         self._backend = "memory"
         self._memory_is_dicts = bool(samples) and isinstance(samples[0], dict)
 
+    # ── multi-file memmap helpers ─────────────────────────────────────────
+
+    def _get_tokens_from_multifile(self, start: int, end: int) -> List[int]:
+        """
+        Extract a slice of tokens from multiple memmap files.
+
+        Uses binary search on cumulative sums to find which file(s)
+        contain the requested token range.
+
+        Performance: O(log num_files) for the lookup, then direct slicing.
+        Most slices fit within a single file (because chunk_size is typically
+        much smaller than file sizes), so this is very fast.
+        """
+        # Find which file contains the start index
+        import bisect
+        file_idx = bisect.bisect_right(self._memmap_cumsum, start)
+        
+        if file_idx >= len(self._memmap_files):
+            raise IndexError(f"Start index {start} out of range (total tokens: {self._total_tokens})")
+        
+        # Calculate offset within the file
+        prev_cumsum = self._memmap_cumsum[file_idx - 1] if file_idx > 0 else 0
+        offset = start - prev_cumsum
+        
+        mmap = self._memmap_files[file_idx]
+        
+        # Check if the entire slice fits in this file
+        if offset + self.chunk_size <= len(mmap):
+            # Fast path: all tokens in one file
+            return mmap[offset:offset + self.chunk_size].tolist()
+        
+        # Slow path: slice spans multiple files (rare, only at file boundaries)
+        tokens = []
+        remaining = self.chunk_size
+        current_idx = file_idx
+        current_offset = offset
+        
+        while remaining > 0 and current_idx < len(self._memmap_files):
+            mmap = self._memmap_files[current_idx]
+            available = len(mmap) - current_offset
+            take = min(remaining, available)
+            
+            tokens.extend(mmap[current_offset:current_offset + take].tolist())
+            
+            remaining -= take
+            current_idx += 1
+            current_offset = 0
+        
+        if remaining > 0:
+            # This shouldn't happen if total_tokens is correct
+            raise RuntimeError(f"Ran out of tokens while reading slice at index {start}")
+        
+        return tokens
+
     # ── Dataset interface ─────────────────────────────────────────────────
 
     def __len__(self) -> int:
@@ -269,14 +432,15 @@ class PretrainingDataset(Dataset):
         if idx < 0 or idx >= self._length:
             raise IndexError(f"Index {idx} out of range [0, {self._length - 1}].")
 
-        if self._backend == "memmap":
+        if self._backend == "multifile_memmap":
             start = idx * self.chunk_size
-            # Slicing a memmap returns a view; .tolist() copies into Python ints.
-            token_ids = self._memmap[start : start + self.chunk_size].tolist()
+            token_ids = self._get_tokens_from_multifile(start, start + self.chunk_size)
+
+        elif self._backend == "memmap":
+            start = idx * self.chunk_size
+            token_ids = self._single_memmap[start:start + self.chunk_size].tolist()
 
         elif self._backend == "parquet":
-            # Arrow column access: .column(name)[idx] returns a PyArrow scalar,
-            # .as_py() converts to Python list.
             token_ids = self._table.column(self.key_name)[idx].as_py()
 
         else:  # memory
