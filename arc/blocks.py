@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from typing import Optional, Tuple
-from .attention import KilatAttention
+from .attention import KilatAttention, KilatAttentionRoPE
 from .ffn import FeedForward        
 
 class RMSNorm(nn.Module):
@@ -89,13 +89,14 @@ class RMSNorm(nn.Module):
         # The weight is broadcast along batch and sequence dimensions.
         return x / rms * self.weight
 
+
 class Block(nn.Module):
     """
     Pre‑norm transformer block with fused attention and RMSNorm.
 
-    This block creates a :class:`KilatAttention` module internally and a
-    :class:`FeedForward` module (dense SwiGLU or Mixture‑of‑Experts) and
-    applies the standard residual scheme:
+    This block creates a :class:`KilatAttention` or :class:`KilatAttentionRoPE`
+    module internally and a :class:`FeedForward` module (dense SwiGLU or
+    Mixture‑of‑Experts) and applies the standard residual scheme:
 
         x = x + attn(rms1(x))
         x = x + ffn(rms2(x))
@@ -187,6 +188,10 @@ class Block(nn.Module):
         recall_ratio: float = 0.5,
         latent_dim: Optional[int] = None,
         attn_drop: float = 0.0,
+        # ---------- RoPE parameters (optional) ----------
+        use_rope: bool = False,           
+        rope_head_dim: Optional[int] = None,
+        rope_base: float = 10000.0,
         # ---------- Feed‑forward parameters ----------
         ffn_mode: str = "dense",
         ff_mult: float = 8 / 3,
@@ -211,6 +216,13 @@ class Block(nn.Module):
             Latent dimension for MLA projections. None uses n_embd // 4.
         attn_drop : float
             Dropout inside attention (applied during training only).
+        use_rope : bool
+            If True, use KilatAttentionRoPE (with Decoupled RoPE).
+            If False, use standard KilatAttention (NoPE).
+        rope_head_dim : Optional[int]
+            (RoPE only) RoPE dimension per head. Default: head_dim // 2.
+        rope_base : float
+            (RoPE only) Base frequency for RoPE. Default: 10000.0.
         ffn_mode : str
             'dense' for SwiGLU FFN, 'moe' for Mixture of Experts.
         ff_mult : float
@@ -238,17 +250,36 @@ class Block(nn.Module):
         self.rms1 = RMSNorm(n_embd)
         self.rms2 = RMSNorm(n_embd)
 
-        # Fused attention module: combines global decay (linear complexity)
-        # and latent MLA (compressed KV-cache) attention pathways.
-        # This is the only stateful component in the block — it produces
-        # and consumes KV-cache for incremental decoding.
-        self.attn = KilatAttention(
-            n_embd=n_embd,
-            n_head=n_head,
-            recall_ratio=recall_ratio,
-            latent_dim=latent_dim,
-            attn_drop=attn_drop,
-        )
+        # Fused attention module: Pilih antara KilatAttention (NoPE)
+        # atau KilatAttentionRoPE (dengan Decoupled RoPE).
+        #
+        # KilatAttention: global decay + MLA (NoPE)
+        #   - Cache structure: (global_state, latent_kv)
+        #   - Tidak ada positional encoding, hanya causal mask
+        #   - Cocok untuk fine-tuning ke RoPE nanti
+        #
+        # KilatAttentionRoPE: global decay + MLA + Decoupled RoPE
+        #   - Cache structure: (global_state, latent_kv, rope_k)
+        #   - Menambahkan positional awareness via RoPE di recall path
+        #   - Sesuai dengan arsitektur DeepSeek-V2/V3
+        if use_rope:
+            self.attn = KilatAttentionRoPE(
+                n_embd=n_embd,
+                n_head=n_head,
+                recall_ratio=recall_ratio,
+                latent_dim=latent_dim,
+                attn_drop=attn_drop,
+                rope_head_dim=rope_head_dim,
+                rope_base=rope_base,
+            )
+        else:
+            self.attn = KilatAttention(
+                n_embd=n_embd,
+                n_head=n_head,
+                recall_ratio=recall_ratio,
+                latent_dim=latent_dim,
+                attn_drop=attn_drop,
+            )
 
         # Feed‑forward module (dense SwiGLU or MoE with SwiGLU experts).
         # SwiGLU is used instead of ReLU/GELU because it consistently
@@ -268,6 +299,9 @@ class Block(nn.Module):
         # Using nn.Identity when dropout=0 avoids the overhead of
         # calling nn.Dropout(p=0) which still does a no-op check.
         self.resid_drop = nn.Dropout(resid_drop) if resid_drop > 0 else nn.Identity()
+        
+        # Simpan use_rope flag untuk debugging / inspection
+        self.use_rope = use_rope
 
     def forward(
         self,

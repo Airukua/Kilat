@@ -12,6 +12,10 @@ model:
   recall_ratio: 0.5
   latent_dim: 128      
   attn_drop: 0.0
+
+  use_rope: true                    
+  rope_head_dim: 32                 
+  rope_base: 10000.0                
   
   # MoE configuration 
   ffn_mode: moe

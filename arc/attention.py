@@ -5,6 +5,7 @@ import torch.nn.functional as F
 from typing import Tuple, Optional
 from .triton_ops import triton_global_decay
 from typing import Union
+from .rope import RotaryPositionalEmbedding, build_rope_cache, apply_rotary_pos_emb
 
 class KilatAttention(nn.Module):
     """
@@ -395,88 +396,95 @@ class KilatAttention(nn.Module):
         # ---------------------------------------------------------------------
         # EXECUTION - PATH 2: LATENT MLA
         # ---------------------------------------------------------------------
-        # Step 1: Latent Query Generation
-        # Always computed fresh for current token(s) — no caching needed because
-        # Q represents "what to look for" which changes at each generation step.
-        # (B, N, D) → (B, N, L) → (B, N, H_r * Dh) → (B, H_r, N, Dh)
-        q_latent = self.q_a_norm(self.q_a_proj(x))
-        Q_rec = self.q_b_proj(q_latent).view(B, N, self.n_recall_heads, Dh).transpose(1, 2)
-
-        # Step 2: Latent Key-Value Generation with Cache Management
-        # Compress current token(s) into latent space: (B, N, D) → (B, N, L)
-        kv_latent = self.kv_a_norm(self.kv_a_proj(x))
-        
-        # -----------------------------------------------------------------
-        # CRITICAL OPTIMIZATION: KV-Cache in Compressed Space
-        # -----------------------------------------------------------------
-        # Instead of caching the expanded K,V matrices (which would be
-        # 2 * H_r * Dh * total_len floats), we cache the compressed latent
-        # representation (L * total_len floats).
-        #
-        # This is the key insight from DeepSeek-V2's MLA: the latent space
-        # captures the essential information that both K and V need.
-        # Decompression to full K,V happens on-the-fly during attention,
-        # trading a small amount of compute for large memory savings.
-        #
-        # Memory comparison for a 1024-token sequence with n_embd=1024,
-        # n_recall_heads=8, head_dim=128, latent_dim=256:
-        #   Full K,V cache: 2 * 8 * 128 * 1024 = 2,097,152 floats
-        #   Latent cache:   256 * 1024 = 262,144 floats
-        #   Compression ratio: 8x
-        if is_incremental and past_latent_kv is not None:
-            # Concatenate cached latent representations with new token(s).
-            # Both are in the compressed latent space (dim=L), so the
-            # concatenation is memory-efficient.
-            # (B, cached_len, L) + (B, 1, L) → (B, cached_len+1, L)
-            kv_latent_combined = torch.cat([past_latent_kv, kv_latent], dim=1)
+        if self.n_recall_heads == 0:
+            # MLA path disabled, output hanya dari global path
+            out_recall = torch.zeros(B, N, 0, device=x.device, dtype=x.dtype)
+            # Untuk cache, tetap harus konsisten (latent_kv kosong)
+            if use_cache:
+                new_latent_kv = torch.zeros(B, 0, self.latent_dim, device=x.device, dtype=x.dtype)
         else:
-            kv_latent_combined = kv_latent
-        
-        # Store updated latent KV cache for next incremental step.
-        # We store the LATENT representation, not the expanded K,V.
-        # This is what gives KilatTransformer its KV-cache memory advantage.
-        if use_cache:
-            new_latent_kv = kv_latent_combined.clone()  # (B, total_len, L)
-        
-        # Decompress latent to full K,V space for attention computation:
-        # (B, total_len, L) → (B, total_len, 2 * H_r * Dh)
-        kv_full = self.kv_b_proj(kv_latent_combined)
-        
-        # Split the joint K,V projection into separate tensors:
-        # (B, total_len, 2, H_r, Dh) → (2, B, H_r, total_len, Dh)
-        KV_rec = kv_full.view(B, -1, 2, self.n_recall_heads, Dh).permute(2, 0, 3, 1, 4)
-        K_rec, V_rec = KV_rec[0], KV_rec[1]  # Each: (B, H_r, total_len, Dh)
+            # Step 1: Latent Query Generation
+            # Always computed fresh for current token(s) — no caching needed because
+            # Q represents "what to look for" which changes at each generation step.
+            # (B, N, D) → (B, N, L) → (B, N, H_r * Dh) → (B, H_r, N, Dh)
+            q_latent = self.q_a_norm(self.q_a_proj(x))
+            Q_rec = self.q_b_proj(q_latent).view(B, N, self.n_recall_heads, Dh).transpose(1, 2)
 
-        # Step 3: Scaled Dot-Product Attention
-        # PyTorch's SDPA automatically dispatches to optimal backend:
-        # - FlashAttention for Ampere+ GPUs with causal mask
-        # - Memory-efficient attention for long sequences
-        # - Standard attention as fallback
-        #
-        # is_causal=True is sufficient even for incremental mode because
-        # the Q positions are at the end of the concatenated sequence,
-        # and the causal mask correctly allows attention to all previous
-        # positions (both cached and current).
-        # is_causal=True is WRONG in incremental mode:
-        # SDPA builds causal mask based on Q/KV tensor positions, not sequence positions.
-        # When Q=(B,H,1,Dh) and KV=(B,H,total_len,Dh), is_causal=True means
-        # Q[0] can only attend KV[0] — all past cached tokens are blocked.
-        # Fix: use is_causal=False in incremental mode (no future tokens exist
-        # to leak anyway), and is_causal=True only for full-sequence training.
-        out_recall = F.scaled_dot_product_attention(
-            Q_rec, K_rec, V_rec,
-            attn_mask=None,
-            dropout_p=self.attn_drop if self.training else 0.0,
-            is_causal=not is_incremental,
-        )
-        
-        # Reshape to channel-last format for concatenation with global path:
-        # (B, H_r, total_len, Dh) → (B, total_len, H_r * Dh)
-        # For incremental mode (N=1), only the last position's output is needed.
-        if is_incremental:
-            out_recall = out_recall[:, :, -1:, :]  # Take only the new token's output
+            # Step 2: Latent Key-Value Generation with Cache Management
+            # Compress current token(s) into latent space: (B, N, D) → (B, N, L)
+            kv_latent = self.kv_a_norm(self.kv_a_proj(x))
             
-        out_recall = out_recall.transpose(1, 2).reshape(B, N, self.n_recall_heads * Dh)
+            # -----------------------------------------------------------------
+            # CRITICAL OPTIMIZATION: KV-Cache in Compressed Space
+            # -----------------------------------------------------------------
+            # Instead of caching the expanded K,V matrices (which would be
+            # 2 * H_r * Dh * total_len floats), we cache the compressed latent
+            # representation (L * total_len floats).
+            #
+            # This is the key insight from DeepSeek-V2's MLA: the latent space
+            # captures the essential information that both K and V need.
+            # Decompression to full K,V happens on-the-fly during attention,
+            # trading a small amount of compute for large memory savings.
+            #
+            # Memory comparison for a 1024-token sequence with n_embd=1024,
+            # n_recall_heads=8, head_dim=128, latent_dim=256:
+            #   Full K,V cache: 2 * 8 * 128 * 1024 = 2,097,152 floats
+            #   Latent cache:   256 * 1024 = 262,144 floats
+            #   Compression ratio: 8x
+            if is_incremental and past_latent_kv is not None:
+                # Concatenate cached latent representations with new token(s).
+                # Both are in the compressed latent space (dim=L), so the
+                # concatenation is memory-efficient.
+                # (B, cached_len, L) + (B, 1, L) → (B, cached_len+1, L)
+                kv_latent_combined = torch.cat([past_latent_kv, kv_latent], dim=1)
+            else:
+                kv_latent_combined = kv_latent
+            
+            # Store updated latent KV cache for next incremental step.
+            # We store the LATENT representation, not the expanded K,V.
+            # This is what gives KilatTransformer its KV-cache memory advantage.
+            if use_cache:
+                new_latent_kv = kv_latent_combined.clone()  # (B, total_len, L)
+            
+            # Decompress latent to full K,V space for attention computation:
+            # (B, total_len, L) → (B, total_len, 2 * H_r * Dh)
+            kv_full = self.kv_b_proj(kv_latent_combined)
+            
+            # Split the joint K,V projection into separate tensors:
+            # (B, total_len, 2, H_r, Dh) → (2, B, H_r, total_len, Dh)
+            KV_rec = kv_full.view(B, -1, 2, self.n_recall_heads, Dh).permute(2, 0, 3, 1, 4)
+            K_rec, V_rec = KV_rec[0], KV_rec[1]  # Each: (B, H_r, total_len, Dh)
+
+            # Step 3: Scaled Dot-Product Attention
+            # PyTorch's SDPA automatically dispatches to optimal backend:
+            # - FlashAttention for Ampere+ GPUs with causal mask
+            # - Memory-efficient attention for long sequences
+            # - Standard attention as fallback
+            #
+            # is_causal=True is sufficient even for incremental mode because
+            # the Q positions are at the end of the concatenated sequence,
+            # and the causal mask correctly allows attention to all previous
+            # positions (both cached and current).
+            # is_causal=True is WRONG in incremental mode:
+            # SDPA builds causal mask based on Q/KV tensor positions, not sequence positions.
+            # When Q=(B,H,1,Dh) and KV=(B,H,total_len,Dh), is_causal=True means
+            # Q[0] can only attend KV[0] — all past cached tokens are blocked.
+            # Fix: use is_causal=False in incremental mode (no future tokens exist
+            # to leak anyway), and is_causal=True only for full-sequence training.
+            out_recall = F.scaled_dot_product_attention(
+                Q_rec, K_rec, V_rec,
+                attn_mask=None,
+                dropout_p=self.attn_drop if self.training else 0.0,
+                is_causal=not is_incremental,
+            )
+            
+            # Reshape to channel-last format for concatenation with global path:
+            # (B, H_r, total_len, Dh) → (B, total_len, H_r * Dh)
+            # For incremental mode (N=1), only the last position's output is needed.
+            if is_incremental:
+                out_recall = out_recall[:, :, -1:, :]  # Take only the new token's output
+                
+            out_recall = out_recall.transpose(1, 2).reshape(B, N, self.n_recall_heads * Dh)
 
         # ---------------------------------------------------------------------
         # EXECUTION - FUSION & GATING EPILOGUE
@@ -508,3 +516,357 @@ class KilatAttention(nn.Module):
         if use_cache:
             return output, (new_global_state, new_latent_kv)
         return output
+
+
+class KilatAttentionRoPE(KilatAttention):
+    """
+    KilatAttentionRoPE: Hybrid attention with Decoupled RoPE for MLA recall path.
+    
+    This class extends KilatAttention by adding Decoupled Rotary Position Embedding
+    (RoPE) to the MLA recall path, following the DeepSeek-V2/V3 MLA architecture.
+    
+    Why Decoupled RoPE?
+    -------------------
+    Standard MLA compresses K and V into a latent space to reduce KV-cache memory.
+    However, applying RoPE directly to compressed representations is problematic:
+    - RoPE must be applied to the FULL key dimension for proper position encoding
+    - Compressing after RoPE loses positional information
+    - Applying RoPE after decompression requires caching full K (defeats MLA)
+    
+    Solution: Decoupled RoPE as in DeepSeek-V2:
+    - Main K/V stay in compressed latent space (position-agnostic, semantic only)
+    - Small separate RoPE key (K^R) is computed and cached alongside latent KV
+    - RoPE key uses smaller dimension (rope_head_dim = head_dim // 2 typically)
+    - Attention score = Q_sem·K_sem^T + Q_rope·K_rope^T
+    
+    Cache Structure (3 elements vs 2 in parent):
+        past_key_values[0]: global_state  (B, H_g, Dh)          - same as parent
+        past_key_values[1]: latent_kv     (B, total_len, L)     - same as parent
+        past_key_values[2]: rope_k        (B, total_len, Rd)    - NEW: cached RoPE keys
+    
+    Additional Components vs KilatAttention:
+        - q_rope_proj: Linear(latent_dim → H_r * Rd) - projects latent Q to RoPE space
+        - k_rope_proj: Linear(n_embd → Rd)          - shared RoPE key across heads
+    
+    Parameters
+    ----------
+    n_embd : int
+        Hidden embedding dimension.
+    n_head : int
+        Total number of attention heads.
+    recall_ratio : float
+        Fraction of heads for MLA (vs global decay). Default: 0.5.
+    latent_dim : int, optional
+        Compression dimension. Default: n_embd // 4.
+    attn_drop : float
+        Dropout probability. Default: 0.0.
+    rope_head_dim : int, optional
+        RoPE dimension per head. Default: head_dim // 2.
+        Smaller values reduce cache size but may limit positional awareness.
+    rope_base : float
+        RoPE base frequency. Default: 10000.0.
+    
+    Example
+    -------
+    >>> attn = KilatAttentionRoPE(n_embd=512, n_head=8, recall_ratio=0.5)
+    >>> x = torch.randn(2, 10, 512)
+    >>> out = attn(x)
+    >>> 
+    >>> # With cache for generation
+    >>> out, cache = attn(x[:, :1], use_cache=True)
+    >>> out, cache = attn(x[:, 1:2], past_key_values=cache, use_cache=True)
+    
+    References
+    ----------
+    - DeepSeek-V2: "Multi-head Latent Attention with Decoupled RoPE"
+    - DeepSeek-V3 Technical Report, Section 2.1
+    """
+    
+    def __init__(
+        self,
+        n_embd: int,
+        n_head: int,
+        recall_ratio: float = 0.5,
+        latent_dim: Optional[int] = None,
+        attn_drop: float = 0.0,
+        rope_head_dim: Optional[int] = None,
+        rope_base: float = 10000.0,
+    ):
+        # Initialize parent (KilatAttention) - this creates all base layers
+        super().__init__(n_embd, n_head, recall_ratio, latent_dim, attn_drop)
+        
+        # RoPE configuration
+        self.rope_base = rope_base
+        self.rope_head_dim = rope_head_dim if rope_head_dim is not None else (self.head_dim // 2)
+        
+        # Validate rope_head_dim is even (required for rotation)
+        assert self.rope_head_dim % 2 == 0, f"rope_head_dim must be even, got {self.rope_head_dim}"
+        
+        # ---------------------------------------------------------------------
+        # DECOUPLED ROPE COMPONENTS (MLA extension)
+        # ---------------------------------------------------------------------
+        
+        # W^QR: Project from latent Q to RoPE space
+        # Input: latent_dim (same as q_a_proj output)
+        # Output: n_recall_heads * rope_head_dim
+        # This creates per-head RoPE queries from the compressed latent representation
+        self.q_rope_proj = nn.Linear(
+            self.latent_dim,
+            self.n_recall_heads * self.rope_head_dim,
+            bias=False,
+        )
+        
+        # W^KR: Project from input x to shared RoPE key
+        # Output: rope_head_dim (single head, shared across all recall heads)
+        # This is a key innovation from DeepSeek-V2: one RoPE key per token,
+        # broadcast to all attention heads. Saves both compute and cache memory.
+        self.k_rope_proj = nn.Linear(
+            n_embd,
+            self.rope_head_dim,
+            bias=False,
+        )
+        
+        # Optional: RoPE cache module for repeated use (can be shared across layers)
+        # For simplicity, we'll compute caches on-the-fly in forward()
+    
+    def _apply_rope_to_tensor(
+        self,
+        t: torch.Tensor,
+        seq_offset: int,
+        rope_dim: int,
+    ) -> torch.Tensor:
+        """
+        Apply RoPE to a tensor with on-the-fly cache building.
+        
+        Args:
+            t: Input tensor of shape (B, H, N, Rd) where Rd = rope_dim
+            seq_offset: Starting position index for this sequence
+            rope_dim: RoPE dimension (must match t.shape[-1])
+        
+        Returns:
+            Tensor with RoPE applied, same shape as input
+        """
+        B, H, N, Rd = t.shape
+        assert Rd == rope_dim, f"Expected rope_dim={rope_dim}, got {Rd}"
+        
+        # Build cos/sin cache for this sequence slice
+        cos, sin = build_rope_cache(
+            seq_len=N,
+            rope_dim=rope_dim,
+            device=t.device,
+            dtype=t.dtype,
+            base=self.rope_base,
+            offset=seq_offset,
+        )
+        
+        # Apply rotation
+        return apply_rotary_pos_emb(t, cos, sin)
+    
+    def forward(
+        self,
+        x: torch.Tensor,
+        past_key_values: Optional[Tuple] = None,
+        use_cache: bool = False,
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, Tuple]]:
+        """
+        Forward pass with Decoupled RoPE for MLA recall path.
+        
+        Extended cache structure (3-tuple vs parent's 2-tuple):
+            past_key_values[0]: global_state  (B, H_g, Dh) or None
+            past_key_values[1]: latent_kv     (B, cached_len, L) or None
+            past_key_values[2]: rope_k        (B, cached_len, Rd) or None
+        
+        Args:
+            x: Input tensor (B, N, D). For incremental decoding, N must be 1.
+            past_key_values: Optional cached states from previous steps.
+            use_cache: Whether to return updated cache for next step.
+        
+        Returns:
+            If use_cache=False: output tensor (B, N, D)
+            If use_cache=True: (output, (global_state, latent_kv, rope_k))
+        """
+        B, N, D = x.shape
+        Dh = self.head_dim
+        Hr = self.n_recall_heads
+        Rd = self.rope_head_dim
+        Ld = self.latent_dim
+        
+        # Unpack cache (now 3 elements)
+        if past_key_values is not None:
+            past_global_state = past_key_values[0]
+            past_latent_kv = past_key_values[1]
+            past_rope_k = past_key_values[2] if len(past_key_values) > 2 else None
+        else:
+            past_global_state = past_latent_kv = past_rope_k = None
+        
+        is_incremental = (N == 1 and past_key_values is not None)
+        
+        # =====================================================================
+        # PATH 1: GLOBAL DECAY (identical to parent - no RoPE needed)
+        # =====================================================================
+        lam = torch.sigmoid(self.log_lambda)
+        V_global_flat = self.v_proj_global(x)
+        
+        if is_incremental and past_global_state is not None:
+            V_current = V_global_flat.view(B, 1, self.n_global_heads, Dh).squeeze(1)
+            lam_bc = lam.view(1, self.n_global_heads, 1)
+            new_global_state = lam_bc * past_global_state + V_current
+            cached_len = past_latent_kv.shape[1] if past_latent_kv is not None else 0
+            t_pos = cached_len
+            z_inc = (1 - lam_bc ** (t_pos + 1)) / (1 - lam_bc + 1e-6)
+            out_global = (new_global_state / z_inc).reshape(B, 1, self.n_global_heads * Dh)
+        else:
+            V_global = V_global_flat.view(B, N, self.n_global_heads, Dh).transpose(1, 2).contiguous()
+            out_global = triton_global_decay(lam, V_global)
+            out_global = out_global.transpose(1, 2).reshape(B, N, self.n_global_heads * Dh)
+            if use_cache:
+                lam_bc = lam.view(1, self.n_global_heads, 1)
+                acc_state = torch.zeros(B, self.n_global_heads, Dh, device=x.device, dtype=x.dtype)
+                for t in range(N):
+                    acc_state = lam_bc * acc_state + V_global[:, :, t, :]
+                new_global_state = acc_state
+        
+        # =====================================================================
+        # PATH 2: LATENT MLA + DECOUPLED ROPE
+        # =====================================================================
+        # GUARD: Jika tidak ada recall heads, skip seluruh MLA path
+        if self.n_recall_heads == 0:
+            # MLA path disabled, output hanya dari global path
+            out_recall = torch.zeros(B, N, 0, device=x.device, dtype=x.dtype)
+            # Untuk cache, tetap harus konsisten (latent_kv dan rope_k kosong)
+            if use_cache:
+                new_latent_kv = torch.zeros(B, 0, self.latent_dim, device=x.device, dtype=x.dtype)
+                new_rope_k = torch.zeros(B, 0, self.rope_head_dim, device=x.device, dtype=x.dtype)
+        else:
+            # --- Step 2a: Latent Query (semantic + RoPE branches) ---
+            # Compress input to latent space
+            q_latent = self.q_a_norm(self.q_a_proj(x))  # (B, N, Ld)
+            
+            # Semantic Q (NoPE) - from parent's q_b_proj
+            Q_sem = (
+                self.q_b_proj(q_latent)
+                .view(B, N, Hr, Dh)
+                .transpose(1, 2)
+            )  # (B, Hr, N, Dh)
+            
+            # RoPE Q - from new q_rope_proj
+            Q_rope_flat = self.q_rope_proj(q_latent)  # (B, N, Hr * Rd)
+            Q_rope = Q_rope_flat.view(B, N, Hr, Rd).transpose(1, 2)  # (B, Hr, N, Rd)
+            
+            # --- Step 2b: Latent Key-Value (semantic only, NoPE) ---
+            kv_latent = self.kv_a_norm(self.kv_a_proj(x))  # (B, N, Ld)
+            
+            # --- Step 2c: RoPE Key (separate branch, shared across heads) ---
+            k_rope_new = self.k_rope_proj(x)  # (B, N, Rd) - single head, will be broadcast
+            
+            # --- Step 2d: Cache Management (3 components now) ---
+            if is_incremental and past_latent_kv is not None:
+                kv_latent_combined = torch.cat([past_latent_kv, kv_latent], dim=1)
+                rope_k_combined = torch.cat([past_rope_k, k_rope_new], dim=1)
+            else:
+                kv_latent_combined = kv_latent
+                rope_k_combined = k_rope_new
+            
+            if use_cache:
+                new_latent_kv = kv_latent_combined.clone()  # (B, total_len, Ld)
+                new_rope_k = rope_k_combined.clone()        # (B, total_len, Rd)
+            
+            total_len = kv_latent_combined.shape[1]
+            
+            # --- Step 2e: Apply RoPE ---
+            # Determine position offsets
+            if is_incremental and past_latent_kv is not None:
+                q_offset = past_latent_kv.shape[1]  # New token starts after cached tokens
+            else:
+                q_offset = 0
+            
+            # Apply RoPE to Q_rope (positions: q_offset .. q_offset+N-1)
+            Q_rope_rotated = self._apply_rope_to_tensor(Q_rope, q_offset, Rd)
+            
+            # Apply RoPE to K_rope (all positions: 0 .. total_len-1)
+            # Reshape K_rope for broadcasting: (B, total_len, Rd) -> (B, 1, total_len, Rd)
+            K_rope_full = rope_k_combined.unsqueeze(1)  # (B, 1, total_len, Rd)
+            K_rope_rotated = self._apply_rope_to_tensor(K_rope_full, 0, Rd)
+            # Broadcast to all recall heads
+            K_rope_rotated = K_rope_rotated.expand(B, Hr, total_len, Rd)  # (B, Hr, total_len, Rd)
+            
+            # --- Step 2f: Decompress Semantic KV ---
+            kv_full = self.kv_b_proj(kv_latent_combined)  # (B, total_len, 2 * Hr * Dh)
+            KV_rec = kv_full.view(B, total_len, 2, Hr, Dh).permute(2, 0, 3, 1, 4)
+            K_sem, V_rec = KV_rec[0], KV_rec[1]  # Both: (B, Hr, total_len, Dh)
+            
+            # --- Step 2g: Attention Score = Semantic + RoPE (additive fusion) ---
+            # This matches the DeepSeek-V2 implementation: separate dot products then sum
+            scale = math.sqrt(Dh + Rd)  # Effective dimension for normalization
+            
+            # Semantic attention (content-based)
+            score_sem = torch.matmul(Q_sem, K_sem.transpose(-2, -1))  # (B, Hr, N, total_len)
+            
+            # Positional attention (RoPE-based)
+            score_rope = torch.matmul(Q_rope_rotated, K_rope_rotated.transpose(-2, -1))  # (B, Hr, N, total_len)
+            
+            # Combine scores
+            scores = (score_sem + score_rope) / scale
+            
+            # --- Step 2h: Causal Masking ---
+            if not is_incremental:
+                # For full sequence training, apply causal mask
+                # Only needed in full mode; incremental mode has N=1 so no future tokens to mask
+                causal_mask = torch.triu(
+                    torch.full((N, total_len), float('-inf'), device=x.device, dtype=x.dtype),
+                    diagonal=1 + (total_len - N)  # Adjust for cached prefix
+                )
+                scores = scores + causal_mask
+            
+            # --- Step 2i: Softmax and weighted sum ---
+            attn_weights = F.softmax(scores, dim=-1)
+            if self.training and self.attn_drop > 0:
+                attn_weights = F.dropout(attn_weights, p=self.attn_drop)
+            
+            out_recall = torch.matmul(attn_weights, V_rec)  # (B, Hr, N, Dh)
+            
+            # For incremental mode, only the new token's output is needed
+            if is_incremental:
+                out_recall = out_recall[:, :, -1:, :]
+            
+            out_recall = out_recall.transpose(1, 2).reshape(B, N, Hr * Dh)
+        
+        # =====================================================================
+        # FUSION (identical to parent)
+        # =====================================================================
+        out_combined = torch.cat([out_global, out_recall], dim=-1)
+        gate = self.gamma_net(torch.cat([x, out_combined], dim=-1))
+        out_final = out_combined * gate
+        output = self.c_proj(out_final)
+        
+        # Return with 3-element cache tuple
+        if use_cache:
+            return output, (new_global_state, new_latent_kv, new_rope_k)
+        
+        return output
+    
+    def get_cache_size_info(self, seq_len: int) -> dict:
+        """
+        Calculate cache memory usage for debugging/comparison.
+        
+        Args:
+            seq_len: Current sequence length
+        
+        Returns:
+            Dictionary with cache sizes in number of elements
+        """
+        info = {
+            "global_state": self.n_global_heads * self.head_dim,
+            "latent_kv": seq_len * self.latent_dim,
+            "rope_k": seq_len * self.rope_head_dim,
+            "total_elements": (
+                self.n_global_heads * self.head_dim +
+                seq_len * (self.latent_dim + self.rope_head_dim)
+            ),
+        }
+        
+        # Add human-readable memory estimate (assuming float32 = 4 bytes)
+        info["total_bytes_approx"] = info["total_elements"] * 4
+        info["total_mb_approx"] = info["total_bytes_approx"] / (1024 * 1024)
+        
+        return info

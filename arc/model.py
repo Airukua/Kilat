@@ -1,18 +1,35 @@
 from __future__ import annotations
+import json
+import logging
+import warnings
+from pathlib import Path
+from typing import Tuple, Optional, Union
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Tuple, Optional, Union
 from transformers.modeling_outputs import CausalLMOutputWithPast
+
 from .blocks import Block, RMSNorm
 from configs.model_config import KilatConfig
 from configs.main_config import MainConfig
 from pipeline.generation.generation_mixin import GenerationMixin
-from utils.base_model import BasePreTrainedModel
+from utils.base_model import (
+    BasePreTrainedModel,
+    CONFIG_NAME,
+    WEIGHTS_NAME,
+    SAFE_WEIGHTS_NAME,
+    SAFE_WEIGHTS_INDEX,
+    WEIGHTS_INDEX_NAME,
+    _SAFETENSORS_AVAILABLE,
+    _st_load,
+)
 from utils.validators import (
     validate_finite_tensor,
     validate_tensor_rank,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class KilatPreTrainedModel(BasePreTrainedModel):
@@ -84,7 +101,7 @@ class KilatTransformer(KilatPreTrainedModel, GenerationMixin):
     1. **Embedding layer**: Maps token IDs to continuous vectors.
     2. **Dropout**: Applied to embeddings (optional, configurable).
     3. **Transformer blocks**: Stack of ``Block`` modules, each containing:
-       - KilatAttention (global decay + latent MLA)
+       - KilatAttention (global decay + latent MLA) or KilatAttentionRoPE (with RoPE)
        - FeedForward (dense SwiGLU or DeepSeek‑V2 MoE)
     4. **Final RMSNorm**: Pre‑output normalization (standard in pre‑norm arch).
     5. **LM Head**: Linear projection to vocabulary size for next‑token prediction.
@@ -99,6 +116,14 @@ class KilatTransformer(KilatPreTrainedModel, GenerationMixin):
     - The embedding matrix already learns good token representations; reusing
       it for output projection means the model "reads" and "writes" in the
       same space
+
+    RoPE Support (NEW)
+    -----------------
+    The model now supports Decoupled RoPE via the `use_rope` config flag.
+    When enabled, KilatAttentionRoPE is used instead of KilatAttention:
+    - Adds positional awareness to MLA recall path
+    - Cache structure becomes (global_state, latent_kv, rope_k)
+    - Enables better long-range position handling
 
     MoE Auxiliary Loss Handling
     ---------------------------
@@ -134,10 +159,9 @@ class KilatTransformer(KilatPreTrainedModel, GenerationMixin):
     Incremental Decoding Support
     ----------------------------
     The model supports efficient autoregressive generation using a compressed
-    KV‑cache. The cache is a tuple of per‑layer caches, each of which is a tuple
-    `(global_state, latent_kv)` as produced by `KilatAttention`.
-    - `global_state`: (B, n_global_heads, head_dim) – recurrent state for global decay heads.
-    - `latent_kv`: (B, total_len, latent_dim) – compressed KV for latent MLA heads.
+    KV‑cache. The cache structure depends on config.use_rope:
+    - If use_rope=False (NoPE): (global_state, latent_kv) per layer
+    - If use_rope=True (RoPE): (global_state, latent_kv, rope_k) per layer
 
     Usage:
         # First forward (prompt processing)
@@ -152,23 +176,22 @@ class KilatTransformer(KilatPreTrainedModel, GenerationMixin):
         outputs = model(next_token, past_key_values=past_key_values, use_cache=True)
 
     Example::
-        >>> config = KilatConfig(vocab_size=32000, n_embd=768, n_head=12, n_layer=12)
+        >>> # NoPE model (legacy)
+        >>> config = KilatConfig(vocab_size=50257, n_embd=512, n_head=8, n_layer=8, use_rope=False)
         >>> model = KilatTransformer(config)
-        >>> input_ids = torch.randint(0, 32000, (2, 128))
-        >>> labels = input_ids.clone()
-        >>> out = model(input_ids, labels=labels)
-        >>> print(out.loss)       # scalar loss (incl. auxiliary if MoE)
-        >>> print(out.logits.shape)  # (2, 128, 32000)
         >>>
-        >>> # Generation
-        >>> generated = model.generate(input_ids, max_new_tokens=50, do_sample=True, temperature=0.8)
-        >>> print(generated.shape)  # (2, 178)
+        >>> # Load pretrained model (auto-detects RoPE/NoPE)
+        >>> model = KilatTransformer.from_pretrained("AiRukua/BabyKilat")
+        >>>
+        >>> input_ids = torch.randint(0, 50257, (2, 128))
+        >>> out = model(input_ids, labels=input_ids.clone())
+        >>> print(out.loss)
     """
 
     def __init__(self, config: KilatConfig):
         if isinstance(config, MainConfig):
             config = config.model
-        
+
         # Ensure config is either KilatConfig or MainConfig
         if not isinstance(config, KilatConfig):
             raise TypeError(
@@ -176,26 +199,31 @@ class KilatTransformer(KilatPreTrainedModel, GenerationMixin):
                 f"got {type(config)}. If you want to load a pretrained model, "
                 f"use `KilatTransformer.from_pretrained(...)`."
             )
-        
+
+        # ===== BACKWARD COMPATIBILITY: Inject missing RoPE fields =====
+        # Older configs (NoPE models) don't have these fields
+        if not hasattr(config, 'use_rope'):
+            config.use_rope = False
+        if not hasattr(config, 'rope_head_dim'):
+            config.rope_head_dim = None
+        if not hasattr(config, 'rope_base'):
+            config.rope_base = 10000.0
+        if not hasattr(config, 'ff_mult'):
+            config.ff_mult = 8 / 3
+        # ===============================================================
+
         super().__init__(config)
         self.config = config
+
         # Token embeddings: maps token IDs → dense vectors.
-        # Padding index is typically 0 for most tokenizers, but the embedding
-        # layer doesn't need to know this — the loss function's ignore_index
-        # handles padding exclusion.
         self.wte = nn.Embedding(config.vocab_size, config.n_embd)
-        
-        # Embedding dropout: applied directly after embedding lookup.
-        # Using nn.Identity when dropout=0 avoids the overhead of calling
-        # nn.Dropout(p=0) which still performs a no‑op check on every call.
+
+        # Embedding dropout
         self.drop = (
             nn.Dropout(config.embd_drop) if config.embd_drop > 0 else nn.Identity()
         )
 
-        # Stack of transformer blocks.
-        # Each block is independent with its own attention and FFN modules.
-        # Blocks share the same architecture but NOT weights — they learn
-        # different levels of abstraction (surface syntax → deep semantics).
+        # Stack of transformer blocks with RoPE support
         self.layers = nn.ModuleList([
             Block(
                 n_embd=config.n_embd,
@@ -204,141 +232,259 @@ class KilatTransformer(KilatPreTrainedModel, GenerationMixin):
                 latent_dim=config.latent_dim,
                 attn_drop=config.attn_drop,
                 ffn_mode=config.ffn_mode,
+                ff_mult=config.ff_mult,
+                ffn_dropout=config.ffn_dropout,
                 num_experts=config.num_experts,
                 active_experts=config.active_experts,
                 aux_loss_coef=config.aux_loss_coef,
                 resid_drop=config.resid_drop,
-                ffn_dropout=config.ffn_dropout,
+                use_rope=config.use_rope,
+                rope_head_dim=config.rope_head_dim,
+                rope_base=config.rope_base,
             )
             for _ in range(config.n_layer)
         ])
 
-        # Final normalisation + LM head.
-        # ln_f is applied BEFORE the LM head (pre‑output norm), following the
-        # pre‑norm architecture pattern. This ensures the logits are computed
-        # from a normalized representation, preventing the output projection
-        # from needing to learn to handle varying activation scales.
+        # Final normalisation + LM head
         self.ln_f = RMSNorm(config.n_embd)
-        
-        # LM head: projects hidden states to vocabulary logits.
-        # No bias because weight tying would make a bias term asymmetric
-        # (shared weight but separate bias for input/output would be inconsistent).
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
-        # Weight tying: share storage between input embeddings and output projection.
-        # This creates a circular reference (wte.weight is lm_head.weight is wte.weight)
-        # which is intentional. Both attributes point to the same underlying tensor,
-        # so gradient updates to either affect both.
+        # Weight tying
         self.wte.weight = self.lm_head.weight
-
-        # Required by recent transformers releases for safe_serialization when
-        # tensors are shared across modules. The mapping tells the serializer
-        # that `lm_head.weight` is intentionally tied to `wte.weight`.
         self._tied_weights_keys = {"lm_head.weight": "wte.weight"}
 
-        # Initialise weights via Hugging Face post‑init.
-        # This calls _init_weights on every submodule, then runs any
-        # additional initialization registered by PreTrainedModel.
+        # Initialise weights
         self.post_init()
 
     def _tie_weights(self):
         """
         Tie the weights between input embeddings and output embeddings.
-        
+
         This method is called automatically by Hugging Face's `from_pretrained`
         after loading the weights. It ensures weight tying is restored even if
         the checkpoint doesn't contain lm_head.weight.
-        
-        WHY: Older checkpoints may not have lm_head.weight saved due to weight tying.
-        This method automatically restores the tie without user intervention.
         """
         if self.config.tie_word_embeddings:
             self.lm_head.weight = self.wte.weight
 
     @classmethod
+    def _detect_rope_from_weights(cls, pretrained_path: Path) -> bool:
+        """
+        Detect if model uses RoPE by checking for rope-specific keys in weights.
+
+        Looks for 'q_rope_proj.weight' or 'k_rope_proj.weight' in any weight file.
+        """
+        # Try safetensors
+        weights_path = pretrained_path / SAFE_WEIGHTS_NAME
+        if weights_path.exists() and _SAFETENSORS_AVAILABLE:
+            try:
+                weights = _st_load(str(weights_path))
+                for key in weights.keys():
+                    if 'q_rope_proj' in key or 'k_rope_proj' in key:
+                        return True
+            except Exception:
+                pass
+
+        # Try pickle format
+        weights_path = pretrained_path / WEIGHTS_NAME
+        if weights_path.exists():
+            try:
+                weights = torch.load(weights_path, map_location='cpu', weights_only=False)
+                for key in weights.keys():
+                    if 'q_rope_proj' in key or 'k_rope_proj' in key:
+                        return True
+            except Exception:
+                pass
+
+        # Try sharded formats
+        for index_name in [SAFE_WEIGHTS_INDEX, WEIGHTS_INDEX_NAME]:
+            index_path = pretrained_path / index_name
+            if index_path.exists():
+                try:
+                    with open(index_path, 'r', encoding='utf-8') as f:
+                        index = json.load(f)
+                    for key in index.get('weight_map', {}).keys():
+                        if 'q_rope_proj' in key or 'k_rope_proj' in key:
+                            return True
+                except Exception:
+                    pass
+
+        return False
+
+    @classmethod
+    def _load_state_dict_from_path(cls, pretrained_path: Path) -> dict:
+        """
+        Load state dict from disk, handling both single-file and sharded formats.
+        """
+        # Try safetensors single file
+        weights_path = pretrained_path / SAFE_WEIGHTS_NAME
+        if weights_path.exists() and _SAFETENSORS_AVAILABLE:
+            return _st_load(str(weights_path))
+
+        # Try pickle single file
+        weights_path = pretrained_path / WEIGHTS_NAME
+        if weights_path.exists():
+            return torch.load(weights_path, map_location='cpu', weights_only=False)
+
+        # Try sharded safetensors
+        index_path = pretrained_path / SAFE_WEIGHTS_INDEX
+        if index_path.exists() and _SAFETENSORS_AVAILABLE:
+            with open(index_path, "r", encoding="utf-8") as f:
+                index = json.load(f)
+            shard_files = sorted(set(index["weight_map"].values()))
+            state_dict = {}
+            for shard_name in shard_files:
+                shard_path = pretrained_path / shard_name
+                shard_dict = _st_load(str(shard_path))
+                state_dict.update(shard_dict)
+            return state_dict
+
+        # Try sharded pickle
+        index_path = pretrained_path / WEIGHTS_INDEX_NAME
+        if index_path.exists():
+            with open(index_path, "r", encoding="utf-8") as f:
+                index = json.load(f)
+            shard_files = sorted(set(index["weight_map"].values()))
+            state_dict = {}
+            for shard_name in shard_files:
+                shard_path = pretrained_path / shard_name
+                shard_dict = torch.load(shard_path, map_location='cpu', weights_only=False)
+                state_dict.update(shard_dict)
+            return state_dict
+
+        raise FileNotFoundError(f"No weights found at {pretrained_path}")
+
+    @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path, *args, **kwargs):
         """
-        Load a pretrained KilatTransformer model with automatic weight tying restoration.
-        
-        This method overrides the default HF from_pretrained to:
-        1. Load with strict=False (handles missing lm_head.weight)
-        2. Automatically restore weight tying after loading
-        3. Log a warning if weight tying was missing
-        
-        WHY: Older checkpoints uploaded to Hugging Face Hub may not have lm_head.weight
-        saved due to the way PyTorch handles shared tensors. This method ensures
-        users never see the confusing "lm_head.weight | MISSING" warning and the
-        model always works correctly out of the box.
-        
+        Load a pretrained KilatTransformer model with automatic:
+        1. Config loading from checkpoint
+        2. RoPE vs NoPE detection (backward compatibility)
+        3. Weight tying restoration
+
+        This method properly reads the config.json from the checkpoint and
+        builds the model with the correct dimensions (n_embd, n_layer, etc.)
+
         Parameters
         ----------
-        pretrained_model_name_or_path : str
+        pretrained_model_name_or_path : str or Path
             Hugging Face model ID or local path.
         *args, **kwargs
             Additional arguments passed to the parent from_pretrained.
-        
+
         Returns
         -------
         KilatTransformer
-            Loaded model with properly restored weight tying.
+            Loaded model with proper configuration.
         """
-        import warnings
-        import logging
-        logger = logging.getLogger(__name__)
-        
-        # Load with strict=False to allow missing lm_head.weight
-        model = super().from_pretrained(pretrained_model_name_or_path, *args, **kwargs)
-        
-        # Check if weight tying needs to be restored
-        if model.config.tie_word_embeddings:
-            # Check if lm_head.weight is a separate tensor (not tied to wte)
+        # Resolve path (download from Hub if needed)
+        pretrained_path = Path(pretrained_model_name_or_path)
+
+        if not pretrained_path.exists():
+            try:
+                from huggingface_hub import snapshot_download
+                logger.info(f"Downloading from Hugging Face Hub: {pretrained_model_name_or_path}")
+                pretrained_path = Path(
+                    snapshot_download(
+                        str(pretrained_model_name_or_path),
+                        local_files_only=kwargs.get('local_files_only', False),
+                    )
+                )
+            except ImportError:
+                raise ImportError(
+                    f"Path '{pretrained_path}' not found locally, "
+                    "and huggingface_hub not installed. "
+                    "Install with: pip install huggingface_hub"
+                )
+
+        # ===== STEP 1: Load config from checkpoint =====
+        config_path = pretrained_path / CONFIG_NAME
+        if not config_path.exists():
+            raise FileNotFoundError(f"Config not found at {config_path}")
+
+        with open(config_path, "r", encoding="utf-8") as f:
+            config_dict = json.load(f)
+
+        logger.info(f"Loaded config from checkpoint: n_embd={config_dict.get('n_embd')}, "
+                   f"n_layer={config_dict.get('n_layer')}, vocab_size={config_dict.get('vocab_size')}")
+
+        # ===== STEP 2: Detect RoPE from weights =====
+        detected_rope = cls._detect_rope_from_weights(pretrained_path)
+        logger.info(f"Detected from weights: use_rope={detected_rope}")
+
+        # ===== STEP 3: Inject missing fields =====
+        config_dict['use_rope'] = detected_rope
+        if 'rope_head_dim' not in config_dict:
+            n_embd = config_dict.get('n_embd', 512)
+            n_head = config_dict.get('n_head', 8)
+            head_dim = n_embd // n_head
+            config_dict['rope_head_dim'] = head_dim // 2
+        if 'rope_base' not in config_dict:
+            config_dict['rope_base'] = 10000.0
+        if 'ff_mult' not in config_dict:
+            hidden_dim = config_dict.get('ffn_hidden_dim', None)
+            if hidden_dim:
+                n_embd = config_dict.get('n_embd', 512)
+                config_dict['ff_mult'] = hidden_dim / n_embd
+            else:
+                config_dict['ff_mult'] = 8 / 3
+
+        # ===== STEP 4: Create config object =====
+        config = cls.config_class.from_dict(config_dict)
+
+        # ===== STEP 5: Build model with the config from checkpoint =====
+        model = cls(config)
+
+        # ===== STEP 6: Load state_dict from disk =====
+        state_dict = cls._load_state_dict_from_path(pretrained_path)
+
+        # ===== STEP 7: Load with strict=False =====
+        missing, unexpected = model.load_state_dict(state_dict, strict=False)
+
+        if missing:
+            # Filter out tied weights from missing keys (they're expected)
+            tied_keys = set(model._tied_weights_keys.values())
+            missing_filtered = [k for k in missing if k not in tied_keys]
+            if missing_filtered:
+                logger.warning(f"Missing keys (may affect functionality): {missing_filtered[:10]}...")
+        if unexpected:
+            logger.warning(f"Unexpected keys (ignored): {unexpected[:10]}...")
+
+        # ===== STEP 8: Restore weight tying =====
+        if config.tie_word_embeddings:
             if model.lm_head.weight is not model.wte.weight:
                 warnings.warn(
                     "lm_head.weight not tied to wte.weight. "
-                    "This is expected for older checkpoints. "
                     "Automatically restoring weight tying...",
                     UserWarning,
                     stacklevel=2
                 )
                 model.lm_head.weight = model.wte.weight
-                logger.info("Weight tying restored successfully: lm_head.weight = wte.weight")
-        
+                logger.info("Weight tying restored successfully")
+
+        # ===== STEP 9: Log final status =====
+        if config.use_rope:
+            logger.info("✅ Model loaded in RoPE mode (positional encoding ENABLED)")
+        else:
+            logger.info("✅ Model loaded in NoPE mode (positional encoding DISABLED)")
+
         return model
 
     def get_input_embeddings(self) -> nn.Embedding:
-        """
-        Return input embedding layer for HF generation pipeline compatibility.
-
-        HuggingFace's generate() method uses this to access token embeddings
-        during beam search and sampling.
-        """
+        """Return input embedding layer for HF generation pipeline compatibility."""
         return self.wte
 
     def set_input_embeddings(self, value: nn.Embedding):
-        """
-        Replace input embeddings while preserving weight tying.
-
-        When resizing token embeddings (e.g., adding special tokens), this
-        ensures the tied lm_head weight is updated consistently.
-        """
+        """Replace input embeddings while preserving weight tying."""
         self.wte = value
         self.lm_head.weight = value.weight
 
     def get_output_embeddings(self) -> nn.Linear:
-        """
-        Return output embedding layer (LM head) for HF compatibility.
-
-        Used by resize_token_embeddings() to adjust vocabulary size.
-        """
+        """Return output embedding layer (LM head) for HF compatibility."""
         return self.lm_head
 
     def set_output_embeddings(self, new_embeddings: nn.Linear):
-        """
-        Replace output embeddings while preserving weight tying.
-
-        Ensures the tied wte weight is updated consistently when the
-        LM head is resized.
-        """
+        """Replace output embeddings while preserving weight tying."""
         self.lm_head = new_embeddings
 
     def forward(
@@ -346,86 +492,42 @@ class KilatTransformer(KilatPreTrainedModel, GenerationMixin):
         input_ids: torch.Tensor,
         labels: Optional[torch.Tensor] = None,
         return_dict: Optional[bool] = None,
-        # ---------- ADDED FOR INCREMENTAL DECODING ----------
-        past_key_values: Optional[Tuple[Tuple[torch.Tensor, torch.Tensor], ...]] = None,
+        past_key_values: Optional[Tuple] = None,
         use_cache: Optional[bool] = None,
-        # ---------------------------------------------------
-        **kwargs,  # absorb extra HF Trainer args (e.g., attention_mask)
+        **kwargs,
     ) -> Union[Tuple[torch.Tensor, ...], CausalLMOutputWithPast]:
         """
         Forward pass for causal language modeling.
-
-        Loss Computation
-        ----------------
-        The standard causal LM loss shifts logits and labels by one position:
-        - logits[:, :-1, :] predicts tokens at positions 1, 2, ..., N-1
-        - labels[:, 1:] provides the ground truth for those positions
-        This means position 0 never has a loss target (it's the "start" token),
-        and position N-1 never generates a prediction (it has no subsequent token).
-
-        Cross‑entropy uses ignore_index=-100, which is the standard for
-        HuggingFace tokenizers. Any label position with value -100 is excluded
-        from loss computation (both numerator and denominator).
-
-        MoE Loss Aggregation
-        --------------------
-        Auxiliary losses from MoE blocks are already multiplied by their
-        respective ``aux_loss_coef`` values at the block level. The forward
-        pass simply sums them. This means:
-        - Total aux loss is the weighted sum across all MoE blocks
-        - Each block can have different aux_loss_coef (though in practice
-          they're usually the same from config)
-        - The aux loss is added AFTER the primary cross‑entropy loss, so it
-          doesn't affect perplexity calculations (only gradients)
-
-        Incremental Decoding Parameters (added)
-        ----------------------------------------
-        past_key_values : Optional[Tuple]
-            Caches from previous forward calls, as returned by this method.
-            For the first forward call, pass None. For subsequent generation steps,
-            pass the `past_key_values` that was returned earlier.
-            The tuple has length `config.n_layer`. Each element is either None
-            (if no cache available for that layer) or a tuple of
-            (global_state, latent_kv).
-        use_cache : Optional[bool]
-            If True, returns `past_key_values` that can be used for incremental
-            decoding. If False, no cache is returned (saves memory during training).
-            Defaults to self.config.use_cache.
 
         Parameters
         ----------
         input_ids : torch.Tensor
             (B, N) LongTensor of token indices.
         labels : Optional[torch.Tensor]
-            (B, N) LongTensor for loss computation. Padding positions
-            should use -100 (ignored by cross‑entropy).
+            (B, N) LongTensor for loss computation.
         return_dict : Optional[bool]
-            Whether to return CausalLMOutputWithPast or a tuple. If None,
-            uses self.config.return_dict.
+            Whether to return CausalLMOutputWithPast or a tuple.
+        past_key_values : Optional[Tuple]
+            Caches from previous forward calls for incremental decoding.
+        use_cache : Optional[bool]
+            If True, returns `past_key_values` for incremental decoding.
         **kwargs : dict
-            Absorbs extra arguments from HF Trainer (attention_mask, etc.)
-            to prevent TypeError. These are intentionally ignored.
+            Absorbs extra arguments from HF Trainer.
 
         Returns
         -------
         Union[Tuple, CausalLMOutputWithPast]
-            If return_dict=True: CausalLMOutputWithPast with loss, logits,
-            and past_key_values (if use_cache).
-            If return_dict=False: tuple of (loss, logits, past_key_values) or
-            (logits, past_key_values) or (loss, logits) depending on flags.
+            Model output with loss, logits, and past_key_values if use_cache=True.
         """
-        return_dict = (
-            return_dict if return_dict is not None else self.config.return_dict
-        )
-        # ---------- ADDED: handle use_cache default ----------
+        return_dict = return_dict if return_dict is not None else self.config.return_dict
         use_cache = use_cache if use_cache is not None else self.config.use_cache
-        # -----------------------------------------------------
+
         validate_tensor_rank(input_ids, 2, "input_ids")
 
         # Embed and apply dropout
         x = self.drop(self.wte(input_ids))
 
-        # ---------- ADDED: prepare per‑layer cache list ----------
+        # Prepare per‑layer cache list
         if past_key_values is None:
             past_key_values = [None] * self.config.n_layer
         else:
@@ -434,87 +536,48 @@ class KilatTransformer(KilatPreTrainedModel, GenerationMixin):
                     f"past_key_values length ({len(past_key_values)}) does not match "
                     f"number of layers ({self.config.n_layer})"
                 )
-        # ---------------------------------------------------------
 
-        # Pass through transformer blocks, accumulating MoE auxiliary loss.
-        # The auxiliary loss is a scalar tensor that accumulates across blocks.
-        # It starts at 0.0 on the correct device/dtype to avoid any device
-        # mismatch when adding layer losses.
+        # Pass through transformer blocks
         total_aux_loss = torch.tensor(0.0, device=x.device, dtype=x.dtype)
-        has_moe = False  # Track if any block actually uses MoE
-
-        # ---------- ADDED: collect new caches ----------
+        has_moe = False
         present_key_values = []
-        # ------------------------------------------------
 
         for i, block in enumerate(self.layers):
-            # ---------- MODIFIED: pass cache and use_cache to block ----------
-            # Original line: x, layer_aux_loss = block(x)
-            # Now we pass per‑layer cache and use_cache flag.
-            # The block returns (output, aux_loss, present_cache)
             x, layer_aux_loss, layer_present = block(
                 x,
                 past_key_values=past_key_values[i] if past_key_values else None,
                 use_cache=use_cache,
             )
-            # -----------------------------------------------------------------
             if layer_aux_loss is not None:
                 total_aux_loss = total_aux_loss + layer_aux_loss
                 has_moe = True
-            # ---------- ADDED: store present cache ----------
             if use_cache:
                 present_key_values.append(layer_present)
-            # ------------------------------------------------
 
-        # ---------- ADDED: convert list to tuple for HF ----------
         if use_cache:
             present_key_values = tuple(present_key_values)
         else:
             present_key_values = None
-        # ---------------------------------------------------------
 
-        # Final norm + project to vocabulary.
-        # ln_f ensures the hidden states are normalized before the LM head,
-        # preventing the output distribution from being sensitive to the
-        # scale of activations from the last transformer block.
+        # Final norm + project to vocabulary
         x = self.ln_f(x)
         logits = self.lm_head(x)
         validate_finite_tensor(logits, "Logits Output")
 
-        # Compute causal LM loss if labels are provided.
-        # The loss computation is intentionally outside the forward pass's
-        # main computation flow — it only runs when labels are given (training)
-        # and is skipped during generation/inference.
+        # Compute loss if labels provided
         loss = None
         if labels is not None:
-            # Shift logits and labels for next‑token prediction.
-            # logits[:, :-1, :]: predictions for positions 0 to N-2
-            # labels[:, 1:]: ground truth for positions 1 to N-1
-            # The .contiguous() call ensures the tensors are in the expected
-            # memory layout for .view(-1, vocab_size) below.
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = labels[..., 1:].contiguous()
-
-            # Flatten batch and sequence dimensions for cross‑entropy:
-            # (B, N-1, vocab_size) → (B*(N-1), vocab_size)
-            # (B, N-1) → (B*(N-1))
-            # ignore_index=-100 excludes padding positions from loss.
             loss = F.cross_entropy(
                 shift_logits.view(-1, shift_logits.size(-1)),
                 shift_labels.view(-1),
                 ignore_index=-100,
             )
-
-            # Add MoE auxiliary loss to the primary loss.
-            # This couples the auxiliary loss with the main training objective,
-            # so both are optimized simultaneously. The auxiliary loss is
-            # already scaled by aux_loss_coef at the block level.
             if has_moe:
                 loss = loss + total_aux_loss
 
-        # Return format: respect HF's return_dict convention.
-        # Tuple format: (loss, logits) or just (logits,) for backward compat.
-        # ---------- MODIFIED: include cache in tuple when use_cache ----------
+        # Return format
         if not return_dict:
             output = (logits,)
             if use_cache:
@@ -522,14 +585,11 @@ class KilatTransformer(KilatPreTrainedModel, GenerationMixin):
             if loss is not None:
                 output = (loss,) + output
             return output
-        # ---------------------------------------------------------------------
 
-        # CausalLMOutputWithPast: standard HF output dataclass.
-        # past_key_values now contains the updated cache for incremental decoding.
         return CausalLMOutputWithPast(
             loss=loss,
             logits=logits,
-            past_key_values=present_key_values,   # was None, now cache
+            past_key_values=present_key_values,
             hidden_states=None,
             attentions=None,
         )

@@ -48,6 +48,9 @@ class MainConfig:
           n_embd: 768
           n_layer: 12
           n_head: 12
+          use_rope: false          # NEW: Enable Decoupled RoPE
+          rope_head_dim: 32        # NEW: RoPE dimension per head
+          rope_base: 10000.0       # NEW: RoPE base frequency
           ...
 
         tokenizer:
@@ -210,6 +213,23 @@ class MainConfig:
     def attn_drop(self) -> float:
         """Attention dropout (delegated from model)."""
         return self.model.attn_drop
+
+    # ========== Decoupled RoPE delegation properties (NEW) ==========
+    @property
+    def use_rope(self) -> bool:
+        """Whether to use Decoupled RoPE on MLA recall path (delegated from model)."""
+        return self.model.use_rope
+
+    @property
+    def rope_head_dim(self) -> Optional[int]:
+        """RoPE dimension per head, typically head_dim // 2 (delegated from model)."""
+        return self.model.rope_head_dim
+
+    @property
+    def rope_base(self) -> float:
+        """RoPE base frequency for positional encoding (delegated from model)."""
+        return self.model.rope_base
+    # ================================================================
 
     @property
     def ffn_mode(self) -> str:
@@ -661,9 +681,10 @@ class MainConfig:
 
     def __repr__(self) -> str:
         """Human-readable representation for debugging."""
+        rope_status = f", rope={self.use_rope}" if hasattr(self.model, 'use_rope') else ""
         return (
             f"MainConfig(experiment='{self.experiment_name}', "
             f"model={self.model.__class__.__name__}, "
             f"tokenizer={self.tokenizer.tokenizer_type}, "
-            f"training={self.training.training_mode})"
+            f"training={self.training.training_mode}{rope_status})"
         )

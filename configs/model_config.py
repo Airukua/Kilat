@@ -22,12 +22,15 @@ class KilatConfig(BaseConfig):
         - **Mixture of Experts (MoE)**: Sparse routing with configurable experts
         - **DeepSeek-V2 MoE**: Shared experts + fine-grained expert segmentation
         - **Retention/MLA hybrid**: Configurable recall_ratio for efficient long-context
+        - **Decoupled RoPE**: Optional rotary position embedding for MLA recall path
 
     KEY PARAMETER INTERACTIONS:
         - `latent_dim` defaults to `n_embd // 4` for 4x KV-cache compression in MLA path
         - `recall_ratio` splits heads between precise (latent MLA) and efficient (decay) paths
         - `num_shared_experts` > 0 enables DeepSeek-V2 style (distinct from standard MoE)
         - `fine_grained_factor` splits each expert into smaller sub-experts for finer routing
+        - `use_rope=True` enables Decoupled RoPE on MLA recall path (DeepSeek-V2 style)
+        - `rope_head_dim` defaults to `head_dim // 2` when None
 
     VALIDATION:
         All critical constraints are checked at construction time (fail fast):
@@ -35,17 +38,25 @@ class KilatConfig(BaseConfig):
         - Shared experts only allowed in MoE mode
         - Dropout probabilities in [0, 1)
         - MoE routing constraints (active_experts ≤ num_experts)
+        - RoPE constraints: rope_head_dim must be even and ≤ head_dim when use_rope=True
 
     Example Usage
     -------------
-        >>> # Dense model
+        >>> # Dense model (NoPE)
         >>> config = KilatConfig(vocab_size=32000, n_embd=768, n_head=12, n_layer=12)
         >>>
-        >>> # DeepSeek-V2 style MoE
+        >>> # Model with Decoupled RoPE (positional encoding enabled)
+        >>> config = KilatConfig(
+        ...     vocab_size=32000, n_embd=768, n_head=12, n_layer=12,
+        ...     use_rope=True, rope_head_dim=32, rope_base=10000.0
+        ... )
+        >>>
+        >>> # DeepSeek-V2 style MoE with RoPE
         >>> config = KilatConfig(
         ...     vocab_size=64000, n_embd=2048, n_head=32, n_layer=32,
         ...     ffn_mode="moe", num_experts=64, active_experts=8,
-        ...     num_shared_experts=2, fine_grained_factor=2
+        ...     num_shared_experts=2, fine_grained_factor=2,
+        ...     use_rope=True, rope_head_dim=64
         ... )
         >>>
         >>> # Save for later use
@@ -66,6 +77,10 @@ class KilatConfig(BaseConfig):
         recall_ratio: float = 0.5,
         latent_dim: Optional[int] = None,
         attn_drop: float = 0.0,
+        # ---- Decoupled RoPE configuration (DeepSeek-V2 MLA extension) ----
+        use_rope: bool = False,
+        rope_head_dim: Optional[int] = None,
+        rope_base: float = 10000.0,
         # ---- Feed-forward configuration ----
         ffn_mode: Literal["dense", "moe"] = "moe",
         ff_mult: float = 8 / 3,
@@ -119,6 +134,11 @@ class KilatConfig(BaseConfig):
         self.latent_dim = latent_dim
         self.attn_drop = attn_drop
 
+        # Decoupled RoPE parameters
+        self.use_rope = use_rope
+        self.rope_head_dim = rope_head_dim
+        self.rope_base = rope_base
+
         # Feed-forward parameters
         self.ffn_mode = ffn_mode
         self.ff_mult = ff_mult
@@ -171,6 +191,8 @@ class KilatConfig(BaseConfig):
             4. num_experts ≥ 1 in MoE mode
             5. recall_ratio in [0, 1]
             6. Dropout probabilities in [0, 1)
+            7. RoPE: rope_head_dim must be even when use_rope=True
+            8. RoPE: rope_head_dim cannot exceed head_dim when use_rope=True
         """
         # Architectural constraint: integer head dimension
         if self.n_embd % self.n_head != 0:
@@ -207,6 +229,30 @@ class KilatConfig(BaseConfig):
             value = getattr(self, name)
             if not 0.0 <= value < 1.0:
                 raise ValueError(f"{name} must be in [0, 1), got {value}.")
+
+        # Decoupled RoPE validation (DeepSeek-V2 MLA extension)
+        if self.use_rope:
+            head_dim = self.n_embd // self.n_head
+            
+            # rope_head_dim must be even (requirement for rotation)
+            if self.rope_head_dim is not None and self.rope_head_dim % 2 != 0:
+                raise ValueError(
+                    f"rope_head_dim must be even for RoPE rotation, "
+                    f"got {self.rope_head_dim}."
+                )
+            
+            # rope_head_dim cannot exceed head_dim (would exceed token dimension)
+            if self.rope_head_dim is not None and self.rope_head_dim > head_dim:
+                raise ValueError(
+                    f"rope_head_dim ({self.rope_head_dim}) cannot exceed "
+                    f"head_dim ({head_dim})."
+                )
+            
+            # rope_base must be positive (frequency denominator)
+            if self.rope_base <= 0:
+                raise ValueError(
+                    f"rope_base must be positive, got {self.rope_base}."
+                )
 
     def to_yaml(self, path: Optional[str | Path] = None) -> str:
         """
@@ -277,8 +323,6 @@ class KilatConfig(BaseConfig):
         from_yaml name.
         """
         return cls.from_yaml(path)
-
-
 
     def save_pretrained(self, save_directory: str | Path, **kwargs):
         """
