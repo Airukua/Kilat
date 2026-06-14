@@ -309,7 +309,7 @@ class RotaryPositionalEmbedding(nn.Module):
         return result
     
     def get_caches(self) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Return current cosine and sine caches for debugging/inspection."""
+        """Return current cosine and sine caches for debugging/inspection. """
         return self.cos_cache, self.sin_cache
 
 
