@@ -33,19 +33,13 @@ from pathlib import Path
 import numpy as np
 import torch
 
-# Add project root to Python path to enable absolute imports.
-# This allows importing modules like 'data.dataset', 'training.trainer', etc.
-project_root = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(project_root))
-
-# Kilat components
-from data.dataset import PretrainingDataset
-from data.dataloader import build_train_dataloader, build_eval_dataloader
-from data.collator import KilatDataCollator
-from training.trainer import KilatTrainer
-from training.args import TrainingArguments
-from configs.main_config import MainConfig
-from arc.model import KilatTransformer
+from kilat.data import PretrainingDataset
+from kilat.data import build_train_dataloader, build_eval_dataloader
+from kilat.data import KilatDataCollator
+from kilat.training import KilatTrainer
+from kilat.training import TrainingArguments
+from kilat.configs import MainConfig
+from kilat import KilatTransformer
 
 logging.basicConfig(level=logging.INFO, format="%(message)s", force=True)
 
@@ -62,7 +56,7 @@ print(f"Using device: {device}")
 # ---------------------------------------------------------------------------
 # 2. Load configuration (MainConfig as single source of truth)
 # ---------------------------------------------------------------------------
-config = MainConfig.from_yaml('configs/sample/small_moe.yaml')
+config = MainConfig.from_yaml('sample_config/small_moe.yaml')
 
 
 # ---------------------------------------------------------------------------

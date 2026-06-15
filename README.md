@@ -22,8 +22,7 @@
 Kilat (*Indonesian: lightning*) is a modular toolkit for training and deploying transformer-based language models — from a single dense baseline to Mixture-of-Experts architectures. Designed for researchers who want production-grade training loops without the overhead of a full framework.
 
 ```python
-from arc.model import KilatTransformer
-from configs.model_config import KilatConfig
+from kilat import KilatTransformer, KilatConfig
 
 model = KilatTransformer(KilatConfig(vocab_size=50_000, n_embd=640, n_layer=8, ffn_mode="dense"))
 print(f"{sum(p.numel() for p in model.parameters()) / 1e6:.1f}M parameters")
@@ -53,13 +52,16 @@ pip install -e ".[reporting]"
 ### Train
 
 ```python
-from arc.model import KilatTransformer
-from configs.main_config import MainConfig
-from training.trainer import KilatTrainer
-from training.args import TrainingArguments
-from data.dataset import PretrainingDataset
-from data.dataloader import build_train_dataloader, build_eval_dataloader
-from data.collator import KilatDataCollator
+from kilat import (
+    KilatTransformer,
+    KilatTrainer,
+    TrainingArguments,
+    PretrainingDataset,
+    build_train_dataloader,
+    build_eval_dataloader,
+    KilatDataCollator,
+)
+from kilat.configs import MainConfig
 
 config = MainConfig.from_yaml("configs/small_dense.yaml")
 model = KilatTransformer(config)
@@ -86,9 +88,8 @@ trainer.train()
 ### Generate
 
 ```python
-from arc.model import KilatTransformer
-from data.tokenizer import AutoTokenizer
-from pipeline.generation.generator import TextGenerator
+from kilat import KilatTransformer, TextGenerator
+from kilat.data import AutoTokenizer
 
 model     = KilatTransformer.from_pretrained("./checkpoints/my-model")
 tokenizer = AutoTokenizer.from_pretrained("./checkpoints/my-model")
@@ -236,7 +237,7 @@ Dataloaders automatically use `DistributedSampler` when a process group is activ
 ## Convert to HuggingFace
 
 ```bash
-python -m pipeline.converter.convert_to_hf \
+python -m kilat.pipeline.converter.convert_to_hf \
   -c ./checkpoints/checkpoint-best \
   -o ./converted_model
 ```

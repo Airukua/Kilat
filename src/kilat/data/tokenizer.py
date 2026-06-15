@@ -34,7 +34,7 @@ import os
 import json
 from pathlib import Path
 from typing import Any, Optional, Union
-from configs.tokenizer_config import TokenizerConfig
+from kilat.configs.tokenizer_config import TokenizerConfig
 
 
 class AutoTokenizer:

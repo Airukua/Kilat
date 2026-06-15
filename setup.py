@@ -2,8 +2,8 @@ from setuptools import setup, find_packages
 
 setup(
     name="kilat",
-    version="1.3.0",
-    description="Kilat: a lightweight transformer training and inference toolkit.",
+    version="0.1.0",
+    description="Kilat: kernelized lighweighted attention.",
     python_requires=">=3.10",
     install_requires=[
         "torch>=2.0",
@@ -23,26 +23,7 @@ setup(
             "comet_ml>=3.45",
         ],
     },
-    packages=find_packages(
-        where=".",
-        include=[
-            "arc",
-            "arc.*",
-            "configs",         
-            "configs.*",       
-            "data",
-            "data.*",
-            "training",
-            "training.*",
-            "utils",
-            "utils.*",
-            "pipeline",
-            "pipeline.*",
-            "generation",
-            "generation.*",
-            "distiliation",
-            "distiliation.*",
-        ],
-    ),
+    package_dir={"": "src"},
+    packages=find_packages("src"),
     include_package_data=True,
 )

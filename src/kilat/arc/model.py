@@ -11,10 +11,10 @@ import torch.nn.functional as F
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from .blocks import Block, RMSNorm
-from configs.model_config import KilatConfig
-from configs.main_config import MainConfig
-from pipeline.generation.generation_mixin import GenerationMixin
-from utils.base_model import (
+from kilat.configs.model_config import KilatConfig
+from kilat.configs.main_config import MainConfig
+from kilat.pipeline.generation.generation_mixin import GenerationMixin
+from kilat.utils.base_model import (
     BasePreTrainedModel,
     CONFIG_NAME,
     WEIGHTS_NAME,
@@ -24,7 +24,7 @@ from utils.base_model import (
     _SAFETENSORS_AVAILABLE,
     _st_load,
 )
-from utils.validators import (
+from kilat.utils.validators import (
     validate_finite_tensor,
     validate_tensor_rank,
 )

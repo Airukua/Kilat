@@ -38,7 +38,7 @@ from .trainer_utils import (
     should_log,
     should_save,
 )
-from utils.report import count_parameters
+from kilat.utils.report import count_parameters
 
 logger = logging.getLogger(__name__)
 

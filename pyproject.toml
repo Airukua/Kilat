@@ -4,37 +4,42 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kilat"
-version = "1.3.0"
-description = "Kilat: a lightweight transformer training and inference toolkit."
+version = "0.1.0"
+description = "Kilat: kernelized lightweight attention."
+readme = "README.md"
 requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "Abdul Wahid Rukua", email=rukuaabdulwahid@gmail.com },
+]
 dependencies = [
-  "torch>=2.0",
-  "transformers>=4.40",
-  "tqdm>=4.66",
-  "pyarrow>=14.0",
-  "triton>=2.0",
-  "sentencepiece>=0.2.0",
-  "numpy>=1.24",
-  "pyyaml>=6.0",
+    "torch>=2.0",
+    "transformers>=4.40",
+    "tqdm>=4.66",
+    "pyarrow>=14.0",
+    "triton>=2.0",
+    "sentencepiece>=0.2.0",
+    "numpy>=1.24",
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
 reporting = [
-  "wandb>=0.16",
-  "tensorboard>=2.14",
-  "mlflow>=2.10",
-  "comet_ml>=3.45",
+    "wandb>=0.16",
+    "tensorboard>=2.14",
+    "mlflow>=2.10",
+    "comet_ml>=3.45",
 ]
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = [
-  "arc*",
-  "configs*",         
-  "data*",
-  "training*",
-  "utils*",
-  "pipeline*",
-  "generation*",
-  "distiliation*",
+    "arc*",
+    "configs*",
+    "data*",
+    "training*",
+    "utils*",
+    "pipeline*",
+    "generation*",
+    "distiliation*",
 ]

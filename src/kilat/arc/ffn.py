@@ -2,7 +2,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch
 from typing import Optional, Literal
-from utils.validators import (
+from kilat.utils.validators import (
     validate_choice,
     validate_finite_tensor,
     validate_less_equal,

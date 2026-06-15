@@ -4,7 +4,7 @@ from typing import Optional, Literal
 import warnings
 import yaml
 from .base import dump_yaml_file, load_yaml_file
-from utils.base_model import BaseConfig
+from kilat.utils.base_model import BaseConfig
 
 class KilatConfig(BaseConfig):
     """

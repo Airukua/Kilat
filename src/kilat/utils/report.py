@@ -1,9 +1,9 @@
 from __future__ import annotations
 from collections import defaultdict
 import torch.nn as nn
-from arc.model import KilatTransformer
-from configs.model_config import KilatConfig
 from pathlib import Path
+from kilat.arc.model import KilatTransformer
+from kilat.configs.model_config import KilatConfig
 import sys
 
 def count_parameters(model: nn.Module, trainable_only: bool = False) -> int:
@@ -97,7 +97,7 @@ def load_model(
     checkpoint: str | None = None,
     config_path: str | None = None,
     device: str = "cpu"
-) -> KilatTransformer:
+) -> 'KilatTransformer':
     """
     Load KilatTransformer model from checkpoint or config.
     
@@ -133,6 +133,9 @@ def load_model(
         >>> # Default model for testing
         >>> model = load_model()
     """
+    from kilat.arc.model import KilatTransformer
+    from kilat.configs.model_config import KilatConfig
+    
     if checkpoint and config_path:
         raise ValueError(
             "Cannot specify both --checkpoint and --config. "

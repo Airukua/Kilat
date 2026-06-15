@@ -91,8 +91,8 @@ import yaml
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from configs.model_config import KilatConfig
-from arc.model import KilatTransformer
+from kilat.configs.model_config import KilatConfig
+from kilat.arc.model import KilatTransformer
 
 # Configure logging
 logging.basicConfig(

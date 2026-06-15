@@ -1,21 +1,7 @@
-"""
-Test generation with KilatTransformer using custom AutoTokenizer.
-
-This script demonstrates:
-1. Loading model from checkpoint with KilatTransformer.from_pretrained()
-2. Loading tokenizer from checkpoint with custom AutoTokenizer
-3. Testing forward pass
-4. Testing text generation with various strategies
-"""
-
-import sys
-from pathlib import Path
 import torch
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
-from arc.model import KilatTransformer
-from data.tokenizer import AutoTokenizer
-from pipeline.generation.generator import TextGenerator
+from kilat import KilatTransformer
+from kilat.data import AutoTokenizer
+from kilat import TextGenerator
 
 
 def main():
