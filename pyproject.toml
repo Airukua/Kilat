@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [
-    { name = "Abdul Wahid Rukua", email=rukuaabdulwahid@gmail.com },
+    { name = "Abdul Wahid Rukua", email = "rukuaabdulwahid@gmail.com" },
 ]
 dependencies = [
     "torch>=2.0",
@@ -32,14 +32,5 @@ reporting = [
 ]
 
 [tool.setuptools.packages.find]
-where = ["."]
-include = [
-    "arc*",
-    "configs*",
-    "data*",
-    "training*",
-    "utils*",
-    "pipeline*",
-    "generation*",
-    "distiliation*",
-]
+where = ["src"]
+include = ["kilat*"]
