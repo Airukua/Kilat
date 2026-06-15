@@ -141,7 +141,7 @@ To resume a run:
 training:
   resume_from_checkpoint: "./checkpoints/checkpoint-best"
 ```
-
+You can see the sample config on the folder sample_config/
 ---
 
 ## Architecture
