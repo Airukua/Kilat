@@ -688,3 +688,14 @@ class MainConfig:
             f"tokenizer={self.tokenizer.tokenizer_type}, "
             f"training={self.training.training_mode}{rope_status})"
         )
+    @classmethod
+    def from_yaml_string(cls, yaml_string: str) -> "MainConfig":
+        """Load MainConfig from a YAML string instead of a file."""
+        import tempfile, os
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_string)
+            tmp_path = f.name
+        try:
+            return cls.from_yaml(tmp_path)
+        finally:
+            os.unlink(tmp_path)
