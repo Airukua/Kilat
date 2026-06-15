@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="kilat",
-    version="0.1.0",
+    version="1.0.0",
     description="Kilat: kernelized lighweighted attention.",
     python_requires=">=3.10",
     install_requires=[
