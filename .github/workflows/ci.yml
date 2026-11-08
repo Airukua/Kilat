@@ -41,11 +41,15 @@ jobs:
 
       - name: Run Ruff linter
         run: |
-          ruff check src
+          ruff check src tests
 
       - name: Run Mypy type checker
         run: |
           mypy src
+
+      - name: Run Pre-commit validation
+        run: |
+          pre-commit run --all-files
 
   package-build:
     name: Package Build & Validation

@@ -185,7 +185,8 @@ def test_extended_logit_processors_and_builders():
                         NoRepeatNGramLogitsProcessor(no_repeat_ngram_size=0)
 
         with Given("PrefixConstrainedLogitsProcessor"):
-            allowed_fn = lambda batch_id, prefix: [3, 4]
+            def allowed_fn(batch_id, prefix):
+                return [3, 4]
             prefix_proc = PrefixConstrainedLogitsProcessor(prefix_allowed_tokens_fn=allowed_fn)
             scores = torch.zeros(1, 10)
             input_ids = torch.tensor([[1, 2]])

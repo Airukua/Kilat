@@ -1,10 +1,11 @@
-.PHONY: help install install-dev lint lint-fix format format-check type-check check test clean build
+.PHONY: help install install-dev lint lint-fix format format-check type-check check test clean build pre-commit pre-commit-install
 
 PYTHON ?= $(if $(wildcard .venv/bin/python),.venv/bin/python,python3)
 PIP ?= $(PYTHON) -m pip
 RUFF ?= $(PYTHON) -m ruff
 MYPY ?= $(PYTHON) -m mypy
 PYTEST ?= $(PYTHON) -m pytest
+PRE_COMMIT ?= $(PYTHON) -m pre_commit
 
 help: ## Show this help message
 	@echo "Kilat Development Makefile"
@@ -42,6 +43,12 @@ test: ## Run test suite if tests directory exists
 	else \
 		echo "No tests/ directory found. Skipping unit tests."; \
 	fi
+
+pre-commit: ## Run pre-commit hooks on all files
+	$(PRE_COMMIT) run --all-files
+
+pre-commit-install: ## Install pre-commit hooks into git repository
+	$(PRE_COMMIT) install
 
 clean: ## Clean build, distribution, bytecode, and cache files
 	rm -rf build/ dist/ *.egg-info/ .eggs/

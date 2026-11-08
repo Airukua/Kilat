@@ -133,7 +133,8 @@ def test_stopping_criteria_builders_and_convenience():
             input_ids = torch.tensor([[1, 2, 3]])
 
             with When("building criteria using get_stopping_criteria"):
-                custom_fn = lambda ids, scores=None: torch.tensor([False])
+                def custom_fn(ids, scores=None):
+                    return torch.tensor([False])
                 crit_list = get_stopping_criteria(
                     cfg,
                     input_ids,
