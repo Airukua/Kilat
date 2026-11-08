@@ -92,6 +92,7 @@ class DataLoaderConfig:
         synthetic_num_samples: int = 128,
         synthetic_eval_samples: int = 32,
         memmap_stride: Optional[int] = None,
+        allow_train_val_overlap: bool = False,
         
         # ---- Caching ----
         cache_dir: Optional[str] = None,
@@ -203,6 +204,7 @@ class DataLoaderConfig:
         self.synthetic_num_samples = synthetic_num_samples
         self.synthetic_eval_samples = synthetic_eval_samples
         self.memmap_stride = memmap_stride
+        self.allow_train_val_overlap = bool(allow_train_val_overlap)
         
         # Caching
         self.cache_dir = cache_dir

@@ -441,8 +441,12 @@ def _encode_record(
 ) -> list[int]:
     if isinstance(record, list):
         return [int(x) for x in record]
+    tok = (
+        tokenizer_obj
+        if (tokenizer_obj is not None and not isinstance(tokenizer_obj, str))
+        else _resolve_preprocess_tokenizer(tokenizer_obj)
+    )
     if isinstance(record, str):
-        tok = _resolve_preprocess_tokenizer(tokenizer_obj)
         encoded = tok.encode(record)  # type: ignore[attr-defined]
         return [int(x) for x in encoded]
     if isinstance(record, dict):
@@ -451,7 +455,6 @@ def _encode_record(
             if isinstance(val, list):
                 return [int(x) for x in val]
         if text_key in record and record[text_key] is not None:
-            tok = _resolve_preprocess_tokenizer(tokenizer_obj)
             encoded = tok.encode(str(record[text_key]))  # type: ignore[attr-defined]
             return [int(x) for x in encoded]
     raise KeyError(
@@ -490,6 +493,9 @@ def prepare_memmap_dataset(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     dtype_obj = np.dtype(dtype)
 
+    # Resolve tokenizer instance once upfront to avoid O(N) reload overhead
+    resolved_tokenizer = _resolve_preprocess_tokenizer(tokenizer) if tokenizer is not None else None
+
     # Fast native path for pre-tokenized Parquet -> .npy when no text tokenization needed
     if (
         out_path.suffix == ".npy"
@@ -519,7 +525,7 @@ def prepare_memmap_dataset(
                     for item in batch.column(0).to_pylist():
                         if item is None or item == "" or item == []:
                             continue
-                        ids = _encode_record({col: item}, key_name, text_key, tokenizer)
+                        ids = _encode_record({col: item}, key_name, text_key, resolved_tokenizer)
                         if ids:
                             token_chunks.append(np.asarray(ids, dtype=dtype_obj))
         elif in_path.suffix == ".jsonl":
@@ -529,7 +535,7 @@ def prepare_memmap_dataset(
                     if not stripped:
                         continue
                     obj = json.loads(stripped)
-                    ids = _encode_record(obj, key_name, text_key, tokenizer)
+                    ids = _encode_record(obj, key_name, text_key, resolved_tokenizer)
                     if ids:
                         token_chunks.append(np.asarray(ids, dtype=dtype_obj))
         elif in_path.suffix == ".json":
@@ -537,7 +543,7 @@ def prepare_memmap_dataset(
                 payload = json.load(f)
             records = payload if isinstance(payload, list) else [payload]
             for obj in records:
-                ids = _encode_record(obj, key_name, text_key, tokenizer)
+                ids = _encode_record(obj, key_name, text_key, resolved_tokenizer)
                 if ids:
                     token_chunks.append(np.asarray(ids, dtype=dtype_obj))
         else:

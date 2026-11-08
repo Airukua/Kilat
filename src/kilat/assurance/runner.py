@@ -114,6 +114,7 @@ def run_verification_pipeline(
     eval_dataloader: Optional[Iterable[Any]] = None,
     memmap_path: Optional[str] = None,
     memmap_dtype: str = "uint16",
+    allow_train_val_overlap: bool = False,
 ) -> AssuranceReport:
     """
     Execute Kilat's Layer-1 Pre-Flight Validation Pipeline (`kilat verify`).
@@ -177,6 +178,10 @@ def run_verification_pipeline(
         resolved_memmap_dtype = str(getattr(main_cfg.dataloader, "memmap_dtype", memmap_dtype))
 
     gate_results: list[GateResult] = []
+    allow_overlap = allow_train_val_overlap or bool(
+        getattr(getattr(main_cfg, "dataloader", None), "allow_train_val_overlap", False)
+    )
+
     pipeline_steps: list[tuple[str, Callable[[], GateResult]]] = [
         ("G1_THEORY_INIT", lambda: run_gate1_theory(model_cfg, model=target_model, weight_decay=wd)),
         ("G2_NUMERICAL_CAUSAL", lambda: run_gate2_numerical(model_cfg, model=target_model)),
@@ -187,6 +192,7 @@ def run_verification_pipeline(
                 train_dataloader=train_dataloader,  # type: ignore[arg-type]
                 vocab_size=int(model_cfg.vocab_size),
                 eval_dataloader=eval_dataloader,
+                allow_train_val_overlap=allow_overlap,
                 memmap_path=resolved_memmap_path,
                 memmap_dtype=resolved_memmap_dtype,
             ),

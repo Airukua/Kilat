@@ -18,6 +18,7 @@ ENV/
 .nox/
 
 # Token data files
+/data/
 data/tokens/
 data/tokens/**/*.parquet
 data/tokens/**/tokenizer/

@@ -59,6 +59,7 @@ def _cmd_verify(args: argparse.Namespace) -> int:
         keep_going=bool(args.keep_going),
         memmap_path=args.memmap_path,
         memmap_dtype=args.memmap_dtype,
+        allow_train_val_overlap=bool(getattr(args, "allow_train_val_overlap", False)),
     )
 
     if args.json:
@@ -327,6 +328,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default="uint16",
         help="NumPy dtype of --memmap-path (default: uint16)",
+    )
+    p_verify.add_argument(
+        "--allow-train-val-overlap",
+        action="store_true",
+        help="Permit train and validation 13-gram overlap (for natural corpora like TinyStories)",
     )
     p_verify.add_argument(
         "--set",
