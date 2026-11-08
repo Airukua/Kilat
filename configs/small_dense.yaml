@@ -31,7 +31,7 @@ model:
   rope_head_dim: 32
   rope_base: 10000.0
 
-  # Dense SwiGLU Feed-Forward
+  # Dense SwiGLU Feed-Forward (uses Gated SwiGLU; "dense" and "swiglu" are supported interchangeably)
   ffn_mode: swiglu
   ff_mult: 2.6666666667
   ffn_dropout: 0.0

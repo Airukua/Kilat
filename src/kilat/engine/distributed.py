@@ -89,6 +89,33 @@ class DistributedContext:
         return all_reduce_sum(tensor)
 
 
+def setup_distributed(backend: str | None = None) -> DistributedContext:
+    """
+    Initialize `torch.distributed` process group if `WORLD_SIZE` environment variable is > 1.
+
+    If already initialized, returns `DistributedContext.current()` immediately.
+    Default backend: 'nccl' if `torch.cuda.is_available()` else 'gloo'.
+    """
+    if is_distributed_initialized():
+        return DistributedContext.current()
+
+    world_size_env = os.environ.get("WORLD_SIZE")
+    if world_size_env is None or int(world_size_env) <= 1:
+        return DistributedContext.current()
+
+    if backend is None:
+        backend = "nccl" if torch.cuda.is_available() else "gloo"
+
+    dist.init_process_group(backend=backend)
+    return DistributedContext.current()
+
+
+def cleanup_distributed() -> None:
+    """Destroy `torch.distributed` process group if currently initialized."""
+    if is_distributed_initialized():
+        dist.destroy_process_group()
+
+
 __all__ = [
     "DistributedContext",
     "is_distributed_initialized",
@@ -99,4 +126,6 @@ __all__ = [
     "is_main_process",
     "barrier",
     "all_reduce_sum",
+    "setup_distributed",
+    "cleanup_distributed",
 ]

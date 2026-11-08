@@ -82,7 +82,7 @@ class KilatConfig(BaseConfig):
         rope_head_dim: Optional[int] = None,
         rope_base: float = 10000.0,
         # ---- Feed-forward configuration ----
-        ffn_mode: Literal["dense", "moe"] = "moe",
+        ffn_mode: Literal["dense", "moe", "swiglu"] = "moe",
         ff_mult: float = 8 / 3,
         ffn_dropout: float = 0.0,
         # ---- MoE configuration ----

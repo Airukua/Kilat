@@ -30,6 +30,13 @@ from kilat.data.dataloader import build_dataloaders_from_config
 from kilat.data.preprocess import prepare_memmap_dataset
 from kilat.data.tokenizer import AutoTokenizer, ByteLevelDebugTokenizer
 from kilat.engine.checkpoint import set_seed, write_checkpoint_manifest
+from kilat.engine.distributed import (
+    cleanup_distributed,
+    get_local_rank,
+    is_distributed_initialized,
+    is_main_process,
+    setup_distributed,
+)
 from kilat.engine.trainer import KilatTrainer
 from kilat.inference.export_hf import convert_checkpoint_to_hf
 from kilat.inference.generator import TextGenerator
@@ -104,63 +111,80 @@ def _enrich_checkpoint_metadata(ckpt_dir: Path, cfg: MainConfig) -> None:
 
 
 def _cmd_train(args: argparse.Namespace) -> int:
-    print_kilat_banner(version=CLI_VERSION, quiet=bool(args.quiet))
-    cfg = MainConfig.from_yaml(args.config)
-    if args.set:
-        cfg.apply_overrides(args.set)
+    setup_distributed()
+    try:
+        is_main = is_main_process()
+        print_kilat_banner(version=CLI_VERSION, quiet=bool(args.quiet or not is_main))
+        cfg = MainConfig.from_yaml(args.config)
+        if args.set:
+            cfg.apply_overrides(args.set)
 
-    set_seed(int(cfg.training.seed))
-    train_loader, eval_loader = build_dataloaders_from_config(cfg)
-    model = KilatTransformer(cfg.model)
+        if is_distributed_initialized() and torch.cuda.is_available():
+            device = torch.device(f"cuda:{get_local_rank()}")
+            torch.cuda.set_device(device)
+        elif torch.cuda.is_available():
+            device = torch.device("cuda")
+        else:
+            device = torch.device("cpu")
 
-    if not args.skip_preflight:
-        g1 = run_gate1_theory(
-            model_config=cfg.model,
-            model=model,
-            weight_decay=float(cfg.training.weight_decay),
-        )
-        if g1.status != "PASS":
-            sys.stderr.write(
-                f"[KILAT PREFLIGHT FAILED] {g1.failure_code}: {g1.failure_message}\n"
-            )
-            return 1
-        if not args.quiet:
-            print(f"Preflight Gate 1 PASS ({g1.duration_ms / 1000.0:.3f}s)")
-        # Re-seed so model & dataloader state starts cleanly after preflight probe
         set_seed(int(cfg.training.seed))
         train_loader, eval_loader = build_dataloaders_from_config(cfg)
         model = KilatTransformer(cfg.model)
 
-    try:
-        tokenizer: Any = cfg.tokenizer.build()
-    except Exception:
-        tokenizer = ByteLevelDebugTokenizer(vocab_size=int(cfg.model.vocab_size))
+        if not args.skip_preflight:
+            g1 = run_gate1_theory(
+                model_config=cfg.model,
+                model=model,
+                weight_decay=float(cfg.training.weight_decay),
+            )
+            if g1.status != "PASS":
+                if is_main:
+                    sys.stderr.write(
+                        f"[KILAT PREFLIGHT FAILED] {g1.failure_code}: {g1.failure_message}\n"
+                    )
+                return 1
+            if not args.quiet and is_main:
+                print(f"Preflight Gate 1 PASS ({g1.duration_ms / 1000.0:.3f}s)")
+            # Re-seed so model & dataloader state starts cleanly after preflight probe
+            set_seed(int(cfg.training.seed))
+            train_loader, eval_loader = build_dataloaders_from_config(cfg)
+            model = KilatTransformer(cfg.model)
 
-    train_args = cfg.to_training_arguments()
-    flight_recorder = FlightRecorderCallback(output_dir=train_args.output_dir)
+        model = model.to(device)
 
-    trainer = KilatTrainer(
-        model=model,
-        args=train_args,
-        train_dataloader=train_loader,
-        eval_dataloader=eval_loader,
-        tokenizer=tokenizer,
-        callbacks=[flight_recorder],
-    )
-    state = trainer.train()
+        try:
+            tokenizer: Any = cfg.tokenizer.build()
+        except Exception:
+            tokenizer = ByteLevelDebugTokenizer(vocab_size=int(cfg.model.vocab_size))
 
-    out_root = Path(train_args.output_dir)
-    if out_root.is_dir():
-        cfg.to_yaml(out_root / "config.yaml")
-        for ckpt_sub in sorted(out_root.glob("checkpoint-*")):
-            _enrich_checkpoint_metadata(ckpt_sub, cfg)
+        train_args = cfg.to_training_arguments()
+        flight_recorder = FlightRecorderCallback(output_dir=train_args.output_dir)
 
-    if not args.quiet:
-        print(
-            f"Training finished at step {state.global_step} "
-            f"(checkpoints in '{train_args.output_dir}')."
+        trainer = KilatTrainer(
+            model=model,
+            args=train_args,
+            train_dataloader=train_loader,
+            eval_dataloader=eval_loader,
+            tokenizer=tokenizer,
+            callbacks=[flight_recorder],
         )
-    return 0
+        state = trainer.train()
+
+        if is_main:
+            out_root = Path(train_args.output_dir)
+            if out_root.is_dir():
+                cfg.to_yaml(out_root / "config.yaml")
+                for ckpt_sub in sorted(out_root.glob("checkpoint-*")):
+                    _enrich_checkpoint_metadata(ckpt_sub, cfg)
+
+            if not args.quiet:
+                print(
+                    f"Training finished at step {state.global_step} "
+                    f"(checkpoints in '{train_args.output_dir}')."
+                )
+        return 0
+    finally:
+        cleanup_distributed()
 
 
 def _cmd_prepare_data(args: argparse.Namespace) -> int:
@@ -306,9 +330,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_verify.add_argument(
         "--set",
+        "--override",
+        dest="set",
         action="append",
         default=[],
-        help="Dot-notation config override (e.g. --set training.learning_rate=1e-4)",
+        help="Dot-notation config override (e.g. --override training.learning_rate=1e-4)",
     )
     p_verify.add_argument("-q", "--quiet", action="store_true", help="Suppress banner and progress")
     p_verify.add_argument("--json", action="store_true", help="Emit JSON report to stdout")
@@ -345,9 +371,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_train.add_argument(
         "--set",
+        "--override",
+        dest="set",
         action="append",
         default=[],
-        help="Dot-notation config override (repeatable, e.g. --set training.max_steps=20)",
+        help="Dot-notation config override (repeatable, e.g. --override training.max_steps=20)",
     )
     p_train.add_argument(
         "--skip-preflight",

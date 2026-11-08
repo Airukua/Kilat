@@ -274,6 +274,23 @@ class KilatTrainer:
         # Reproducibility – set all random seeds early
         self._set_seed(args.seed)
 
+        # Distributed Data Parallel wrapping
+        if is_distributed_initialized() and not isinstance(self.model, nn.parallel.DistributedDataParallel):
+            if self.device.type == "cuda":
+                dev_idx = (
+                    self.device.index
+                    if self.device.index is not None
+                    else (torch.cuda.current_device() if torch.cuda.is_available() else 0)
+                )
+                device_ids = [dev_idx]
+            else:
+                device_ids = None
+            self.model = nn.parallel.DistributedDataParallel(
+                self.model,
+                device_ids=device_ids,
+                find_unused_parameters=True,
+            )
+
         # Mixed precision setup
         self.amp_dtype: Optional[torch.dtype] = resolve_amp_dtype(args.precision)
         self.scaler: Optional[torch.amp.GradScaler] = (

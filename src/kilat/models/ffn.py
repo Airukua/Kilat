@@ -299,7 +299,7 @@ class FeedForward(nn.Module):
     def __init__(
         self,
         dim: Optional[int] = None,
-        mode: Literal["dense", "moe"] = "moe",
+        mode: Literal["dense", "moe", "swiglu"] = "moe",
         ff_mult: float = 8 / 3,
         dropout: float = 0.0,
         num_experts: int = 64,
@@ -330,6 +330,8 @@ class FeedForward(nn.Module):
         if dim is None:
             raise ValueError("FeedForward requires either `dim` or `config` to be provided.")
         validate_positive_int("dim", dim)
+        if mode == "swiglu":
+            mode = "dense"
         validate_choice("mode", mode, ("dense", "moe"))
         validate_probability("dropout", dropout)
         self.mode = mode

@@ -107,7 +107,7 @@ kilat prepare-data \
 kilat train --config configs/small_moe.yaml
 
 # Multi-GPU Distributed Data Parallel (DDP)
-torchrun --nproc_per_node=8 -m kilat.cli train --config configs/standard_moe.yaml
+torchrun --nproc_per_node=2 -m kilat.cli train --config configs/small_moe.yaml
 ```
 
 ---
@@ -176,8 +176,8 @@ Kilat uses a single validated YAML file (`MainConfig`) as its source of truth ac
 | :--- | :--- | :--- | :--- |
 | [`configs/debug_cpu.yaml`](configs/debug_cpu.yaml) | Any CPU / Laptop (`< 5s`) | 2L Hybrid MLA/Decay + 4-expert MoE (`d=64`) | `synthetic` (offline byte tokenizer) |
 | [`configs/small_dense.yaml`](configs/small_dense.yaml) | 1x GPU (`8–16 GB VRAM`) | 12L Dense SwiGLU + Hybrid MLA/Decay + RoPE (`d=768`) | `memmap` (`.npy` / `.bin`) |
-| [`configs/small_moe.yaml`](configs/small_moe.yaml) | 1x GPU (`6–16 GB VRAM`) | 10L DeepSeekMoE (8 experts, Top-2, 1 shared, `bias_free`) | `memmap` (`.npy` / `.bin`) |
-| [`configs/standard_moe.yaml`](configs/standard_moe.yaml) | 4x–8x GPU DDP (`BF16`) | 24L DeepSeekMoE (64 experts, Top-8, 2 shared, `d=2048`) | `memmap` + sequence packing |
+| [`configs/small_moe.yaml`](configs/small_moe.yaml) | 1x GPU (`8–16 GB VRAM`) | 10L DeepSeekMoE (8 experts, Top-2, 1 shared, `bias_free`) | `memmap` (`.npy` / `.bin`) |
+| [`configs/standard_moe.yaml`](configs/standard_moe.yaml) | Multi-Node FSDP / EP (`BF16`) | 24L DeepSeekMoE (64 experts, Top-8, 2 shared, 54.2B params, FSDP recipe target) | `memmap` + sequence packing |
 
 To resume interrupted training with **exact bitwise state & RNG parity**, set:
 

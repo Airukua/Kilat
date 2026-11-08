@@ -1,17 +1,19 @@
 # ==============================================================================
-# Kilat Tier-3 Config: Standard Multi-GPU DDP DeepSeekMoE (`standard_moe.yaml`)
+# Kilat Tier-3 Config: Standard Large DeepSeekMoE Architecture (`standard_moe.yaml`)
 # ==============================================================================
-# Purpose : Multi-GPU DDP pre-training with 64 routed experts (Top-8 active),
-#           2 shared experts, Hybrid Global Decay + Latent MLA, and Decoupled RoPE.
-# Hardware: Multi-GPU node (e.g. 4x–8x A100 / H100 with BF16).
+# Purpose : Research-scale 54.2B parameter DeepSeekMoE architecture with 64 routed
+#           experts (Top-8 active), 2 shared experts, Hybrid Global Decay + Latent MLA.
+# Note    : At 54.2B parameters (~108 GB BF16 weights, ~432 GB FP32 AdamW states),
+#           this preset is a target for future FSDP / Expert Parallelism (EP).
+# Hardware: Multi-Node cluster with FSDP / EP (e.g. 16x–64x A100 / H100 80GB).
 # Usage   :
-#   torchrun --nproc_per_node=8 -m kilat.cli train --config configs/standard_moe.yaml
+#   kilat verify --config configs/standard_moe.yaml
 # ==============================================================================
 
 experiment:
   name: kilat-standard-moe
-  description: Multi-GPU DDP 64-expert DeepSeekMoE with Hybrid Global Decay + Latent MLA
-  tags: ["tier-3", "moe", "ddp", "deepseek-moe", "mla", "rope", "wsdlr"]
+  description: Large-scale 54.2B DeepSeekMoE with Hybrid Global Decay + Latent MLA (FSDP target)
+  tags: ["tier-3", "moe", "fsdp-target", "deepseek-moe", "mla", "rope", "wsdlr"]
 
 model:
   vocab_size: 50257

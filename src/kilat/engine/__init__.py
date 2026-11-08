@@ -38,12 +38,14 @@ from kilat.engine.distributed import (
     DistributedContext,
     all_reduce_sum,
     barrier,
+    cleanup_distributed,
     get_global_rank,
     get_local_rank,
     get_world_size,
     is_distributed,
     is_distributed_initialized,
     is_main_process,
+    setup_distributed,
 )
 from kilat.engine.integrations import (
     DEFAULT_CALLBACKS,
@@ -92,6 +94,8 @@ __all__ = [
     "is_main_process",
     "barrier",
     "all_reduce_sum",
+    "setup_distributed",
+    "cleanup_distributed",
     "TrainerState",
     "TrainerControl",
     "TrainerCallback",

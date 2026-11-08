@@ -1,7 +1,7 @@
 # ==============================================================================
 # Kilat Tier-2 Config: Small DeepSeekMoE Hybrid Transformer (`small_moe.yaml`)
 # ==============================================================================
-# Purpose : Single-GPU (6GB–16GB VRAM) sparse Mixture-of-Experts with Shared Expert
+# Purpose : Single-GPU (8GB–16GB VRAM) sparse Mixture-of-Experts with Shared Expert
 #           and DeepSeek-V3 loss-free dynamic router bias (`bias_free`).
 # Usage   :
 #   kilat verify --config configs/small_moe.yaml
