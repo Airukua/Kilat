@@ -1,0 +1,39 @@
+---
+description: Kilat ML Training Engineering Rules and Modular Skills Integration
+globs: ["src/**/*.py", "tests/**/*.py", "configs/**/*.yaml", "sample_config/**/*.yaml"]
+alwaysApply: true
+---
+
+# Kilat ML Training Engineering Standard (Cursor Rules)
+
+> See full specification in `AGENTS.md` and domain skills in `.agents/skills/core/`.
+
+## Mandatory Engineering Principles
+- **Silent Failures are Dangerous**: Never assume training code works just because it runs without raising an exception. Validate gradients, loss convergence, RNG determinism, and data distributions.
+- **Backend Code Preservation**: Never modify, delete, or refactor backend code in `src/` without establishing mathematical verification via unit/integration tests in `tests/`.
+
+## The 6 Core Skills Reference
+1. **PyTorch Training** (`.agents/skills/core/pytorch-training/SKILL.md`):
+   - Strict step ordering: `optimizer.step()` before `scheduler.step()`.
+   - Scaler lifecycle: unscale -> clip_grad_norm -> scaler.step -> scaler.update -> scheduler.step.
+   - Accumulation: loss scaled by accumulation steps, `zero_grad(set_to_none=True)` on accumulation step only.
+2. **ML Data Engineering** (`.agents/skills/core/ml-data-engineering/SKILL.md`):
+   - Strict causal target shifting: `labels = input_ids[1:]`, loss masked on pads with `-100`.
+   - Hardware-aware pin_memory: `pin_memory = torch.cuda.is_available()`.
+3. **Training Configuration** (`.agents/skills/core/training-configuration/SKILL.md`):
+   - Precedence: CLI > YAML > Dataclass defaults.
+   - Structural divisibility: `dim % num_heads == 0`, `num_heads % num_kv_heads == 0`.
+4. **Checkpointing & Reproducibility** (`.agents/skills/core/checkpoint-reproducibility/SKILL.md`):
+   - Atomic saving (write to temp file, then rename).
+   - Full RNG state persistence (python, numpy, torch, cuda).
+5. **ML Testing & Verification** (`.agents/skills/core/ml-testing/SKILL.md`):
+   - Overfit-one-batch smoke test, gradient existence assertion, BDD output formatting.
+6. **GPU Performance** (`.agents/skills/core/gpu-performance/SKILL.md`):
+   - VRAM decomposition, activation checkpointing (`use_reentrant=False`), throughput (tokens/sec, MFU).
+
+## Commands to Validate
+```bash
+make check       # Ruff + Mypy (0 issues)
+make test        # 110+ BDD tests, 80% coverage, 0 warnings
+make pre-commit  # All pre-commit hooks pass
+```

@@ -1,0 +1,16 @@
+# Windsurf AI Rules — Kilat ML Training Engineering
+
+Adhere to the repository-wide standard defined in `AGENTS.md` and domain skills in `.agents/skills/core/`.
+
+1. Core Philosophy:
+   - ML training errors are often silent (gradient issues, data leakage, broken RNGs, optimizer-scheduler step inversion).
+   - Numerical proof is required for any ML change: shape invariants, non-zero gradient checks, overfit-one-batch verification.
+2. Invariants:
+   - Optimization: `optimizer.step()` before `scheduler.step()`.
+   - Accumulation: Zero gradients with `set_to_none=True` on accumulation boundaries only.
+   - Data: Causal shifting (`labels = input_ids[1:]`), pad tokens masked with `-100`.
+   - Hardware: `pin_memory = torch.cuda.is_available()`.
+   - Checkpoints: Atomic file writes with full RNG state persistence (python, numpy, torch, cuda).
+3. Verification:
+   - `make check`: 0 ruff errors, 0 mypy issues.
+   - `make test`: BDD output, >= 80% coverage, 0 warnings.

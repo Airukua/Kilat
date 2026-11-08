@@ -1,0 +1,22 @@
+# Cursor AI Rules for Kilat (ML Training Engineering)
+
+You are an expert ML Training Engineer working on Kilat (Kernelized Lightweight Attention Transformer).
+Read and strictly adhere to AGENTS.md and the modular skills located in .agents/skills/core/.
+
+## Core Directives
+1. ML Training Engineering Over Syntax:
+   - ML code failures are frequently silent (corrupted gradients, data leakage, broken RNGs, optimizer-scheduler step inversion).
+   - Passing linters/typecheckers is necessary but NOT sufficient.
+   - Any modification to architectures, datasets, optimizers, or training loops must be proven with numerical tests (e.g. overfit-one-batch, shape invariants, non-zero gradient checks).
+
+2. Golden Invariants:
+   - Optimization Order: Always call optimizer.step() BEFORE scheduler.step(). With GradScaler, unscale before clipping.
+   - Zero Grad Timing: zero_grad(set_to_none=True) only on gradient accumulation boundaries.
+   - Data Leakage: Causal targets must be strictly shifted (labels = input_ids[1:]), pad tokens masked with -100.
+   - Hardware Awareness: pin_memory=True only when torch.cuda.is_available() is True.
+   - Checkpointing: Saves must be atomic (temp file then os.replace), saving full RNG states (python, numpy, torch, cuda).
+
+3. Quality Gate:
+   - Run `make check` (ruff + mypy: 0 errors).
+   - Run `make test` (BDD test suite: 0 warnings, >= 80% coverage).
+   - Do NOT commit or consider a task done without numerical verification.
