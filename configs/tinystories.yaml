@@ -35,9 +35,9 @@ model:
 
   embd_drop: 0.0
   resid_drop: 0.0
-  pad_token_id: 0
-  bos_token_id: 1
-  eos_token_id: 2
+  pad_token_id: 50256
+  bos_token_id: 50256
+  eos_token_id: 50256
   tie_word_embeddings: true
   use_cache: true
   initializer_range: 0.02

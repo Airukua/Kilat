@@ -225,6 +225,8 @@ def _cmd_generate(args: argparse.Namespace) -> int:
     model = KilatTransformer.from_pretrained(str(ckpt_dir))
     try:
         tokenizer = AutoTokenizer.from_pretrained(str(ckpt_dir), local_files_only=True)
+        if getattr(tokenizer, "eos_token_id", None) is None and getattr(model.config, "eos_token_id", None) is not None:
+            tokenizer.eos_token_id = int(model.config.eos_token_id)
     except Exception:
         tokenizer = ByteLevelDebugTokenizer(vocab_size=int(model.config.vocab_size))
 
@@ -236,6 +238,7 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         temperature=float(args.temperature),
         top_k=int(args.top_k),
         top_p=float(args.top_p),
+        repetition_penalty=float(getattr(args, "repetition_penalty", 1.0)),
     )
 
     if args.json:
@@ -429,6 +432,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_gen.add_argument("--temperature", type=float, default=1.0, help="Sampling temperature")
     p_gen.add_argument("--top-k", type=int, default=50, help="Top-k sampling filter")
     p_gen.add_argument("--top-p", type=float, default=1.0, help="Top-p nucleus filter")
+    p_gen.add_argument(
+        "--repetition-penalty",
+        type=float,
+        default=1.0,
+        help="Repetition penalty parameter (1.0 = no penalty)",
+    )
     p_gen.add_argument("--do-sample", action="store_true", help="Enable stochastic sampling")
     p_gen.add_argument("--device", type=str, default="auto", help="Device ('auto', 'cpu', 'cuda')")
     p_gen.add_argument("-q", "--quiet", action="store_true", help="Suppress banner")
