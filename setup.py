@@ -22,6 +22,13 @@ setup(
             "mlflow>=2.10",
             "comet_ml>=3.45",
         ],
+        "dev": [
+            "ruff>=0.4.0",
+            "mypy>=1.10.0",
+            "pytest>=8.0.0",
+            "types-PyYAML>=6.0",
+            "types-tqdm>=4.66",
+        ],
     },
     package_dir={"": "src"},
     packages=find_packages("src"),

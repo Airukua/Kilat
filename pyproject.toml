@@ -30,7 +30,109 @@ reporting = [
     "mlflow>=2.10",
     "comet_ml>=3.45",
 ]
+dev = [
+    "ruff>=0.4.0",
+    "mypy>=1.10.0",
+    "pytest>=8.0.0",
+    "types-PyYAML>=6.0",
+    "types-tqdm>=4.66",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["kilat*"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+exclude = [
+    ".git",
+    ".venv",
+    "venv",
+    "build",
+    "dist",
+    "experiments",
+    "__pycache__",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+]
+ignore = [
+    "E501",  # line length (handled by formatter or relaxed for ML/math docstrings)
+    "E401",  # multiple imports on one line
+    "E741",  # ambiguous variable name
+    "F401",  # unused imports (preserved for re-exports and module stubs)
+    "F841",  # unused variables
+    "F811",  # redefinition of unused import
+    "F541",  # f-string without placeholders
+]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401", "F403"]
+"src/kilat/pipeline/converter/convert_to_hf.py" = ["E402"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["kilat"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"
+
+[tool.mypy]
+python_version = "3.10"
+mypy_path = "src"
+packages = ["kilat"]
+ignore_missing_imports = true
+follow_imports = "silent"
+warn_redundant_casts = true
+warn_unused_ignores = false
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+check_untyped_defs = false
+no_implicit_optional = false
+show_error_codes = true
+disable_error_code = [
+    "var-annotated",
+    "attr-defined",
+    "assignment",
+    "operator",
+    "arg-type",
+    "index",
+    "union-attr",
+    "return-value",
+    "misc",
+    "list-item",
+]
+exclude = [
+    "^experiments/",
+    "^build/",
+    "^dist/",
+    "^\\.venv/",
+]
+
+[[tool.mypy.overrides]]
+module = [
+    "torch.*",
+    "triton.*",
+    "transformers.*",
+    "pyarrow.*",
+    "safetensors.*",
+    "wandb.*",
+    "mlflow.*",
+    "comet_ml.*",
+    "tensorboard.*",
+]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+addopts = "-s -q"
+filterwarnings = [
+    "ignore::UserWarning:torch.utils.data.dataloader",
+    "ignore:.*pin_memory.*:UserWarning",
+    "ignore:.*Tokenizer vocabulary could not be resolved.*:UserWarning",
+    "ignore:.*KilatDataset is deprecated.*:DeprecationWarning",
+]
