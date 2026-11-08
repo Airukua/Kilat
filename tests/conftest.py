@@ -20,7 +20,7 @@ from tests.shared.helpers.ascii_logo import get_kilat_banner  # noqa: E402
 def pytest_sessionstart(session):
     """Display the KILAT Claude-style ASCII logo at the start of the test run."""
     # Write directly to terminal stdout
-    sys.stdout.write(get_kilat_banner(version="1.0.0") + "\n\n")
+    sys.stdout.write(get_kilat_banner(version="2.0.0") + "\n\n")
     sys.stdout.flush()
 
 

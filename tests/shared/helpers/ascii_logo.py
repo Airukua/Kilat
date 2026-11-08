@@ -2,7 +2,7 @@
 ASCII Logo banner for KILAT, inspired by modern Claude/Anthropic terminal aesthetic.
 """
 
-def get_kilat_banner(version: str = "1.0.0") -> str:
+def get_kilat_banner(version: str = "2.0.0") -> str:
     # ANSI escape sequences for vibrant styling
     AMBER = "\033[38;2;245;158;11m"
     ORANGE = "\033[38;2;234;88;12m"
@@ -28,7 +28,7 @@ def get_kilat_banner(version: str = "1.0.0") -> str:
     return banner
 
 
-def print_kilat_banner(version: str = "1.0.0") -> None:
+def print_kilat_banner(version: str = "2.0.0") -> None:
     print(get_kilat_banner(version))
 
 

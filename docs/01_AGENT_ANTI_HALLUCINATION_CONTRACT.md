@@ -1,4 +1,4 @@
-# 01 — Agent Anti-Hallucination Contract & Ground-Truth Codebase Map (`v1.0.0`)
+# 01 — Agent Anti-Hallucination Contract & Ground-Truth Codebase Map (`v2.0.0`)
 
 > **Document Purpose**: Eliminate false assumptions and hallucination traps when modifying Kilat's PyTorch/LLM codebase.  
 > **Hard Rule**: Before editing any file in `src/` or `tests/`, every agent **must** verify file paths, class hierarchies, method signatures, and tensor contracts against this ground-truth map.
@@ -11,7 +11,7 @@ All legacy directories (`arc/`, `training/`, `pipeline/`, `distiliation/`, `samp
 
 | Canonical File Path | Primary Classes / Functions | Critical Ground-Truth Notes |
 | :--- | :--- | :--- |
-| `src/kilat/__init__.py` | `KilatTransformer`, `MainConfig`, `KilatConfig`, `KilatTrainer`, `TrainingArguments`, `DistributedContext`, `PretrainingDataset`, `build_train_dataloader`, `build_eval_dataloader`, `build_dataloaders_from_config`, `KilatDataCollator`, `GenerationConfig`, `TextGenerator` | Top-level public API (`__version__ = "1.0.0"`). |
+| `src/kilat/__init__.py` | `KilatTransformer`, `MainConfig`, `KilatConfig`, `KilatTrainer`, `TrainingArguments`, `DistributedContext`, `PretrainingDataset`, `build_train_dataloader`, `build_eval_dataloader`, `build_dataloaders_from_config`, `KilatDataCollator`, `GenerationConfig`, `TextGenerator` | Top-level public API (`__version__ = "2.0.0"`). |
 | `src/kilat/cli.py` | `main`, `build_parser` (`verify`, `chaos`, `train`, `prepare-data`, `generate`, `export-hf`) | Unified console script (`kilat = "kilat.cli:main"`). |
 | `src/kilat/models/transformer.py` | `KilatTransformer(BaseModel, GenerationMixin)`, `KilatModelOutput` | Computes internal causal shift on `logits[:, :-1, :]` and `labels[:, 1:]`; separates `ce_loss` from `aux_loss` in `model._last_loss_breakdown`; scales residual projections by $1/\sqrt{2L}$. |
 | `src/kilat/models/blocks.py` | `RMSNorm(nn.Module)`, `Block(nn.Module)` | `RMSNorm` upcasts variance to `float32` (preserving `float64` for `gradcheck`); `Block` accepts a full `config: KilatConfig` (or legacy kwargs). |

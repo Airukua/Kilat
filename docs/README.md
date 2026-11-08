@@ -1,6 +1,6 @@
-# Kilat Engineering, Mathematical Assurance, & Architecture Documentation (`v1.0.0`)
+# Kilat Engineering, Mathematical Assurance, & Architecture Documentation (`v2.0.0`)
 
-> **Status**: Production Architecture & Verification Reference (`v1.0.0`)  
+> **Status**: Production Architecture & Verification Reference (`v2.0.0`)  
 > **Target Architecture**: Kernelized Lightweight Attention Transformer (`Kilat`) — Hybrid Global Decay + Latent MLA + Decoupled RoPE + DeepSeekMoE  
 > **Design Paradigms**: `pytorch/torchtitan`, `facebookresearch/lingua`, `Lightning-AI/litgpt`, `allenai/OLMo-core`, `deepseek-ai/DeepSeek-V3`, Google DeepMind `Paxml`/`MaxText`
 
@@ -21,7 +21,7 @@ This `docs/` suite serves as the **Single Source of Truth** for both human resea
 
 | Document | Core Scope & Responsibility | Related Agent Skills (`.agents/skills/core/`) |
 | :--- | :--- | :--- |
-| [`01_AGENT_ANTI_HALLUCINATION_CONTRACT.md`](./01_AGENT_ANTI_HALLUCINATION_CONTRACT.md) | Ground-truth `src/kilat/` module inventory (`v1.0.0`), non-`@dataclass` serialization rules, 12 forbidden agent hallucinations, and canonical public API contracts. | All 7 Core Skills |
+| [`01_AGENT_ANTI_HALLUCINATION_CONTRACT.md`](./01_AGENT_ANTI_HALLUCINATION_CONTRACT.md) | Ground-truth `src/kilat/` module inventory (`v2.0.0`), non-`@dataclass` serialization rules, 12 forbidden agent hallucinations, and canonical public API contracts. | All 7 Core Skills |
 | [`02_MATHEMATICAL_SPEC_AND_BUGFIX_PLAN.md`](./02_MATHEMATICAL_SPEC_AND_BUGFIX_PLAN.md) | Exact mathematical derivations, IEEE-754 FP16/BF16/FP32/FP64 precision bounds, and analytical backward equations (`M-01` .. `M-07`). | `pytorch-training`, `gpu-performance`, `assurance-chaos-engineering` |
 | [`03_CODEBASE_RESTRUCTURE_PLAN.md`](./03_CODEBASE_RESTRUCTURE_PLAN.md) | Clean modular architecture (`models/`, `engine/`, `data/`, `inference/`, `distillation/`, `assurance/`, `configs/`, `utils/`, `cli.py`), single-source config & CLI overrides, zero-copy memmap pipeline, and DDP/checkpoint hardening. | `training-configuration`, `ml-data-engineering`, `checkpoint-reproducibility` |
 | [`04_ASSURANCE_AND_CHAOS_ENGINEERING_PLAN.md`](./04_ASSURANCE_AND_CHAOS_ENGINEERING_PLAN.md) | **3-Layer Assurance Architecture**: `kilat verify` (Gates 1–6 & Stages 7–8), `kilat chaos` (`Saboteur` `C-01`–`C-08`), `FlightRecorderCallback`, and `assurance_report.{json,md}`. | `assurance-chaos-engineering`, `ml-testing` |
@@ -30,7 +30,7 @@ This `docs/` suite serves as the **Single Source of Truth** for both human resea
 
 ---
 
-## 3. Clean Repository Layout (`v1.0.0`)
+## 3. Clean Repository Layout (`v2.0.0`)
 
 ```text
 Kilat/
@@ -42,7 +42,7 @@ Kilat/
 │   └── standard_moe.yaml              # Tier-3: Multi-GPU DDP 64-expert DeepSeekMoE
 ├── docs/                              # Architecture, Mathematical, & Assurance Specifications
 ├── src/kilat/
-│   ├── __init__.py                    # Top-level public API exports (__version__ = "1.0.0")
+│   ├── __init__.py                    # Top-level public API exports (__version__ = "2.0.0")
 │   ├── cli.py                         # Unified CLI: verify, chaos, train, prepare-data, generate, export-hf
 │   ├── configs/                       # Validated configuration containers (MainConfig, KilatConfig, etc.)
 │   ├── models/                        # Pure architecture primitives (KilatTransformer, Block, MLA, MoE, RoPE, Triton)

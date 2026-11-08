@@ -181,7 +181,7 @@ Setiap eksekusi `kilat verify` menulis berkas JSON terstruktur dan ringkasan Mar
 ```json
 {
   "schema_version": "1.0",
-  "kilat_version": "1.0.0",
+  "kilat_version": "2.0.0",
   "timestamp_utc": "2026-11-09T00:00:00Z",
   "git_commit": "<sha>",
   "config_sha256": "<sha256>",

@@ -43,7 +43,7 @@ from kilat.inference.generator import TextGenerator
 from kilat.models.transformer import KilatTransformer
 from kilat.utils.banner import print_kilat_banner
 
-CLI_VERSION = "1.0.0"
+CLI_VERSION = "2.0.0"
 
 
 def _cmd_verify(args: argparse.Namespace) -> int:

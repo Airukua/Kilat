@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-def get_kilat_banner(version: str = "1.0.0") -> str:
+def get_kilat_banner(version: str = "2.0.0") -> str:
     """Return the styled KILAT terminal banner string."""
     amber = "\033[38;2;245;158;11m"
     orange = "\033[38;2;234;88;12m"
@@ -29,7 +29,7 @@ def get_kilat_banner(version: str = "1.0.0") -> str:
     )
 
 
-def print_kilat_banner(version: str = "1.0.0", quiet: bool = False) -> None:
+def print_kilat_banner(version: str = "2.0.0", quiet: bool = False) -> None:
     """Print the KILAT banner unless ``quiet=True``."""
     if not quiet:
         print(get_kilat_banner(version=version))

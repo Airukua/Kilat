@@ -1,4 +1,4 @@
-# 03 — Modular Codebase Architecture, Configuration System, Data Pipeline, & CLI Reference (`v1.0.0`)
+# 03 — Modular Codebase Architecture, Configuration System, Data Pipeline, & CLI Reference (`v2.0.0`)
 
 > **Document Purpose**: Reference specification for Kilat's modular package layout, single-source-of-truth configuration system, zero-copy memory-mapped data pipeline, DDP & atomic SHA-256 checkpointing, and unified `kilat` CLI.
 
@@ -27,7 +27,7 @@ Kilat/
 │   ├── small_moe.yaml                 # Tier-2: Single-GPU DeepSeekMoE (bias_free) + Hybrid MLA
 │   └── standard_moe.yaml              # Tier-3: Multi-GPU DDP 64-expert DeepSeekMoE
 ├── src/kilat/
-│   ├── __init__.py                    # Top-level exports (__version__ = "1.0.0")
+│   ├── __init__.py                    # Top-level exports (__version__ = "2.0.0")
 │   ├── cli.py                         # Unified CLI: `kilat <subcommand>`
 │   ├── configs/
 │   │   ├── base.py                    # YAML load/dump helpers

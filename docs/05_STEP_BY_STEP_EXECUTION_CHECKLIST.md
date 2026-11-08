@@ -1,4 +1,4 @@
-# 05 — Verification Protocol & Release Readiness Checklist (`v1.0.0`)
+# 05 — Verification Protocol & Release Readiness Checklist (`v2.0.0`)
 
 > **Document Purpose**: Atomic engineering checklist and mandatory numerical acceptance gates for every modification, PR, or pre-training launch in Kilat.
 
@@ -18,7 +18,7 @@ Every code or configuration change in Kilat must pass all 5 gates sequentially b
 
 ---
 
-## 2. Completed Master Architecture & Assurance Milestones (`v1.0.0`)
+## 2. Completed Master Architecture & Assurance Milestones (`v2.0.0`)
 
 - [x] **Phase 0 — Baseline Audit & Anti-Hallucination Lock**: Verified baseline test suite, configuration contracts, and tensor invariants.
 - [x] **Phase 1 — Mathematical Surgery (`M-01` .. `M-07`)**:
