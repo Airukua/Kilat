@@ -16,7 +16,8 @@ Read and strictly adhere to AGENTS.md and the modular skills located in .agents/
    - Hardware Awareness: pin_memory=True only when torch.cuda.is_available() is True.
    - Checkpointing: Saves must be atomic (temp file then os.replace), saving full RNG states (python, numpy, torch, cuda).
 
-3. Quality Gate:
+3. Quality Gate & Anti-Hallucination Blueprint:
+   - Before editing any file in `src/` or `tests/`, read `docs/01_AGENT_ANTI_HALLUCINATION_CONTRACT.md` through `docs/05_STEP_BY_STEP_EXECUTION_CHECKLIST.md` and `.agents/skills/core/assurance-chaos-engineering/SKILL.md`.
    - Run `make check` (ruff + mypy: 0 errors).
    - Run `make test` (BDD test suite: 0 warnings, >= 80% coverage).
    - Do NOT commit or consider a task done without numerical verification.

@@ -11,6 +11,7 @@ Adhere to the repository-wide standard defined in `AGENTS.md` and domain skills 
    - Data: Causal shifting (`labels = input_ids[1:]`), pad tokens masked with `-100`.
    - Hardware: `pin_memory = torch.cuda.is_available()`.
    - Checkpoints: Atomic file writes with full RNG state persistence (python, numpy, torch, cuda).
-3. Verification:
+3. Verification & Anti-Hallucination Contract:
+   - Read `docs/01_AGENT_ANTI_HALLUCINATION_CONTRACT.md` through `docs/05_STEP_BY_STEP_EXECUTION_CHECKLIST.md` and `.agents/skills/core/assurance-chaos-engineering/SKILL.md` before modifying code.
    - `make check`: 0 ruff errors, 0 mypy issues.
    - `make test`: BDD output, >= 80% coverage, 0 warnings.

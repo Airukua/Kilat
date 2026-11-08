@@ -5,6 +5,8 @@ description: Machine Learning Data Pipeline Engineering for Kilat. Covers datase
 
 # ML Data Engineering Skill
 
+> **Mandatory Spec Reference**: Consult `docs/01_AGENT_ANTI_HALLUCINATION_CONTRACT.md` and `docs/03_CODEBASE_RESTRUCTURE_PLAN.md` before modifying datasets or collators. Remember that `KilatTransformer.forward` shifts targets internally (`logits[:, :-1]`, `labels[:, 1:]`), so valid token counts must be computed on `labels[:, 1:] != -100`, and `KilatDataCollator` must not pre-shift labels twice.
+
 ## 1. When to Activate This Skill
 Activate this skill whenever the task involves:
 - Dataset loaders (`PretrainingDataset`, `StreamingDataset`, `KilatDataset`).

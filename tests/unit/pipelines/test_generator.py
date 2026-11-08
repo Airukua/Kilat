@@ -6,9 +6,9 @@ Follows BDD standards from UNIT_TESTING_STRUCTURE.md.
 import pytest
 import torch
 
-from kilat.arc.model import KilatTransformer
+from kilat.models.transformer import KilatTransformer
 from kilat.configs.model_config import KilatConfig
-from kilat.pipeline.generation.generator import (
+from kilat.inference.generator import (
     TextGenerator,
     batch_generate,
     quick_generate,

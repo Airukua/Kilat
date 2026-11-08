@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 import torch
 
-from kilat.pipeline.converter.convert_to_hf import (
+from kilat.inference.export_hf import (
     WeightFileNotFoundError,
     _clean_state_dict,
     convert_checkpoint_to_hf,
@@ -18,7 +18,7 @@ from kilat.pipeline.converter.convert_to_hf import (
     save_tokenizer_config,
     validate_model,
 )
-from kilat.arc.model import KilatTransformer
+from kilat.models.transformer import KilatTransformer
 from kilat.configs.model_config import KilatConfig
 from tests.shared.bdd import Scenario, Given, When, Then, And
 
@@ -155,7 +155,7 @@ def test_convert_checkpoint_with_custom_config_and_tokenizer():
 
 def test_converter_config_and_weight_priorities():
     import json
-    from kilat.pipeline.converter.convert_to_hf import ConversionError, ValidationError
+    from kilat.inference.export_hf import ConversionError, ValidationError
 
     with Scenario("Unit: HF Converter Config and Weight Priority Escalation"):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -207,7 +207,7 @@ def test_converter_config_and_weight_priorities():
                     invalid_ts_dir.mkdir()
                     torch.save({"model_state_dict": {"unexpected.key": torch.zeros(1)}}, invalid_ts_dir / "training_state.pt")
                     with Then("WeightLoadingError is raised"):
-                        from kilat.pipeline.converter.convert_to_hf import WeightLoadingError
+                        from kilat.inference.export_hf import WeightLoadingError
                         with pytest.raises(WeightLoadingError):
                             load_model_weights(model, invalid_ts_dir, device="cpu", strict=True)
 

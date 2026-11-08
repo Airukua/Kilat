@@ -17,7 +17,9 @@ logger = logging.getLogger(__name__)
 
 def is_distributed() -> bool:
     """Return True if torch.distributed is available and initialised."""
-    return dist.is_available() and dist.is_initialized()
+    from kilat.engine.distributed import is_distributed_initialized
+
+    return is_distributed_initialized()
 
 
 def get_world_size() -> int:
@@ -27,7 +29,9 @@ def get_world_size() -> int:
     WHY: Used to configure DistributedSampler and to scale batch sizes etc.
     In DDP, world_size is the number of GPUs.
     """
-    return dist.get_world_size() if is_distributed() else 1
+    from kilat.engine.distributed import get_world_size as _engine_get_world_size
+
+    return _engine_get_world_size()
 
 
 def get_rank() -> int:
@@ -37,7 +41,9 @@ def get_rank() -> int:
     WHY: Rank 0 is typically used for logging, saving checkpoints, and acting
     as the master process in distributed training.
     """
-    return dist.get_rank() if is_distributed() else 0
+    from kilat.engine.distributed import get_global_rank
+
+    return get_global_rank()
 
 
 # ---------------------------------------------------------------------------
@@ -159,9 +165,11 @@ def build_dataloader(
                 sampler = SequentialSampler(dataset)
             shuffle = False
 
-    # Worker init function for reproducibility across processes.
-    def _worker_init_fn(wid: int) -> None:
-        worker_init_fn(wid, base_seed=seed)
+    # Top-level picklable worker init function for reproducibility across spawn/fork processes.
+    seeded_worker_init = _SeededWorkerInit(seed)
+
+    # Golden Invariant #5: Only enable page-locked memory when CUDA accelerator is present
+    effective_pin_memory = bool(pin_memory and torch.cuda.is_available())
 
     dataloader = DataLoader(
         dataset,
@@ -170,9 +178,9 @@ def build_dataloader(
         sampler=sampler,
         collate_fn=collate_fn,
         num_workers=num_workers,
-        pin_memory=pin_memory,
+        pin_memory=effective_pin_memory,
         drop_last=drop_last,
-        worker_init_fn=_worker_init_fn if num_workers > 0 else None,
+        worker_init_fn=seeded_worker_init if num_workers > 0 else None,
         prefetch_factor=prefetch_factor if num_workers > 0 else None,
         persistent_workers=persistent_workers if num_workers > 0 else False,
         **kwargs,
@@ -189,9 +197,14 @@ def build_dataloader(
     return dataloader
 
 
-# ---------------------------------------------------------------------------
-# Convenience wrappers for training and evaluation
-# ---------------------------------------------------------------------------
+class _SeededWorkerInit:
+    """Top-level picklable worker seeding callable (safe under Python `spawn` / `forkserver`)."""
+
+    def __init__(self, base_seed: int) -> None:
+        self.base_seed = int(base_seed)
+
+    def __call__(self, worker_id: int) -> None:
+        worker_init_fn(worker_id, base_seed=self.base_seed)
 
 def build_train_dataloader(
     dataset: Dataset,
@@ -395,7 +408,7 @@ def set_dataloader_epoch(dataloader: DataLoader, epoch: int) -> None:
             for batch in train_loader:
                 ...
     """
-    sampler = dataloader.sampler
+    sampler = getattr(dataloader, "sampler", None)
     if sampler is not None and hasattr(sampler, "set_epoch"):
         sampler.set_epoch(epoch)
     # Some DataLoaders use a batch_sampler instead (e.g., when using
@@ -403,3 +416,98 @@ def set_dataloader_epoch(dataloader: DataLoader, epoch: int) -> None:
     batch_sampler = getattr(dataloader, "batch_sampler", None)
     if batch_sampler is not None and hasattr(batch_sampler, "set_epoch"):
         batch_sampler.set_epoch(epoch)
+
+
+def build_dataloaders_from_config(
+    main_config: Any,
+) -> tuple[DataLoader, Optional[DataLoader]]:
+    """
+    Build ``(train_dataloader, eval_dataloader)`` directly from a ``MainConfig``.
+    Supports ``dataset_format="synthetic"`` for zero-dependency offline execution
+    as well as ``parquet``, ``memmap``, and ``jsonl`` corpora.
+    """
+    from .dataset import PackedDataset, PretrainingDataset, SyntheticTokenDataset
+
+    dl_cfg = main_config.dataloader
+    model_cfg = main_config.model
+    train_cfg = main_config.training
+
+    collator = KilatDataCollator(
+        pad_token_id=model_cfg.pad_token_id,
+        max_length=dl_cfg.max_seq_length,
+    )
+
+    if dl_cfg.dataset_format == "synthetic":
+        train_ds: Dataset = SyntheticTokenDataset(
+            vocab_size=model_cfg.vocab_size,
+            seq_len=dl_cfg.max_seq_length,
+            num_samples=dl_cfg.synthetic_num_samples,
+            pad_token_id=model_cfg.pad_token_id,
+            seed=train_cfg.seed,
+        )
+        eval_ds: Optional[Dataset] = SyntheticTokenDataset(
+            vocab_size=model_cfg.vocab_size,
+            seq_len=dl_cfg.max_seq_length,
+            num_samples=dl_cfg.synthetic_eval_samples,
+            pad_token_id=model_cfg.pad_token_id,
+            seed=train_cfg.seed + 10_007,  # Disjoint seed guarantees zero train/val leakage
+        )
+    else:
+        if not dl_cfg.train_data_path:
+            raise ValueError(
+                "dataloader.train_data_path must be specified when dataset_format != 'synthetic'."
+            )
+        train_ds = PretrainingDataset(
+            source=dl_cfg.train_data_path,
+            chunk_size=dl_cfg.max_seq_length,
+            memmap_stride=dl_cfg.memmap_stride,
+            return_tensors=True,
+        )
+        if dl_cfg.use_packing:
+            train_ds = PackedDataset(
+                train_ds,
+                block_size=dl_cfg.packed_block_size or dl_cfg.max_seq_length,
+                eos_token_id=model_cfg.eos_token_id,
+                pad_token_id=model_cfg.pad_token_id,
+                drop_last=dl_cfg.drop_last,
+            )
+
+        if dl_cfg.eval_data_path:
+            eval_ds = PretrainingDataset(
+                source=dl_cfg.eval_data_path,
+                chunk_size=dl_cfg.max_seq_length,
+                memmap_stride=dl_cfg.memmap_stride,
+                return_tensors=True,
+            )
+        else:
+            eval_ds = None
+
+    train_loader = build_train_dataloader(
+        dataset=train_ds,
+        batch_size=dl_cfg.train_batch_size,
+        collate_fn=collator,
+        num_workers=dl_cfg.num_workers,
+        pin_memory=dl_cfg.pin_memory,
+        prefetch_factor=dl_cfg.prefetch_factor,
+        drop_last=dl_cfg.drop_last,
+        persistent_workers=dl_cfg.persistent_workers,
+        seed=train_cfg.seed,
+        use_distributed_sampler=dl_cfg.use_distributed_sampler,
+    )
+
+    eval_loader: Optional[DataLoader] = None
+    if eval_ds is not None:
+        eval_loader = build_eval_dataloader(
+            dataset=eval_ds,
+            batch_size=dl_cfg.eval_batch_size,
+            collate_fn=collator,
+            num_workers=dl_cfg.num_workers,
+            pin_memory=dl_cfg.pin_memory,
+            prefetch_factor=dl_cfg.prefetch_factor,
+            drop_last=False,
+            persistent_workers=dl_cfg.persistent_workers,
+            seed=train_cfg.seed,
+            use_distributed_sampler=dl_cfg.use_distributed_sampler,
+        )
+
+    return train_loader, eval_loader

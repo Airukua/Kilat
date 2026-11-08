@@ -1,0 +1,121 @@
+# ==============================================================================
+# Kilat Tier-0 Config: Offline CPU Debug & Pre-Flight Assurance (`debug_cpu.yaml`)
+# ==============================================================================
+# Purpose : Instant (< 5s) CPU smoke test, 8-stage `kilat verify`, and onboarding.
+# Hardware: Any CPU or single GPU (no internet, no external dataset required).
+# Usage   :
+#   kilat verify --config configs/debug_cpu.yaml --full
+#   kilat train  --config configs/debug_cpu.yaml
+# ==============================================================================
+
+experiment:
+  name: kilat-debug-cpu
+  description: Deterministic CPU smoke, assurance verification, and onboarding config
+  tags: ["tier-0", "debug", "cpu", "synthetic", "hybrid-moe"]
+
+model:
+  # Core dimensions (n_embd must be divisible by n_head; head_dim = 64 / 4 = 16)
+  vocab_size: 256
+  n_embd: 64
+  n_layer: 2
+  n_head: 4
+  max_position_embeddings: 256
+
+  # Hybrid Attention: 0.0 = pure O(N) Global Decay | 1.0 = pure Latent MLA | 0.5 = 50/50 split
+  recall_ratio: 0.5
+  latent_dim: 32          # Low-rank KV compression dimension for MLA heads
+  attn_drop: 0.0
+
+  # Decoupled Rotary Positional Embeddings (applied to MLA recall path)
+  use_rope: true
+  rope_head_dim: 16
+  rope_base: 10000.0
+
+  # Feed-Forward Network: "dense" | "swiglu" | "moe"
+  ffn_mode: moe
+  ff_mult: 2.6666666667
+  ffn_dropout: 0.0
+  num_experts: 4
+  active_experts: 2
+  num_shared_experts: 1
+  fine_grained_factor: 1
+  aux_loss_coef: 0.01
+  device_balance_coef: 0.0
+  router_balance_mode: aux_loss   # "aux_loss" (DeepSeek-V2) | "bias_free" (DeepSeek-V3)
+  bias_update_speed: 0.001
+
+  # Regularization & weight tying
+  embd_drop: 0.0
+  resid_drop: 0.0
+  pad_token_id: 0
+  bos_token_id: 1
+  eos_token_id: 2
+  tie_word_embeddings: true
+  use_cache: false
+  initializer_range: 0.02
+  debug_nan_checks: false
+
+tokenizer:
+  # Offline byte-level deterministic tokenizer (zero Hugging Face Hub network calls)
+  tokenizer_type: custom
+  tokenizer_name_or_path: byte-debug
+  local_files_only: true
+  custom_builder: kilat.data.tokenizer:build_byte_tokenizer
+  custom_kwargs:
+    vocab_size: 256
+    pad_token_id: 0
+    bos_token_id: 1
+    eos_token_id: 2
+
+dataloader:
+  dataset_format: synthetic       # "synthetic" | "memmap" | "parquet" | "jsonl"
+  synthetic_num_samples: 64
+  synthetic_eval_samples: 16
+  train_data_path: null
+  eval_data_path: null
+  train_batch_size: 4
+  eval_batch_size: 4
+  max_seq_length: 32
+  truncation: right
+  use_packing: false
+  packed_block_size: null
+  num_workers: 0
+  pin_memory: false               # Automatically guarded when CUDA is unavailable
+  prefetch_factor: 2
+  persistent_workers: false
+  drop_last: true
+  use_distributed_sampler: false
+  distributed_shuffle: false
+  cache_dir: null
+  prefetch_batches: 2
+
+training:
+  output_dir: ./checkpoints/debug_cpu
+  resume_from_checkpoint: null
+  save_checkpoints: true
+  atomic_checkpoint: true         # Writes temp dir + SHA-256 manifest before atomic rename
+  training_mode: steps            # "steps" | "epochs"
+  max_steps: 10
+  num_train_epochs: 1
+  warmup_steps: 2
+  learning_rate: 3.0e-4
+  beta1: 0.9
+  beta2: 0.95
+  epsilon: 1.0e-8
+  weight_decay: 0.01              # Strictly excluded on 1D norms, biases, and decay logits
+  gradient_accumulation_steps: 1
+  max_grad_norm: 1.0
+  scheduler_type: cosine          # "cosine" | "cosine_with_min_lr" | "wsdlr" | "linear" | "constant"
+  scheduler_kwargs: {}
+  precision: fp32                 # "fp32" | "fp16" | "bf16"
+  logging_steps: 5
+  eval_steps: 5
+  save_steps: 5
+  save_total_limit: 2
+  early_stopping_patience: null
+  early_stopping_threshold: 0.0
+  metric_for_best_model: eval_loss
+  greater_is_better: null
+  report_to: "none"               # "none" | "wandb" | "tensorboard" | "mlflow" | "comet_ml" | "all"
+  run_name: kilat-debug-cpu
+  seed: 42

@@ -1,10 +1,13 @@
 from __future__ import annotations
 from pathlib import Path
-from typing import Literal, Optional, Union
+from typing import TYPE_CHECKING, Literal, Optional, Union
 import warnings
 import torch
 import yaml
 from .base import dump_yaml_file, load_yaml_file
+
+if TYPE_CHECKING:
+    from kilat.engine.args import TrainingArguments
 
 
 class TrainingConfig:
@@ -412,6 +415,12 @@ class TrainingConfig:
             Effective batch size.
         """
         return self.per_device_train_batch_size * self.gradient_accumulation_steps
+
+    def to_training_arguments(self) -> TrainingArguments:
+        """Convert persistent TrainingConfig into runtime TrainingArguments."""
+        from kilat.engine.args import TrainingArguments
+
+        return TrainingArguments.from_dict(self.to_dict())
 
     def __repr__(self) -> str:
         """Human-readable representation for debugging."""

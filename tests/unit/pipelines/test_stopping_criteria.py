@@ -7,7 +7,7 @@ import time
 import pytest
 import torch
 
-from kilat.pipeline.generation.stoping_criteria import (
+from kilat.inference.stopping_criteria import (
     CompositeCriteria,
     CustomCriteria,
     EndStringCriteria,
@@ -117,8 +117,8 @@ def test_end_string_stopping_criteria():
 
 
 def test_stopping_criteria_builders_and_convenience():
-    from kilat.pipeline.generation.generation_config import GenerationConfig
-    from kilat.pipeline.generation.stoping_criteria import (
+    from kilat.inference.generation_config import GenerationConfig
+    from kilat.inference.stopping_criteria import (
         get_stopping_criteria,
         should_stop,
     )

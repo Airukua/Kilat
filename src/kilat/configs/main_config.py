@@ -1,6 +1,6 @@
 from __future__ import annotations
 from pathlib import Path
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Sequence
 import yaml
 from .base import dump_yaml_file, load_yaml_file
 from .dataloader_config import DataLoaderConfig
@@ -296,6 +296,21 @@ class MainConfig:
         """Whether to tie embeddings (delegated from model)."""
         return self.model.tie_word_embeddings
 
+    @property
+    def router_balance_mode(self) -> str:
+        """Router load-balancing mode (delegated from model)."""
+        return self.model.router_balance_mode
+
+    @property
+    def z_loss_coef(self) -> float:
+        """PaLM logit z-loss coefficient (delegated from model)."""
+        return self.model.z_loss_coef
+
+    @property
+    def debug_nan_checks(self) -> bool:
+        """Synchronous forward NaN checks flag (delegated from model)."""
+        return self.model.debug_nan_checks
+
     # ========== Delegation properties for dataloader ==========
     @property
     def train_batch_size(self) -> int:
@@ -544,26 +559,48 @@ class MainConfig:
         return self.training.seed
 
     # ========== Serialisation / I/O methods ==========
-    def to_yaml(self, path: str | Path) -> str:
-        """
-        Export complete configuration to a single YAML file.
-
-        Includes a header comment with experiment metadata for quick identification.
-        """
-        config_dict = {
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize complete experiment configuration into a plain dictionary."""
+        config_dict: dict[str, Any] = {
             "experiment": {
                 "name": self.experiment_name,
                 "description": self.description,
-                "tags": self.tags,
+                "tags": list(self.tags),
             },
             "model": self.model.to_dict(),
             "tokenizer": self.tokenizer.to_dict(),
             "dataloader": self.dataloader.to_dict(),
             "training": self.training.to_dict(),
         }
-        # Remove HuggingFace internal metadata (runtime artifacts)
         config_dict["model"].pop("transformers_version", None)
         config_dict["model"].pop("model_type", None)
+        return config_dict
+
+    @classmethod
+    def from_dict(cls, config_dict: dict[str, Any]) -> "MainConfig":
+        """Reconstruct a ``MainConfig`` from a dictionary produced by :meth:`to_dict`."""
+        experiment = config_dict.get("experiment", {})
+        model_config = KilatConfig.from_dict(config_dict.get("model", {}))
+        tokenizer_config = TokenizerConfig.from_dict(config_dict.get("tokenizer", {}))
+        dataloader_config = DataLoaderConfig.from_dict(config_dict.get("dataloader", {}))
+        training_config = TrainingConfig.from_dict(config_dict.get("training", {}))
+        return cls(
+            model=model_config,
+            tokenizer=tokenizer_config,
+            training=training_config,
+            dataloader=dataloader_config,
+            experiment_name=experiment.get("name", "kilat-experiment"),
+            description=experiment.get("description", ""),
+            tags=experiment.get("tags", []),
+        )
+
+    def to_yaml(self, path: str | Path) -> str:
+        """
+        Export complete configuration to a single YAML file.
+
+        Includes a header comment with experiment metadata for quick identification.
+        """
+        config_dict = self.to_dict()
 
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -609,8 +646,9 @@ class MainConfig:
 
         model_config = KilatConfig(**config_dict["model"])
         tokenizer_config = TokenizerConfig(**config_dict["tokenizer"])
-        tokenizer_config.warn_if_vocab_mismatch(model_config.vocab_size)
         dataloader_config = DataLoaderConfig(**config_dict["dataloader"])
+        if dataloader_config.dataset_format != "synthetic":
+            tokenizer_config.warn_if_vocab_mismatch(model_config.vocab_size)
         training_config = TrainingConfig(**config_dict["training"])
 
         return cls(
@@ -651,6 +689,85 @@ class MainConfig:
     def build_model(self) -> KilatConfig:
         """Return model configuration."""
         return self.model
+
+    def to_training_arguments(self) -> Any:
+        """Convert training section into runtime TrainingArguments."""
+        return self.training.to_training_arguments()
+
+    def apply_overrides(self, overrides: Sequence[str]) -> "MainConfig":
+        """
+        Apply validated dot-notation CLI overrides (e.g. ``training.learning_rate=3e-4``)
+        and re-validate affected configuration sections in-place.
+
+        Raises
+        ------
+        ValueError
+            If an override string does not match ``section.key=value``.
+        KeyError
+            If ``section`` or ``key`` does not exist in the configuration schema.
+        """
+        if not overrides:
+            return self
+
+        sections: dict[str, dict[str, Any]] = {
+            "experiment": {
+                "name": self.experiment_name,
+                "description": self.description,
+                "tags": list(self.tags),
+            },
+            "model": self.model.to_dict(),
+            "tokenizer": self.tokenizer.to_dict(),
+            "dataloader": self.dataloader.to_dict(),
+            "training": self.training.to_dict(),
+        }
+        sections["model"].pop("transformers_version", None)
+        sections["model"].pop("model_type", None)
+
+        # Allow optional fields on TokenizerConfig
+        valid_tokenizer_keys = {
+            "tokenizer_type",
+            "tokenizer_name_or_path",
+            "tokenizer_model_path",
+            "use_fast",
+            "local_files_only",
+            "custom_builder",
+            "custom_module",
+            "custom_class",
+            "custom_kwargs",
+        }
+
+        for item in overrides:
+            if "=" not in item:
+                raise ValueError(f"Invalid override '{item}': expected 'section.key=value'.")
+            lhs, raw_val = item.split("=", 1)
+            lhs = lhs.strip()
+            if "." not in lhs:
+                raise ValueError(f"Invalid override key '{lhs}': expected 'section.key=value'.")
+            section, key = lhs.split(".", 1)
+            if section not in sections:
+                raise KeyError(
+                    f"Unknown configuration section '{section}' in override '{item}'. "
+                    f"Valid sections: {sorted(sections.keys())}."
+                )
+            sec_dict = sections[section]
+            is_valid_key = (
+                key in valid_tokenizer_keys
+                if section == "tokenizer"
+                else (key in sec_dict or hasattr(getattr(self, section, None), key))
+            )
+            if not is_valid_key:
+                raise KeyError(f"Unknown configuration key '{section}.{key}' in override '{item}'.")
+            parsed_val = yaml.safe_load(raw_val)
+            sec_dict[key] = parsed_val
+
+        self.model = KilatConfig(**sections["model"])
+        self.tokenizer = TokenizerConfig(**sections["tokenizer"])
+        self.dataloader = DataLoaderConfig(**sections["dataloader"])
+        self.training = TrainingConfig(**sections["training"])
+        self.experiment_name = str(sections["experiment"]["name"])
+        self.description = str(sections["experiment"]["description"])
+        self.tags = list(sections["experiment"]["tags"] or [])
+        return self
 
     @classmethod
     def from_main_config(cls, main_config: "MainConfig") -> "KilatConfig":

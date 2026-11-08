@@ -10,7 +10,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from kilat.pipeline.converter.to_memmap import (
+from kilat.data.preprocess import (
     _discover_parquet_files,
     _count_tokens_parquet,
     parquet_to_memmap,

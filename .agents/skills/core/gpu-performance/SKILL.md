@@ -5,6 +5,8 @@ description: GPU Memory & Throughput Performance Engineering for Kilat. Covers C
 
 # GPU Performance Engineering Skill
 
+> **Mandatory Spec Reference**: Consult `docs/01_AGENT_ANTI_HALLUCINATION_CONTRACT.md` and `docs/02_MATHEMATICAL_SPEC_AND_BUGFIX_PLAN.md` (specifically M-01 for CUDA `@triton.jit` autograd wrapping via `torch.autograd.Function` and M-07 for removing synchronous `.all()`/`.any()`/`.item()` CUDA stream stalls from `nn.Module.forward()`).
+
 ## 1. When to Activate This Skill
 Activate this skill whenever the task involves:
 - Diagnosing CUDA Out of Memory (OOM) errors.

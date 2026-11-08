@@ -186,9 +186,15 @@ class PretrainingDataset(Dataset):
         key_name: str = "input_ids",
         chunk_size: int = 1024,
         dtype: np.dtype = np.int32,
+        memmap_stride: Optional[int] = None,
+        return_tensors: bool = False,
     ) -> None:
         self.key_name = key_name
         self.chunk_size = chunk_size
+        self.memmap_stride = memmap_stride if memmap_stride is not None else chunk_size
+        if self.memmap_stride < 1:
+            raise ValueError(f"memmap_stride must be >= 1, got {self.memmap_stride}")
+        self.return_tensors = return_tensors
 
         self._backend: str          # "memmap" | "parquet" | "memory"
         self._memmap_files: Optional[List[np.ndarray]] = None  # NEW: list of memmap arrays
@@ -283,7 +289,11 @@ class PretrainingDataset(Dataset):
             self._memmap_cumsum.append(total_tokens)
         
         self._total_tokens = total_tokens
-        self._length = total_tokens // self.chunk_size
+        self._length = (
+            ((total_tokens - self.chunk_size) // self.memmap_stride) + 1
+            if total_tokens >= self.chunk_size
+            else 0
+        )
         self._backend = "multifile_memmap"
         
         if self._length == 0:
@@ -317,7 +327,11 @@ class PretrainingDataset(Dataset):
         self._single_memmap = np.load(path, mmap_mode="r") if path.endswith(".npy") else \
                               np.memmap(path, dtype=dtype, mode="r")
         total_tokens = len(self._single_memmap)
-        self._length = total_tokens // self.chunk_size
+        self._length = (
+            ((total_tokens - self.chunk_size) // self.memmap_stride) + 1
+            if total_tokens >= self.chunk_size
+            else 0
+        )
         self._backend = "memmap"
         if self._length == 0:
             raise ValueError(
@@ -428,26 +442,47 @@ class PretrainingDataset(Dataset):
     def __len__(self) -> int:
         return self._length
 
-    def __getitem__(self, idx: int) -> Dict[str, List[int]]:
+    def __getitem__(self, idx: int) -> Dict[str, Any]:
         if idx < 0 or idx >= self._length:
             raise IndexError(f"Index {idx} out of range [0, {self._length - 1}].")
 
         if self._backend == "multifile_memmap":
-            start = idx * self.chunk_size
-            token_ids = self._get_tokens_from_multifile(start, start + self.chunk_size)
+            start = idx * self.memmap_stride
+            if self.return_tensors and self._memmap_cumsum is not None and self._memmap_files is not None:
+                import bisect
+
+                file_idx = bisect.bisect_right(self._memmap_cumsum, start)
+                prev_cumsum = self._memmap_cumsum[file_idx - 1] if file_idx > 0 else 0
+                offset = start - prev_cumsum
+                mmap = self._memmap_files[file_idx]
+                if offset + self.chunk_size <= len(mmap):
+                    arr = np.asarray(mmap[offset : offset + self.chunk_size], dtype=np.int64)
+                    return {self.key_name: torch.from_numpy(arr.copy())}
+            token_ids: Any = self._get_tokens_from_multifile(start, start + self.chunk_size)
 
         elif self._backend == "memmap":
-            start = idx * self.chunk_size
-            token_ids = self._single_memmap[start:start + self.chunk_size].tolist()
+            assert self._single_memmap is not None
+            start = idx * self.memmap_stride
+            if self.return_tensors:
+                arr = np.asarray(self._single_memmap[start : start + self.chunk_size], dtype=np.int64)
+                return {self.key_name: torch.from_numpy(arr.copy())}
+            token_ids = self._single_memmap[start : start + self.chunk_size].tolist()
 
         elif self._backend == "parquet":
+            assert self._table is not None
             token_ids = self._table.column(self.key_name)[idx].as_py()
 
         else:  # memory
+            assert self._samples is not None
             if self._memory_is_dicts:
                 token_ids = self._samples[idx][self.key_name]
             else:
                 token_ids = self._samples[idx]
+
+        if self.return_tensors:
+            if isinstance(token_ids, torch.Tensor):
+                return {self.key_name: token_ids.to(dtype=torch.long)}
+            return {self.key_name: torch.tensor(_to_list(token_ids, idx), dtype=torch.long)}
 
         return {self.key_name: _to_list(token_ids, idx)}
 
@@ -1091,3 +1126,57 @@ class KilatDataset(PretrainingDataset):
                 "Use StreamingDataset(source, chunk_size=...) instead."
             )
         super().__init__(source=file_or_data, key_name=key_name)
+
+
+# ---------------------------------------------------------------------------
+# 5. SyntheticTokenDataset (deterministic offline pre-training & verification)
+# ---------------------------------------------------------------------------
+
+class SyntheticTokenDataset(Dataset):
+    """
+    Deterministic in-memory synthetic token dataset for offline smoke runs,
+    ``configs/debug_cpu.yaml``, and ``kilat verify`` assurance gates.
+
+    Uses an isolated ``torch.Generator`` so global RNG states are never perturbed
+    during dataset construction, and excludes ``pad_token_id`` so every position
+    represents a valid causal language-modeling token.
+    """
+
+    def __init__(
+        self,
+        vocab_size: int = 256,
+        seq_len: int = 64,
+        num_samples: int = 128,
+        pad_token_id: int = 0,
+        seed: int = 42,
+        key_name: str = "input_ids",
+    ) -> None:
+        if vocab_size < 4:
+            raise ValueError(f"vocab_size must be >= 4, got {vocab_size}")
+        if seq_len < 2:
+            raise ValueError(f"seq_len must be >= 2, got {seq_len}")
+        if num_samples < 1:
+            raise ValueError(f"num_samples must be >= 1, got {num_samples}")
+
+        self.vocab_size = vocab_size
+        self.seq_len = seq_len
+        self.num_samples = num_samples
+        self.pad_token_id = pad_token_id
+        self.seed = seed
+        self.key_name = key_name
+
+        gen = torch.Generator(device="cpu")
+        gen.manual_seed(seed)
+        # Sample uniformly from valid non-pad tokens in [0, vocab_size - 1]
+        raw = torch.randint(0, vocab_size - 1, (num_samples, seq_len), generator=gen, dtype=torch.long)
+        if 0 <= pad_token_id < vocab_size:
+            raw = torch.where(raw >= pad_token_id, raw + 1, raw)
+        self._data = raw
+
+    def __len__(self) -> int:
+        return self.num_samples
+
+    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+        if idx < 0 or idx >= self.num_samples:
+            raise IndexError(f"Index {idx} out of range [0, {self.num_samples - 1}].")
+        return {self.key_name: self._data[idx]}

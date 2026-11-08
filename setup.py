@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 setup(
     name="kilat",
     version="1.0.0",
-    description="Kilat: kernelized lighweighted attention.",
+    description="Kilat: kernelized lightweight attention.",
     python_requires=">=3.10",
     install_requires=[
         "torch>=2.0",
@@ -33,5 +33,10 @@ setup(
     },
     package_dir={"": "src"},
     packages=find_packages("src"),
+    entry_points={
+        "console_scripts": [
+            "kilat=kilat.cli:main",
+        ],
+    },
     include_package_data=True,
 )

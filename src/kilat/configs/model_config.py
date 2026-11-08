@@ -92,9 +92,12 @@ class KilatConfig(BaseConfig):
         fine_grained_factor: int = 1,
         aux_loss_coef: float = 0.01,
         device_balance_coef: float = 0.001,
-        # ---- Regularisation ----
+        router_balance_mode: Literal["aux_loss", "bias_free"] = "aux_loss",
+        # ---- Regularisation & Stability ----
         embd_drop: float = 0.0,
         resid_drop: float = 0.0,
+        z_loss_coef: float = 0.0,
+        debug_nan_checks: bool = False,
         # ---- HF boilerplate ----
         pad_token_id: int = 0,
         bos_token_id: int = 1,
@@ -151,10 +154,13 @@ class KilatConfig(BaseConfig):
         self.fine_grained_factor = fine_grained_factor
         self.aux_loss_coef = aux_loss_coef
         self.device_balance_coef = device_balance_coef
+        self.router_balance_mode = router_balance_mode
 
-        # Regularisation
+        # Regularisation & Stability
         self.embd_drop = embd_drop
         self.resid_drop = resid_drop
+        self.z_loss_coef = z_loss_coef
+        self.debug_nan_checks = debug_nan_checks
 
         # Other
         self.use_cache = use_cache
@@ -219,6 +225,16 @@ class KilatConfig(BaseConfig):
                 raise ValueError(
                     f"num_experts must be ≥ 1 in MoE mode, got {self.num_experts}."
                 )
+            if self.fine_grained_factor < 1:
+                raise ValueError(
+                    f"fine_grained_factor must be ≥ 1, got {self.fine_grained_factor}."
+                )
+        if self.router_balance_mode not in ("aux_loss", "bias_free"):
+            raise ValueError(
+                f"router_balance_mode must be 'aux_loss' or 'bias_free', got {self.router_balance_mode!r}."
+            )
+        if self.z_loss_coef < 0.0:
+            raise ValueError(f"z_loss_coef must be >= 0.0, got {self.z_loss_coef}.")
 
         # Recall ratio bounds (hybrid attention split)
         if not 0 <= self.recall_ratio <= 1:

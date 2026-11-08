@@ -5,6 +5,8 @@ description: ML Testing & Invariant Verification Engineering for Kilat. Covers t
 
 # ML Testing & Verification Skill
 
+> **Mandatory Spec Reference**: Read `docs/01_AGENT_ANTI_HALLUCINATION_CONTRACT.md` and `docs/04_ASSURANCE_AND_CHAOS_ENGINEERING_PLAN.md` before writing tests. Note that CPU-only unit tests execute `_cpu_global_decay` rather than CUDA `@triton.jit` kernels, and `KilatTransformer.forward` shifts causal labels internally (`logits[:, :-1]`, `labels[:, 1:]`).
+
 ## 1. When to Activate This Skill
 Activate this skill whenever the task involves:
 - Writing, updating, or debugging tests in `tests/unit/` or `tests/integration/`.

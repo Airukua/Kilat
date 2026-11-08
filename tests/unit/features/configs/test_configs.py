@@ -427,3 +427,66 @@ def test_main_config_extended_properties_and_factories():
                     with And("missing training raises ValueError"):
                         with pytest.raises(ValueError, match="training"):
                             MainConfig.from_yaml(tmp_p / "no_train.yaml")
+
+
+def test_config_single_source_block_wiring_and_dot_overrides():
+    from kilat.models.transformer import KilatTransformer
+    from kilat.engine.args import TrainingArguments
+
+    with Scenario("Unit: KilatConfig->Block Single-Source Wiring, TrainingArguments JSON, & CLI Overrides"):
+        with Given("a MoE KilatConfig with num_shared_experts=0 and fine_grained_factor=2"):
+            moe_cfg = KilatConfig(
+                vocab_size=64,
+                n_embd=32,
+                n_layer=2,
+                n_head=4,
+                ffn_mode="moe",
+                num_experts=4,
+                active_experts=1,
+                num_shared_experts=0,
+                fine_grained_factor=2,
+                router_balance_mode="bias_free",
+            )
+            with When("instantiating KilatTransformer"):
+                model = KilatTransformer(moe_cfg)
+                moe_layer = model.layers[0].mlp.layer
+                with Then("every Block faithfully receives num_shared_experts=0 and fine_grained_factor=2"):
+                    assert moe_layer.num_shared_experts == 0
+                    assert len(moe_layer.shared_experts) == 0
+                    assert moe_layer.fine_grained_factor == 2
+                    assert len(moe_layer.routed_experts) == 8
+                    assert moe_layer.router_balance_mode == "bias_free"
+
+        with Given("a MainConfig with synthetic dataloader and fp32 training"):
+            main_cfg = MainConfig(
+                model=KilatConfig(vocab_size=64, n_embd=32, n_layer=2, n_head=4),
+                tokenizer=TokenizerConfig(
+                    tokenizer_type="custom",
+                    custom_builder="kilat.data.tokenizer:build_byte_tokenizer",
+                    custom_kwargs={"vocab_size": 64},
+                ),
+                training=TrainingConfig(training_mode="steps", max_steps=10, precision="fp32"),
+                dataloader=DataLoaderConfig(dataset_format="synthetic", max_seq_length=16),
+            )
+            with When("applying dot-notation CLI overrides and converting to TrainingArguments"):
+                main_cfg.apply_overrides(
+                    [
+                        "training.learning_rate=0.001",
+                        "model.n_layer=3",
+                        "experiment.name=override-test",
+                    ]
+                )
+                t_args = main_cfg.to_training_arguments()
+                restored_args = TrainingArguments.from_dict(t_args.to_dict())
+                with Then("overrides are validated and TrainingArguments round-trips cleanly"):
+                    assert main_cfg.n_layer == 3
+                    assert main_cfg.learning_rate == 0.001
+                    assert main_cfg.experiment_name == "override-test"
+                    assert restored_args.to_dict() == t_args.to_dict()
+
+            with When("applying an unknown dot-notation CLI override key"):
+                with Then("KeyError is raised to prevent silent CLI flag typos"):
+                    with pytest.raises(KeyError):
+                        main_cfg.apply_overrides(["training.nonexistent_flag=123"])
+                    with pytest.raises(KeyError):
+                        main_cfg.apply_overrides(["bad_section.lr=0.1"])

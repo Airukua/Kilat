@@ -6,7 +6,7 @@ Follows BDD standards from UNIT_TESTING_STRUCTURE.md.
 import pytest
 import torch
 
-from kilat.pipeline.generation.beam_search import BeamSearchScorer, BeamHypotheses
+from kilat.inference.beam_search import BeamSearchScorer, BeamHypotheses
 from tests.shared.bdd import Scenario, Given, When, Then, And
 
 

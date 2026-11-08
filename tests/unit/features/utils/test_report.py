@@ -52,7 +52,7 @@ def test_load_model_from_default_config():
 def test_parameter_breakdown_with_shared_weights_and_loader_branches():
     import tempfile
     from pathlib import Path
-    from kilat.arc.model import KilatTransformer
+    from kilat.models.transformer import KilatTransformer
 
     with Scenario("Unit: Shared Parameter Breakdown and Loader Edge Cases"):
         with Given("a model with shared parameters"):

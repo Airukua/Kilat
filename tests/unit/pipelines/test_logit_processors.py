@@ -6,7 +6,7 @@ Follows BDD standards from UNIT_TESTING_STRUCTURE.md.
 import pytest
 import torch
 
-from kilat.pipeline.generation.logit_processor import (
+from kilat.inference.logit_processor import (
     ForcedBOSTokenLogitsProcessor,
     ForcedEOSTokenLogitsProcessor,
     LogitsProcessorList,
@@ -123,8 +123,8 @@ def test_forced_tokens_and_ngram_processors():
 
 def test_extended_logit_processors_and_builders():
     from unittest.mock import MagicMock
-    from kilat.pipeline.generation.generation_config import GenerationConfig
-    from kilat.pipeline.generation.logit_processor import (
+    from kilat.inference.generation_config import GenerationConfig
+    from kilat.inference.logit_processor import (
         GrammarConstrainedLogitsProcessor,
         MinNewTokensLengthLogitsProcessor,
         PrefixConstrainedLogitsProcessor,

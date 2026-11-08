@@ -157,3 +157,57 @@ def test_dataloader_distributed_helpers_and_eval_loader():
                 with Then("the eval loader yields expected batch"):
                     b = next(iter(eval_loader))
                     assert b["input_ids"].shape[0] == 2
+
+
+def test_zero_copy_collator_padding_sides_and_synthetic_config_loaders():
+    from kilat.configs.dataloader_config import DataLoaderConfig
+    from kilat.configs.main_config import MainConfig
+    from kilat.configs.model_config import KilatConfig
+    from kilat.configs.tokenizer_config import TokenizerConfig
+    from kilat.configs.training_config import TrainingConfig
+    from kilat.data.dataloader import build_dataloaders_from_config
+
+    with Scenario("Unit: Zero-Copy Uniform Tensor Collation, Left Padding, & Synthetic DataLoaders"):
+        with Given("left-padded and right-padded KilatDataCollator instances"):
+            left_col = KilatDataCollator(pad_token_id=0, ignore_index=-100, padding_side="left")
+            right_col = KilatDataCollator(pad_token_id=0, ignore_index=-100, padding_side="right")
+            sample = [{"input_ids": [10, 20, 30]}, {"input_ids": [40]}]
+
+            with When("collating variable-length sequences on left vs right"):
+                b_left = left_col(sample)
+                b_right = right_col(sample)
+                with Then("left padding aligns real tokens on the right and right padding on the left"):
+                    assert b_left["input_ids"][1].tolist() == [0, 0, 40]
+                    assert b_left["labels"][1].tolist() == [-100, -100, 40]
+                    assert b_right["input_ids"][1].tolist() == [40, 0, 0]
+                    assert b_right["labels"][1].tolist() == [40, -100, -100]
+
+        with Given("a MainConfig configured with dataset_format='synthetic'"):
+            cfg = MainConfig(
+                model=KilatConfig(vocab_size=64, n_embd=32, n_layer=1, n_head=2),
+                tokenizer=TokenizerConfig(
+                    tokenizer_type="custom",
+                    custom_builder="kilat.data.tokenizer:build_byte_tokenizer",
+                    custom_kwargs={"vocab_size": 64},
+                ),
+                dataloader=DataLoaderConfig(
+                    dataset_format="synthetic",
+                    train_batch_size=4,
+                    eval_batch_size=4,
+                    max_seq_length=16,
+                    num_workers=0,
+                    synthetic_num_samples=16,
+                    synthetic_eval_samples=8,
+                ),
+                training=TrainingConfig(training_mode="steps", max_steps=4, precision="fp32"),
+            )
+            with When("building train and eval dataloaders from config"):
+                train_dl, eval_dl = build_dataloaders_from_config(cfg)
+                tb = next(iter(train_dl))
+                assert eval_dl is not None
+                eb = next(iter(eval_dl))
+                with Then("uniform batches are produced offline with valid non-pad tokens"):
+                    assert tb["input_ids"].shape == (4, 16)
+                    assert eb["input_ids"].shape == (4, 16)
+                    assert (tb["input_ids"] != 0).all()
+                    assert not torch.equal(tb["input_ids"], eb["input_ids"])

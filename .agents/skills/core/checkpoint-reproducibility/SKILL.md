@@ -5,6 +5,8 @@ description: Training Recovery, Checkpoint Integrity, and Experiment Reproducibi
 
 # Checkpointing & Reproducibility Skill
 
+> **Mandatory Spec Reference**: Consult `docs/01_AGENT_ANTI_HALLUCINATION_CONTRACT.md` and `docs/03_CODEBASE_RESTRUCTURE_PLAN.md`. Note that `TrainingArguments` is NOT a `@dataclass`, `TrainerState.is_world_process_zero` must be initialized from `get_global_rank() == 0` to prevent DDP checkpoint race conditions, and `dist.barrier()` is required around atomic directory moves.
+
 ## 1. When to Activate This Skill
 Activate this skill whenever the task involves:
 - Saving or restoring model checkpoints (`save_checkpoint`, `load_checkpoint`, `KilatTrainer`).

@@ -1,4 +1,4 @@
-.PHONY: help install install-dev lint lint-fix format format-check type-check check test clean build pre-commit pre-commit-install
+.PHONY: help install install-dev lint lint-fix format format-check type-check check test verify chaos clean build pre-commit pre-commit-install
 
 PYTHON ?= $(if $(wildcard .venv/bin/python),.venv/bin/python,python3)
 PIP ?= $(PYTHON) -m pip
@@ -44,6 +44,12 @@ test: ## Run test suite if tests directory exists
 		echo "No tests/ directory found. Skipping unit tests."; \
 	fi
 
+verify: ## Run 6-Gate Pre-Training Assurance verification on debug_cpu config
+	$(PYTHON) -m kilat.cli verify --config configs/debug_cpu.yaml --output-dir ./artifacts/verify
+
+chaos: ## Run Active ML Chaos Engineering Saboteur suite (C-01..C-08)
+	$(PYTHON) -m kilat.cli chaos --scenarios all
+
 pre-commit: ## Run pre-commit hooks on all files
 	$(PRE_COMMIT) run --all-files
 
@@ -51,7 +57,7 @@ pre-commit-install: ## Install pre-commit hooks into git repository
 	$(PRE_COMMIT) install
 
 clean: ## Clean build, distribution, bytecode, and cache files
-	rm -rf build/ dist/ *.egg-info/ .eggs/
+	rm -rf build/ dist/ *.egg-info/ src/*.egg-info/ .eggs/ artifacts/
 	find . -type d -name "__pycache__" -exec rm -rf {} +
 	find . -type f -name "*.py[cod]" -delete
 	rm -rf .pytest_cache/ .mypy_cache/ .ruff_cache/ .coverage htmlcov/

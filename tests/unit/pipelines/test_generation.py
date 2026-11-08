@@ -8,16 +8,16 @@ from pathlib import Path
 import pytest
 import torch
 
-from kilat.arc.model import KilatTransformer
+from kilat.models.transformer import KilatTransformer
 from kilat.configs.model_config import KilatConfig
-from kilat.pipeline.generation.generation_config import GenerationConfig
-from kilat.pipeline.generation.stoping_criteria import (
+from kilat.inference.generation_config import GenerationConfig
+from kilat.inference.stopping_criteria import (
     MaxLengthCriteria,
     MaxNewTokensCriteria,
     EosTokenCriteria,
     StoppingCriteriaList,
 )
-from kilat.pipeline.generation.sampler import GreedySampler, TopKSampler, TopPSampler
+from kilat.inference.sampler import GreedySampler, TopKSampler, TopPSampler
 from tests.shared.bdd import Scenario, Given, When, Then, And
 
 

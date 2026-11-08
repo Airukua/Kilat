@@ -87,7 +87,11 @@ class DataLoaderConfig:
         # ---- Dataset source ----
         train_data_path: Optional[str] = None,
         eval_data_path: Optional[str] = None,
-        dataset_format: Literal["parquet", "memmap", "jsonl"] = "parquet",
+        dataset_format: Literal["parquet", "memmap", "jsonl", "synthetic"] = "parquet",
+        dataset_type: Optional[Literal["parquet", "memmap", "jsonl", "synthetic"]] = None,
+        synthetic_num_samples: int = 128,
+        synthetic_eval_samples: int = 32,
+        memmap_stride: Optional[int] = None,
         
         # ---- Caching ----
         cache_dir: Optional[str] = None,
@@ -161,6 +165,15 @@ class DataLoaderConfig:
             raise ValueError(f"eval_batch_size must be >= 1, got {eval_batch_size}")
         if prefetch_batches < 1:
             raise ValueError(f"prefetch_batches must be >= 1, got {prefetch_batches}")
+        resolved_format = dataset_type if dataset_type is not None else dataset_format
+        if resolved_format not in ("parquet", "memmap", "jsonl", "synthetic"):
+            raise ValueError(
+                f"dataset_format must be one of ('parquet', 'memmap', 'jsonl', 'synthetic'), got '{resolved_format}'."
+            )
+        if synthetic_num_samples < 1 or synthetic_eval_samples < 1:
+            raise ValueError("synthetic_num_samples and synthetic_eval_samples must be >= 1.")
+        if memmap_stride is not None and memmap_stride < 1:
+            raise ValueError(f"memmap_stride must be >= 1 when set, got {memmap_stride}")
 
         # Core settings
         self.train_batch_size = train_batch_size
@@ -186,7 +199,10 @@ class DataLoaderConfig:
         # Dataset source
         self.train_data_path = train_data_path
         self.eval_data_path = eval_data_path
-        self.dataset_format = dataset_format
+        self.dataset_format = resolved_format
+        self.synthetic_num_samples = synthetic_num_samples
+        self.synthetic_eval_samples = synthetic_eval_samples
+        self.memmap_stride = memmap_stride
         
         # Caching
         self.cache_dir = cache_dir
@@ -219,6 +235,9 @@ class DataLoaderConfig:
             "train_data_path": self.train_data_path,
             "eval_data_path": self.eval_data_path,
             "dataset_format": self.dataset_format,
+            "synthetic_num_samples": self.synthetic_num_samples,
+            "synthetic_eval_samples": self.synthetic_eval_samples,
+            "memmap_stride": self.memmap_stride,
             "cache_dir": self.cache_dir,
             "prefetch_batches": self.prefetch_batches,
         }

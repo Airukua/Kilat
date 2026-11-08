@@ -2,7 +2,7 @@ from __future__ import annotations
 from collections import defaultdict
 import torch.nn as nn
 from pathlib import Path
-from kilat.arc.model import KilatTransformer
+from kilat.models.transformer import KilatTransformer
 from kilat.configs.model_config import KilatConfig
 import sys
 
@@ -133,7 +133,7 @@ def load_model(
         >>> # Default model for testing
         >>> model = load_model()
     """
-    from kilat.arc.model import KilatTransformer
+    from kilat.models.transformer import KilatTransformer
     from kilat.configs.model_config import KilatConfig
     
     if checkpoint and config_path:

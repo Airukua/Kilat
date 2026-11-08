@@ -27,6 +27,7 @@ data/fine-web-edu/**/tokenizer/
 # checkpoints and logs
 checkpoints/
 logs/
+artifacts/
 
 # Coverage and build outputs
 .coverage
@@ -52,9 +53,11 @@ Thumbs.db
 *.h5
 *.hdf5
 
-# Model directories (common names)
-models/
-model/
+# Model weight output directories (anchored at repo root; do not ignore src/kilat/models/)
+/models/
+/model/
+!src/kilat/models/
+!src/kilat/models/**
 saved_models/
 saved_model/
 pretrained_models/
@@ -98,6 +101,5 @@ cache/huggingface/
 *.npy
 *.npy_meta.json
 *.safetensors
-model/
+/model/
 data/fine-web/
-pipeline/converter/__pycache__/

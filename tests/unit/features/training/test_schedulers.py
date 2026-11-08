@@ -7,7 +7,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from kilat.training.scheduler import (
+from kilat.engine.scheduler import (
     CosineScheduler,
     LinearScheduler,
     LRScheduler,

@@ -10,11 +10,11 @@ import pytest
 import torch
 import torch.nn as nn
 
-from kilat.arc.model import KilatTransformer
+from kilat.models.transformer import KilatTransformer
 from kilat.configs.model_config import KilatConfig
-from kilat.training.args import TrainingArguments
-from kilat.training.callbacks import CallbackHandler, TrainerState
-from kilat.training.trainer_utils import (
+from kilat.engine.args import TrainingArguments
+from kilat.engine.callbacks import CallbackHandler, TrainerState
+from kilat.engine.checkpoint import (
     _tokenizer_needs_saving,
     average_losses,
     clip_grad_norm_,
@@ -333,3 +333,127 @@ def test_tokenizer_saving_heuristics_and_checkpoint_variations():
                                 checkpoint_path=str(tmp_path / "nonexistent"),
                                 device=torch.device("cpu"),
                             )
+
+
+def test_checkpoint_sha256_manifest_and_bitwise_resume_parity():
+    import json
+    from kilat.data.collator import KilatDataCollator
+    from kilat.data.dataloader import build_train_dataloader
+    from kilat.data.dataset import SyntheticTokenDataset
+    from kilat.engine.trainer import KilatTrainer
+
+    with Scenario("Unit: SHA-256 Checkpoint Manifest & Bitwise Exact Resume Parity"):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            ds = SyntheticTokenDataset(vocab_size=48, seq_len=12, num_samples=24, seed=123)
+            collator = KilatDataCollator(pad_token_id=0)
+
+            cfg = KilatConfig(
+                vocab_size=48,
+                n_embd=32,
+                n_layer=2,
+                n_head=4,
+                embd_drop=0.1,
+                resid_drop=0.1,
+                attn_drop=0.1,
+            )
+
+            with Given("Trajectory A trained uninterrupted for 6 steps"):
+                dir_a = tmp_path / "run_a"
+                dl_a = build_train_dataloader(ds, batch_size=4, collate_fn=collator, shuffle=True, seed=77)
+                args_a = TrainingArguments(
+                    output_dir=str(dir_a),
+                    training_mode="steps",
+                    max_steps=6,
+                    learning_rate=1e-3,
+                    logging_steps=1,
+                    save_checkpoints=False,
+                    precision="fp32",
+                    seed=77,
+                )
+                KilatTrainer._set_seed(77)
+                model_a = KilatTransformer(cfg)
+                trainer_a = KilatTrainer(model_a, args_a, dl_a)
+                state_a = trainer_a.train()
+                losses_a = [entry["loss"] for entry in state_a.log_history if "loss" in entry]
+
+            with When("Trajectory B saves at step 3 (same 6-step schedule, preempted at step 3) and resumes 4..6"):
+                from kilat.engine.callbacks import TrainerCallback
+
+                class _StopAtStep3(TrainerCallback):
+                    def on_step_end(self, args, state, control, **kwargs):
+                        if state.global_step >= 3:
+                            control.should_training_stop = True
+
+                dir_b = tmp_path / "run_b"
+                dl_b1 = build_train_dataloader(ds, batch_size=4, collate_fn=collator, shuffle=True, seed=77)
+                args_b1 = TrainingArguments(
+                    output_dir=str(dir_b),
+                    training_mode="steps",
+                    max_steps=6,
+                    learning_rate=1e-3,
+                    logging_steps=1,
+                    save_steps=3,
+                    save_checkpoints=True,
+                    precision="fp32",
+                    seed=77,
+                )
+                KilatTrainer._set_seed(77)
+                model_b1 = KilatTransformer(cfg)
+                trainer_b1 = KilatTrainer(model_b1, args_b1, dl_b1, callbacks=[_StopAtStep3()])
+                trainer_b1.train()
+
+                ckpt3 = dir_b / "checkpoint-3"
+                with open(ckpt3 / "training_args.json") as f:
+                    saved_args_json = json.load(f)
+                assert saved_args_json["learning_rate"] == 1e-3
+                assert (ckpt3 / "checkpoint_manifest.json").exists()
+
+                # Fresh model, dataloader, and trainer resuming from step 3 -> 6
+                dl_b2 = build_train_dataloader(ds, batch_size=4, collate_fn=collator, shuffle=True, seed=999)
+                args_b2 = TrainingArguments(
+                    output_dir=str(dir_b),
+                    resume_from_checkpoint=str(ckpt3),
+                    training_mode="steps",
+                    max_steps=6,
+                    learning_rate=1e-3,
+                    logging_steps=1,
+                    save_checkpoints=False,
+                    precision="fp32",
+                    seed=999,
+                )
+                KilatTrainer._set_seed(999)
+                model_b2 = KilatTransformer(cfg)
+                trainer_b2 = KilatTrainer(model_b2, args_b2, dl_b2)
+                state_b2 = trainer_b2.train()
+                losses_b = [entry["loss"] for entry in state_b2.log_history if "loss" in entry]
+
+                with Then("resumed losses and final parameters match uninterrupted training with 0.0 bitwise diff"):
+                    assert losses_b == losses_a
+                    for (name_a, p_a), (name_b, p_b) in zip(
+                        model_a.named_parameters(), model_b2.named_parameters()
+                    ):
+                        assert name_a == name_b
+                        max_diff = float((p_a - p_b).abs().max().item())
+                        assert max_diff == 0.0, f"Bitwise mismatch on {name_a}: {max_diff}"
+
+            with When("corrupting 1 byte in model.safetensors inside checkpoint-3"):
+                weights_file = ckpt3 / "model.safetensors"
+                if not weights_file.exists():
+                    weights_file = ckpt3 / "pytorch_model.bin"
+                raw_bytes = bytearray(weights_file.read_bytes())
+                raw_bytes[-1] ^= 0xFF
+                weights_file.write_bytes(bytes(raw_bytes))
+
+                with Then("load_checkpoint immediately raises ERR_CHECKPOINT_CHECKSUM_MISMATCH"):
+                    with pytest.raises(RuntimeError, match="ERR_CHECKPOINT_CHECKSUM_MISMATCH"):
+                        load_checkpoint(
+                            model=model_b2,
+                            optimizer=trainer_b2.optimizer,
+                            scheduler=trainer_b2.scheduler,
+                            scaler=None,
+                            state=TrainerState(),
+                            callback_handler=CallbackHandler([]),
+                            checkpoint_path=str(ckpt3),
+                            device=torch.device("cpu"),
+                        )

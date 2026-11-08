@@ -7,9 +7,9 @@ import pytest
 import torch
 import torch.nn as nn
 
-from kilat.distiliation.losses import VanillaKDLoss, ReverseKDLoss, AdaptiveKDLoss, DistillLossOutput
-from kilat.distiliation.student import BaseStudent
-from kilat.distiliation.teacher import BaseTeacher
+from kilat.distillation.losses import VanillaKDLoss, ReverseKDLoss, AdaptiveKDLoss, DistillLossOutput
+from kilat.distillation.student import BaseStudent
+from kilat.distillation.teacher import BaseTeacher
 from tests.shared.bdd import Scenario, Given, When, Then, And
 
 

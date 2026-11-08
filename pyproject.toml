@@ -39,6 +39,9 @@ dev = [
     "types-tqdm>=4.66",
 ]
 
+[project.scripts]
+kilat = "kilat.cli:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["kilat*"]
@@ -52,7 +55,6 @@ exclude = [
     "venv",
     "build",
     "dist",
-    "experiments",
     "__pycache__",
 ]
 
@@ -73,7 +75,7 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401", "F403"]
-"src/kilat/pipeline/converter/convert_to_hf.py" = ["E402"]
+"src/kilat/inference/export_hf.py" = ["E402"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["kilat"]
@@ -109,7 +111,6 @@ disable_error_code = [
     "list-item",
 ]
 exclude = [
-    "^experiments/",
     "^build/",
     "^dist/",
     "^\\.venv/",

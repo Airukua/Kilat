@@ -5,13 +5,13 @@ Follows BDD standards from UNIT_TESTING_STRUCTURE.md.
 
 import pytest
 
-from kilat.training.integration import (
+from kilat.engine.integrations import (
     get_reporting_integration_callbacks,
     ConsoleCallback,
     IntegrationCallback,
 )
-from kilat.training.args import TrainingArguments
-from kilat.training.callbacks import TrainerState, TrainerControl
+from kilat.engine.args import TrainingArguments
+from kilat.engine.callbacks import TrainerState, TrainerControl
 from tests.shared.bdd import Scenario, Given, When, Then, And
 
 

@@ -1,14 +1,16 @@
 ---
 name: training-configuration
-description: Training Configuration & Experiment Parameter Engineering for Kilat. Covers typed configuration dataclasses, YAML/JSON round-trip serialization, parameter divisibility constraints, hardware-aware VRAM heuristics, and CLI override hierarchies.
+description: Training Configuration & Experiment Parameter Engineering for Kilat. Covers typed configuration classes, YAML/JSON round-trip serialization, non-dataclass serialization safety, parameter divisibility constraints, hardware-aware VRAM heuristics, and CLI override hierarchies.
 ---
 
 # Training Configuration Engineering Skill
 
+> **Anti-Hallucination Alert**: In Kilat, `KilatConfig` (inherits `BaseConfig` in `src/kilat/utils/base_model.py`), `MainConfig`, `TrainingConfig`, `DataLoaderConfig`, `TokenizerConfig`, and `TrainingArguments` are **regular Python classes**, **NOT** `@dataclass` classes! Never call `dataclasses.asdict()` or check `hasattr(cfg, "__dataclass_fields__")` without checking `.to_dict()` first. Always consult `docs/01_AGENT_ANTI_HALLUCINATION_CONTRACT.md`.
+
 ## 1. When to Activate This Skill
 Activate this skill whenever the task involves:
 - Modifying or extending configuration schemas (`MainConfig`, `KilatConfig`, `TrainingConfig`, `DataConfig`, `TokenizerConfig`).
-- Reading or writing YAML / JSON experiment configuration files (`sample_config/*.yaml`).
+- Reading or writing YAML / JSON experiment configuration files (`configs/*.yaml`).
 - Adding CLI arguments or configuration override mechanisms.
 - Adding hardware-aware configuration validation (VRAM estimation, head divisibility, context window limits).
 - Ensuring configuration backward compatibility and migration.

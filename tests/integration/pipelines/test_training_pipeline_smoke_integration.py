@@ -6,10 +6,10 @@ Follows standards from ml_integration_testing_structure_md.md (Pipeline Overfitt
 
 import torch
 
-from kilat.arc.model import KilatTransformer
+from kilat.models.transformer import KilatTransformer
 from kilat.configs.model_config import KilatConfig
-from kilat.training.optimizer import create_optimizer
-from kilat.training.scheduler import get_scheduler
+from kilat.engine.optimizer import create_optimizer
+from kilat.engine.scheduler import get_scheduler
 from tests.shared.bdd import Scenario, Given, When, Then, And
 
 

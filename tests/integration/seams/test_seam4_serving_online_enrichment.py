@@ -6,11 +6,11 @@ Follows standards from ml_integration_testing_structure_md.md (Seam 4).
 
 import torch
 
-from kilat.arc.model import KilatTransformer
+from kilat.models.transformer import KilatTransformer
 from kilat.configs.model_config import KilatConfig
-from kilat.pipeline.generation.generation_config import GenerationConfig
-from kilat.pipeline.generation.sampler import GreedySampler
-from kilat.pipeline.generation.stoping_criteria import MaxLengthCriteria
+from kilat.inference.generation_config import GenerationConfig
+from kilat.inference.sampler import GreedySampler
+from kilat.inference.stopping_criteria import MaxLengthCriteria
 from tests.shared.bdd import Scenario, Given, When, Then, And
 
 

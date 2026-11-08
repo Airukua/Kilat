@@ -36,15 +36,25 @@ Specialized domain knowledge is organized under `.agents/skills/`. Agents must i
 .agents/
 └── skills/
     ├── core/
-    │   ├── pytorch-training/          # Autograd, loops, optimizers, schedulers, AMP, stability
-    │   ├── ml-data-engineering/       # Tokenization, sequence packing, causal masking, leak prevention
-    │   ├── training-configuration/    # Typed configs, YAML/JSON validation, hardware heuristics
-    │   ├── checkpoint-reproducibility/ # Atomic saves, full RNG restore, resumption parity
-    │   ├── ml-testing/                # Invariant tests, overfit-one-batch, gradient checks, BDD
-    │   └── gpu-performance/           # VRAM profiling, activation checkpointing, throughput
-    ├── research/                      # Specialized architectures (MoE, MLA, Triton kernels, DDP)
-    └── product/                       # DX, documentation, release engineering
+    │   ├── pytorch-training/            # Autograd, loops, optimizers, schedulers, AMP, stability
+    │   ├── ml-data-engineering/         # Tokenization, sequence packing, causal masking, leak prevention
+    │   ├── training-configuration/      # Typed configs (non-dataclass safe), YAML/JSON, VRAM heuristics
+    │   ├── checkpoint-reproducibility/  # Atomic saves, full RNG restore, DDP barrier, resumption parity
+    │   ├── ml-testing/                  # Invariant tests, overfit-one-batch, gradient checks, BDD
+    │   ├── gpu-performance/             # VRAM profiling, zero-sync forward, activation checkpointing
+    │   └── assurance-chaos-engineering/ # 6-Gate pre-flight verify, Saboteur chaos injection, FlightRecorder
+    ├── research/                        # Specialized architectures (MoE, MLA, Triton kernels, DDP)
+    └── product/                         # DX, documentation, release engineering
 ```
+
+### Mandatory Architecture & Anti-Hallucination Blueprints (`docs/`)
+Before editing any Python file in `src/` or `tests/`, every agent **MUST** read the ground-truth specifications in `docs/`:
+- [`docs/README.md`](file:///docs/README.md) — Master Architecture & Documentation Index
+- [`docs/01_AGENT_ANTI_HALLUCINATION_CONTRACT.md`](file:///docs/01_AGENT_ANTI_HALLUCINATION_CONTRACT.md) — Ground-truth file/class inventory, non-dataclass traps, canonical API contracts, and forbidden hallucinations
+- [`docs/02_MATHEMATICAL_SPEC_AND_BUGFIX_PLAN.md`](file:///docs/02_MATHEMATICAL_SPEC_AND_BUGFIX_PLAN.md) — Exact mathematical equations and numerical invariants (`M-01`..`M-07`)
+- [`docs/03_CODEBASE_RESTRUCTURE_PLAN.md`](file:///docs/03_CODEBASE_RESTRUCTURE_PLAN.md) — Modular package architecture (`models/`, `engine/`, `data/`, `inference/`, `distillation/`, `assurance/`), config system, DDP hardening, and unified CLI
+- [`docs/04_ASSURANCE_AND_CHAOS_ENGINEERING_PLAN.md`](file:///docs/04_ASSURANCE_AND_CHAOS_ENGINEERING_PLAN.md) — `kilat verify` (Gates 1–6 & Stages 7–8), `kilat chaos` (`Saboteur` C-01–C-08), and `FlightRecorderCallback`
+- [`docs/05_STEP_BY_STEP_EXECUTION_CHECKLIST.md`](file:///docs/05_STEP_BY_STEP_EXECUTION_CHECKLIST.md) — Verification & release readiness acceptance gates
 
 ---
 

@@ -1,0 +1,110 @@
+# ==============================================================================
+# Kilat Tier-2 Config: Small DeepSeekMoE Hybrid Transformer (`small_moe.yaml`)
+# ==============================================================================
+# Purpose : Single-GPU (6GB–16GB VRAM) sparse Mixture-of-Experts with Shared Expert
+#           and DeepSeek-V3 loss-free dynamic router bias (`bias_free`).
+# Usage   :
+#   kilat verify --config configs/small_moe.yaml
+#   kilat train  --config configs/small_moe.yaml --override training.precision=fp16
+# ==============================================================================
+
+experiment:
+  name: kilat-small-moe
+  description: Hybrid Global Decay/MLA + Decoupled RoPE + DeepSeekMoE with Shared Expert
+  tags: ["tier-2", "moe", "deepseek-moe", "mla", "rope", "wsdlr"]
+
+model:
+  vocab_size: 50257
+  n_embd: 768
+  n_layer: 10
+  n_head: 12
+  max_position_embeddings: 2048
+
+  recall_ratio: 0.5
+  latent_dim: 128
+  attn_drop: 0.0
+
+  use_rope: true
+  rope_head_dim: 32
+  rope_base: 10000.0
+
+  # Sparse MoE: 1 always-on shared expert + Top-2 out of 8 routed experts
+  ffn_mode: moe
+  ff_mult: 2.6666666667
+  ffn_dropout: 0.0
+  num_experts: 8
+  active_experts: 2
+  num_shared_experts: 1
+  fine_grained_factor: 1
+  aux_loss_coef: 0.01
+  device_balance_coef: 0.0
+  router_balance_mode: bias_free  # Loss-free dynamic bias balancing (DeepSeek-V3)
+  bias_update_speed: 0.001
+
+  embd_drop: 0.0
+  resid_drop: 0.0
+  pad_token_id: 0
+  bos_token_id: 1
+  eos_token_id: 2
+  tie_word_embeddings: true
+  use_cache: false
+  initializer_range: 0.02
+  debug_nan_checks: false
+
+tokenizer:
+  tokenizer_type: gpt2
+  tokenizer_name_or_path: gpt2
+  use_fast: true
+  local_files_only: true
+
+dataloader:
+  dataset_format: memmap
+  train_data_path: ./data/train.npy
+  eval_data_path: ./data/val.npy
+  train_batch_size: 4
+  eval_batch_size: 4
+  max_seq_length: 1024
+  truncation: right
+  use_packing: false
+  packed_block_size: null
+  num_workers: 4
+  pin_memory: true
+  prefetch_factor: 2
+  persistent_workers: true
+  drop_last: true
+  use_distributed_sampler: true
+  distributed_shuffle: true
+  cache_dir: null
+  prefetch_batches: 2
+
+training:
+  output_dir: ./checkpoints/small_moe
+  resume_from_checkpoint: null
+  save_checkpoints: true
+  atomic_checkpoint: true
+  training_mode: steps
+  max_steps: 50000
+  num_train_epochs: 1
+  warmup_steps: 1000
+  learning_rate: 3.0e-4
+  beta1: 0.9
+  beta2: 0.95
+  epsilon: 1.0e-8
+  weight_decay: 0.1
+  gradient_accumulation_steps: 4
+  max_grad_norm: 1.0
+  scheduler_type: wsdlr
+  scheduler_kwargs:
+    num_decay_steps: 5000
+  precision: bf16
+  logging_steps: 50
+  eval_steps: 500
+  save_steps: 500
+  save_total_limit: 3
+  early_stopping_patience: 5
+  early_stopping_threshold: 0.0
+  metric_for_best_model: eval_loss
+  greater_is_better: null
+  report_to: "none"
+  run_name: kilat-small-moe
+  seed: 42

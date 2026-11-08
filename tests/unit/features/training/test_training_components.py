@@ -8,14 +8,14 @@ import pytest
 import torch
 import torch.nn as nn
 
-from kilat.training.args import TrainingArguments
-from kilat.training.optimizer import (
+from kilat.engine.args import TrainingArguments
+from kilat.engine.optimizer import (
     compute_total_steps,
     create_optimizer,
     resolve_amp_dtype,
 )
-from kilat.training.scheduler import get_scheduler
-from kilat.training.callbacks import TrainerCallback, CallbackHandler, EarlyStoppingCallback, TrainerState, TrainerControl
+from kilat.engine.scheduler import get_scheduler
+from kilat.engine.callbacks import TrainerCallback, CallbackHandler, EarlyStoppingCallback, TrainerState, TrainerControl
 from tests.shared.bdd import Scenario, Given, When, Then, And
 
 
@@ -79,6 +79,31 @@ def test_optimizer_creation_and_decay_grouping():
                     assert optimizer.param_groups[0]["weight_decay"] == 0.01
                 with And("the second group (biases & LayerNorm) has weight_decay=0.0"):
                     assert optimizer.param_groups[1]["weight_decay"] == 0.0
+
+        with Given("a full KilatTransformer with Global Decay log_lambda and MLA LayerNorms"):
+            from kilat.models.transformer import KilatTransformer
+            from kilat.configs.model_config import KilatConfig
+
+            cfg = KilatConfig(
+                vocab_size=128,
+                n_embd=32,
+                n_layer=2,
+                n_head=4,
+                recall_ratio=0.5,
+                use_rope=True,
+                rope_head_dim=8,
+            )
+            kilat_model = KilatTransformer(cfg)
+            opt = create_optimizer(kilat_model, learning_rate=3e-4, weight_decay=0.1)
+            decay_ids = {id(p) for p in opt.param_groups[0]["params"]}
+            nodecay_ids = {id(p) for p in opt.param_groups[1]["params"]}
+
+            with When("auditing parameter group assignment for 1D decay and norm parameters"):
+                with Then("log_lambda, q_a_norm, kv_a_norm, rms1, rms2, and ln_f all receive weight_decay=0.0"):
+                    for pname, param in kilat_model.named_parameters():
+                        if any(k in pname for k in ("log_lambda", "q_a_norm", "kv_a_norm", "rms1", "rms2", "ln_f")):
+                            assert id(param) in nodecay_ids, f"{pname} leaked into weight_decay group"
+                            assert id(param) not in decay_ids
 
 
 def test_scheduler_warmup_and_cosine_decay():
@@ -234,7 +259,7 @@ def test_optimizer_utils_and_amp_dtype():
 
 
 def test_callback_handler_management_and_usage_example():
-    from kilat.training.callbacks import (
+    from kilat.engine.callbacks import (
         _usage_example,
         TrainerCallback,
         CallbackHandler,

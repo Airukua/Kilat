@@ -122,6 +122,12 @@ class AutoTokenizer:
             If custom builder function or class not found in module.
         """
         checkpoint_path = Path(pretrained_model_name_or_path)
+        byte_meta_path = checkpoint_path / "byte_tokenizer_meta.json"
+        if byte_meta_path.exists():
+            with open(byte_meta_path, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+            tokenizer_config = TokenizerConfig(**meta)
+            return tokenizer_config.build()
         
         # ================================================================
         # PRIORITY 1: tokenizer_config.json (saved by Trainer or Converter)
@@ -546,3 +552,103 @@ def get_vocab_size(tokenizer: Any) -> int:
             return len(tokenizer)
         except TypeError:
             raise ValueError(f"Cannot determine vocabulary size for {type(tokenizer).__name__}")
+
+
+class ByteLevelDebugTokenizer:
+    """
+    Deterministic offline byte-level tokenizer for CPU smoke runs, pre-flight
+    assurance gates, and offline end-to-end CLI verification without Hub access.
+    """
+
+    def __init__(
+        self,
+        vocab_size: int = 256,
+        pad_token_id: int = 0,
+        bos_token_id: int = 1,
+        eos_token_id: int = 2,
+    ) -> None:
+        if vocab_size < 16:
+            raise ValueError(f"vocab_size must be >= 16, got {vocab_size}")
+        self.vocab_size = vocab_size
+        self.pad_token_id = pad_token_id
+        self.bos_token_id = bos_token_id
+        self.eos_token_id = eos_token_id
+        self.pad_token = "<pad>"
+        self.bos_token = "<bos>"
+        self.eos_token = "<eos>"
+
+    def __len__(self) -> int:
+        return self.vocab_size
+
+    def encode(
+        self,
+        text: str,
+        add_special_tokens: bool = False,
+        return_tensors: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Any:
+        span = max(1, self.vocab_size - 3)
+        ids = [3 + (b % span) for b in text.encode("utf-8")]
+        if add_special_tokens:
+            ids = [self.bos_token_id] + ids
+        if return_tensors == "pt":
+            import torch
+
+            return torch.tensor([ids], dtype=torch.long)
+        return ids
+
+    def decode(self, token_ids: Any, skip_special_tokens: bool = True) -> str:
+        if hasattr(token_ids, "tolist"):
+            seq = token_ids.tolist()
+        else:
+            seq = list(token_ids)
+        raw_bytes = bytearray()
+        for tid in seq:
+            t = int(tid)
+            if skip_special_tokens and t in (self.pad_token_id, self.bos_token_id, self.eos_token_id):
+                continue
+            b = max(32, min(126, (t - 3) % 128))
+            raw_bytes.append(b)
+        return raw_bytes.decode("ascii", errors="replace")
+
+    def __call__(self, text: Union[str, list[str]], return_tensors: Optional[str] = None) -> dict[str, Any]:
+        import torch
+
+        if isinstance(text, str):
+            encoded = [self.encode(text)]
+        else:
+            encoded = [self.encode(t) for t in text]
+        if return_tensors == "pt":
+            max_len = max((len(s) for s in encoded), default=1)
+            padded = [s + [self.pad_token_id] * (max_len - len(s)) for s in encoded]
+            return {"input_ids": torch.tensor(padded, dtype=torch.long)}
+        return {"input_ids": encoded[0] if isinstance(text, str) else encoded}
+
+    def save_pretrained(self, save_directory: Union[str, Path]) -> None:
+        save_dir = Path(save_directory)
+        save_dir.mkdir(parents=True, exist_ok=True)
+        meta = {
+            "tokenizer_type": "custom",
+            "custom_builder": "kilat.data.tokenizer:build_byte_tokenizer",
+            "custom_kwargs": {
+                "vocab_size": self.vocab_size,
+                "pad_token_id": self.pad_token_id,
+                "bos_token_id": self.bos_token_id,
+                "eos_token_id": self.eos_token_id,
+            },
+        }
+        with open(save_dir / "byte_tokenizer_meta.json", "w", encoding="utf-8") as f:
+            import json
+
+            json.dump(meta, f, indent=2)
+
+
+def build_byte_tokenizer(config: TokenizerConfig) -> ByteLevelDebugTokenizer:
+    """Custom tokenizer builder entrypoint for ``TokenizerConfig(tokenizer_type='custom')``."""
+    kwargs = dict(getattr(config, "custom_kwargs", {}) or {})
+    return ByteLevelDebugTokenizer(
+        vocab_size=int(kwargs.get("vocab_size", 256)),
+        pad_token_id=int(kwargs.get("pad_token_id", 0)),
+        bos_token_id=int(kwargs.get("bos_token_id", 1)),
+        eos_token_id=int(kwargs.get("eos_token_id", 2)),
+    )

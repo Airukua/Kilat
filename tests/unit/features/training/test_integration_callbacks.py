@@ -7,9 +7,9 @@ import sys
 from unittest.mock import MagicMock
 import pytest
 
-from kilat.training.args import TrainingArguments
-from kilat.training.callbacks import TrainerControl, TrainerState
-from kilat.training.integration import (
+from kilat.engine.args import TrainingArguments
+from kilat.engine.callbacks import TrainerControl, TrainerState
+from kilat.engine.integrations import (
     CometMLCallback,
     ConsoleCallback,
     IntegrationCallback,

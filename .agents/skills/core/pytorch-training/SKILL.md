@@ -5,6 +5,8 @@ description: Deep PyTorch ML Training Engineering for Kilat. Covers autograd mec
 
 # PyTorch Training Engineering Skill
 
+> **Mandatory Spec Reference**: Before modifying `KilatTrainer`, `optimizer.py`, `scheduler.py`, or `arc/`, read `docs/01_AGENT_ANTI_HALLUCINATION_CONTRACT.md` and `docs/02_MATHEMATICAL_SPEC_AND_BUGFIX_PLAN.md` (covering partial gradient accumulation scaling, pure CE vs MoE aux-loss perplexity separation, 1D/LayerNorm `no_decay` rules, and forbidding synchronous `.all()`/`.any()`/`.item()` inside `nn.Module.forward()`).
+
 ## 1. When to Activate This Skill
 Activate this skill whenever the task involves:
 - Writing, modifying, or refactoring training loops (`KilatTrainer`, custom loops).

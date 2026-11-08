@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from kilat.arc.model import KilatTransformer
+from kilat.models.transformer import KilatTransformer
 from kilat.configs.model_config import KilatConfig
 from tests.shared.bdd import Scenario, Given, When, Then, And
 

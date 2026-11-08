@@ -10,12 +10,12 @@ import pytest
 import torch
 import torch.nn as nn
 
-from kilat.arc.attention import KilatAttention
-from kilat.arc.blocks import Block, RMSNorm
-from kilat.arc.ffn import DeepSeekMoE, FeedForward, SwiGLU
-from kilat.arc.model import KilatTransformer
-from kilat.arc.rope import RotaryPositionalEmbedding, apply_rotary_pos_emb, build_rope_cache, rope
-from kilat.arc.triton_ops import _cpu_global_decay, triton_global_decay
+from kilat.models.attention import KilatAttention
+from kilat.models.blocks import Block, RMSNorm
+from kilat.models.ffn import DeepSeekMoE, FeedForward, SwiGLU
+from kilat.models.transformer import KilatTransformer
+from kilat.models.rope import RotaryPositionalEmbedding, apply_rotary_pos_emb, build_rope_cache, rope
+from kilat.models.kernels.flash_decay import _cpu_global_decay, triton_global_decay
 from kilat.configs.model_config import KilatConfig
 from tests.shared.bdd import Scenario, Given, When, Then, And
 
@@ -33,6 +33,21 @@ def test_rmsnorm_behavior():
                 with And("the root mean square of elements along the last dimension is approximately 1.0"):
                     rms = torch.sqrt(torch.mean(out ** 2, dim=-1))
                     assert torch.allclose(rms, torch.ones_like(rms), atol=0.1)
+
+            with When("RMSNorm processes large-magnitude FP16 activations (|x| = 500 > 256) and FP64 gradcheck"):
+                x_fp16 = torch.full((2, 4, 64), 500.0, dtype=torch.float16)
+                norm_fp16 = RMSNorm(normalized_shape=64, eps=1e-6).to(torch.float16)
+                out_fp16 = norm_fp16(x_fp16)
+
+                norm_fp64 = RMSNorm(normalized_shape=8, eps=1e-6).to(torch.float64)
+                x_fp64 = torch.randn(2, 3, 8, dtype=torch.float64, requires_grad=True)
+                grad_ok = torch.autograd.gradcheck(norm_fp64, (x_fp64,), eps=1e-6, atol=1e-6)
+
+                with Then("FP16 output remains strictly finite without square overflow and FP64 gradcheck passes"):
+                    assert out_fp16.dtype == torch.float16
+                    assert torch.isfinite(out_fp16).all()
+                    assert torch.allclose(out_fp16.float(), torch.ones_like(out_fp16.float()), atol=1e-2)
+                    assert grad_ok is True
 
 
 def test_rope_embedding_and_application():

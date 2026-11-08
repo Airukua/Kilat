@@ -6,7 +6,7 @@ Follows BDD standards from UNIT_TESTING_STRUCTURE.md.
 import pytest
 import torch
 
-from kilat.pipeline.generation.sampler import (
+from kilat.inference.sampler import (
     AdaptiveSampler,
     ContrastiveSampler,
     GreedySampler,

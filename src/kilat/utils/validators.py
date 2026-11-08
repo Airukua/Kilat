@@ -36,6 +36,13 @@ def validate_positive_int(name: str, value: int) -> int:
         raise ValueError(f"{name} must be a positive integer, got {value!r}")
     return value
 
+
+def validate_non_negative_int(name: str, value: int) -> int:
+    """Validate that a value is a non-negative integer (>= 0, excluding bool)."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{name} must be a non-negative integer, got {value!r}")
+    return value
+
 def validate_non_negative_float(name: str, value: float) -> float:
     """
     Validate that a value is a non-negative float (>= 0).
