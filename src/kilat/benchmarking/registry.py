@@ -114,7 +114,7 @@ class TinyCausalAttention(nn.Module):
             dropout=0.0,
             norm_first=True,
         )
-        self.layers = nn.TransformerEncoder(layer, num_layers=n_layers)
+        self.layers = nn.TransformerEncoder(layer, num_layers=n_layers, enable_nested_tensor=False)
         self.lm_head = nn.Linear(d_model, vocab_size, bias=False)
         self.max_seq_len = max_seq_len
 
