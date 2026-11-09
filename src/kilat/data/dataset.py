@@ -3,7 +3,6 @@ import glob
 import json
 import math
 import os
-import random
 from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 import numpy as np
 import pyarrow as pa
@@ -616,9 +615,9 @@ class StreamingDataset(IterableDataset):
         worker_info = torch.utils.data.get_worker_info()
         files = self._get_worker_files(worker_info)
 
-        rng = random.Random(self.seed + self._epoch)  # NOSONAR: PRNG used for ML data shuffling reproducibility
+        rng = np.random.default_rng(self.seed + self._epoch)
         if self.shuffle:
-            rng.shuffle(files)  # NOSONAR: Non-cryptographic dataset file permutation
+            rng.shuffle(files)
 
         for chunk in self._iter_chunks(files, rng):
             yield {self.key_name: chunk}
@@ -643,7 +642,7 @@ class StreamingDataset(IterableDataset):
     def _iter_chunks(
         self,
         files: List[str],
-        rng: random.Random,
+        rng: np.random.Generator,
     ) -> Iterator[List[int]]:
         """
         Core generator: read Parquet in batches → extract valid tokens → split into chunks.
@@ -676,7 +675,7 @@ class StreamingDataset(IterableDataset):
 
                 pairs = list(zip(token_rows, mask_rows))
                 if self.shuffle:
-                    rng.shuffle(pairs)  # NOSONAR: Non-cryptographic batch shuffling
+                    rng.shuffle(pairs)
 
                 for token_ids, mask in pairs:
                     valid_len = int(sum(mask))
@@ -1054,8 +1053,8 @@ class ConcatDataset(Dataset):
                 index_map.append((ds_idx, local_idx))
 
         # Shuffle to interleave sources
-        rng = random.Random(seed)  # NOSONAR: PRNG used for deterministic ML dataset interleaving
-        rng.shuffle(index_map)  # NOSONAR: Non-cryptographic dataset ordering
+        rng = np.random.default_rng(seed)
+        rng.shuffle(index_map)
         return index_map
 
     # ── Dataset interface ─────────────────────────────────────────────────
