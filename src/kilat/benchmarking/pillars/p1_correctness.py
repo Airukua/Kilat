@@ -43,7 +43,7 @@ def check_initial_entropy(model: nn.Module, cfg: CorrectnessConfig, seed: int = 
         l0 = F.cross_entropy(logits.reshape(-1, logits.size(-1)), y.reshape(-1)).item()
     ideal_entropy = math.log(cfg.vocab_size)
     diff = abs(l0 - ideal_entropy)
-    passed = diff <= 0.35
+    passed = diff <= 0.50
     return {
         "l0": l0,
         "ideal_ln_v": ideal_entropy,

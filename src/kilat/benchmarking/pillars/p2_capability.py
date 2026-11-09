@@ -93,7 +93,7 @@ def _train_and_eval_single(
         logits = extract_logits(model(x))
         loss = loss_fn(logits, y)
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 10.0)
         opt.step()
 
     # Evaluation on held-out distribution

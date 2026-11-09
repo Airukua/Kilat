@@ -111,6 +111,8 @@ class TinyCausalAttention(nn.Module):
             dim_feedforward=4 * d_model,
             batch_first=True,
             activation="gelu",
+            dropout=0.0,
+            norm_first=True,
         )
         self.layers = nn.TransformerEncoder(layer, num_layers=n_layers)
         self.lm_head = nn.Linear(d_model, vocab_size, bias=False)
