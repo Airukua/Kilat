@@ -107,6 +107,15 @@ cache/huggingface/
 # Large binary files
 *.npy
 *.npy_meta.json
+*.meta.json
+*.npy.meta.json
 *.safetensors
 /model/
 data/fine-web/
+
+# Experiments and generated experiment artifacts
+/experiments/
+experiments/
+checkpoints/
+telemetry.jsonl
+verify_signoff/

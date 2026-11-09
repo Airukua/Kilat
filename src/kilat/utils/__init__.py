@@ -1,4 +1,5 @@
 from kilat.utils.banner import get_kilat_banner, print_kilat_banner
+from kilat.utils.dashboard import DashboardLogHandler, KilatDashboard
 from kilat.utils.base_model import (
     BaseConfig,
     BasePreTrainedModel,
@@ -30,6 +31,8 @@ from kilat.utils.validators import (
 
 
 __all__ = [
+    "KilatDashboard",
+    "DashboardLogHandler",
     "get_kilat_banner",
     "print_kilat_banner",
     "BaseConfig",

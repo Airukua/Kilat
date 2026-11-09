@@ -4,6 +4,7 @@ import logging
 import math
 import os
 import random
+import sys
 import time
 from typing import Any, Callable, Optional
 
@@ -44,6 +45,7 @@ from .checkpoint import (
 from .integrations import DEFAULT_CALLBACKS, get_reporting_integration_callbacks
 from .optimizer import create_optimizer, resolve_amp_dtype
 from .scheduler import get_scheduler
+from kilat.utils.dashboard import KilatDashboard
 from kilat.utils.report import count_parameters
 
 logger = logging.getLogger(__name__)
@@ -554,6 +556,44 @@ class KilatTrainer:
                 logger.info("Early stopping triggered at epoch %d.", epoch + 1)
                 break
 
+    def _create_dashboard(self, total_steps: int, resume_step: int) -> Optional[KilatDashboard]:
+        """Create and start an interactive KilatDashboard if stdout is an interactive TTY."""
+        args = self.args
+        if not (self.state.is_world_process_zero and sys.stdout.isatty() and getattr(args, "use_dashboard", True)):
+            return None
+
+        optim_name = type(self.optimizer).__name__
+        if hasattr(self.optimizer, "param_groups") and self.optimizer.param_groups:
+            pg = self.optimizer.param_groups[0]
+            if "betas" in pg:
+                b1, b2 = pg["betas"]
+                optim_name = f"{optim_name} (β₁={b1:.1f}, β₂={b2:.2f})"
+
+        grad_acc = max(1, args.gradient_accumulation_steps)
+        batch_size = args.per_device_train_batch_size * grad_acc
+        mp_mode = "BF16" if getattr(args, "bf16", False) else ("FP16" if getattr(args, "fp16", False) else "FP32")
+        tf32_enabled = torch.backends.cuda.matmul.allow_tf32 if torch.cuda.is_available() else False
+        cuda_dev = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU"
+
+        try:
+            dashboard = KilatDashboard(
+                total_steps=total_steps,
+                initial_step=resume_step,
+                learning_rate=get_current_lr(self.optimizer),
+                batch_size=batch_size,
+                optimizer_name=optim_name,
+                weight_decay=args.weight_decay,
+                grad_clip=args.max_grad_norm,
+                mixed_precision=mp_mode,
+                tf32=tf32_enabled,
+                cuda_device=cuda_dev,
+            )
+            dashboard.start()
+            return dashboard
+        except Exception as e:
+            logger.warning("Failed to start KilatDashboard: %s. Falling back to classic progress bar.", e)
+            return None
+
     def _train_by_steps(self) -> None:
         """
         Step‑budget loop: run until `global_step` reaches `max_steps`.
@@ -571,14 +611,17 @@ class KilatTrainer:
         total_steps = self.state.max_steps
         resume_step = self.state.global_step
 
-        step_bar = tqdm(
-            total=total_steps,
-            initial=resume_step,
-            desc="Training",
-            unit="step",
-            disable=not self.state.is_world_process_zero,
-            dynamic_ncols=True,
-        )
+        dashboard = self._create_dashboard(total_steps, resume_step)
+        step_bar: Optional[tqdm] = None
+        if dashboard is None:
+            step_bar = tqdm(
+                total=total_steps,
+                initial=resume_step,
+                desc="Training",
+                unit="step",
+                disable=not self.state.is_world_process_zero,
+                dynamic_ncols=True,
+            )
 
         self.model.train()
         acc_loss = 0.0
@@ -654,12 +697,25 @@ class KilatTrainer:
                 acc_aux_loss = 0.0
                 acc_steps = 0
 
-                step_bar.update(1)
-                step_bar.set_postfix(
-                    loss=f"{avg_loss:.4f}",
-                    ppl=f"{compute_perplexity(avg_ce_loss):.2f}",
-                    lr=f"{get_current_lr(self.optimizer):.2e}",
-                )
+                cur_lr = get_current_lr(self.optimizer)
+                cur_ppl = compute_perplexity(avg_ce_loss)
+                step_tokens = self._last_step_tokens
+
+                if dashboard is not None:
+                    dashboard.update(
+                        step=self.state.global_step,
+                        loss=avg_loss,
+                        lr=cur_lr,
+                        ppl=cur_ppl,
+                        tokens=step_tokens,
+                    )
+                elif step_bar is not None:
+                    step_bar.update(1)
+                    step_bar.set_postfix(
+                        loss=f"{avg_loss:.4f}",
+                        ppl=f"{cur_ppl:.2f}",
+                        lr=f"{cur_lr:.2e}",
+                    )
 
                 self.callback_handler.on_step_end(
                     self.state,
@@ -676,7 +732,10 @@ class KilatTrainer:
                 if self.control.should_training_stop:
                     break
 
-        step_bar.close()
+        if dashboard is not None:
+            dashboard.stop()
+        if step_bar is not None:
+            step_bar.close()
 
     def _run_epoch(self, epoch: int, num_epochs: int) -> None:
         """
@@ -712,15 +771,18 @@ class KilatTrainer:
             self._batches_in_current_cycle = 0
             raw_iter = iter(self.train_dataloader)
 
-        step_bar = tqdm(
-            total=steps_in_epoch,
-            initial=skip_batches,
-            desc=f"Epoch {epoch + 1}/{num_epochs}",
-            unit="batch",
-            leave=False,
-            disable=not self.state.is_world_process_zero,
-            dynamic_ncols=True,
-        )
+        dashboard = self._create_dashboard(steps_in_epoch, skip_batches)
+        step_bar: Optional[tqdm] = None
+        if dashboard is None:
+            step_bar = tqdm(
+                total=steps_in_epoch,
+                initial=skip_batches,
+                desc=f"Epoch {epoch + 1}/{num_epochs}",
+                unit="batch",
+                leave=False,
+                disable=not self.state.is_world_process_zero,
+                dynamic_ncols=True,
+            )
 
         acc_loss = 0.0
         acc_ce_loss = 0.0
@@ -734,7 +796,8 @@ class KilatTrainer:
             except StopIteration:
                 break
             self._batches_in_current_cycle = local_step + 1
-            step_bar.update(1)
+            if step_bar is not None:
+                step_bar.update(1)
 
             if acc_steps == 0:
                 window_size = max(1, min(grad_acc, steps_in_epoch - local_step))
@@ -771,11 +834,24 @@ class KilatTrainer:
                 acc_aux_loss = 0.0
                 acc_steps = 0
 
-                step_bar.set_postfix(
-                    loss=f"{avg_loss:.4f}",
-                    ppl=f"{compute_perplexity(avg_ce_loss):.2f}",
-                    lr=f"{get_current_lr(self.optimizer):.2e}",
-                )
+                cur_lr = get_current_lr(self.optimizer)
+                cur_ppl = compute_perplexity(avg_ce_loss)
+                step_tokens = self._last_step_tokens
+
+                if dashboard is not None:
+                    dashboard.update(
+                        step=self.state.global_step,
+                        loss=avg_loss,
+                        lr=cur_lr,
+                        ppl=cur_ppl,
+                        tokens=step_tokens,
+                    )
+                elif step_bar is not None:
+                    step_bar.set_postfix(
+                        loss=f"{avg_loss:.4f}",
+                        ppl=f"{cur_ppl:.2f}",
+                        lr=f"{cur_lr:.2e}",
+                    )
 
                 self.callback_handler.on_step_end(
                     self.state,
@@ -792,7 +868,10 @@ class KilatTrainer:
                 if self.control.should_training_stop or self.control.should_epoch_stop:
                     break
 
-        step_bar.close()
+        if dashboard is not None:
+            dashboard.stop()
+        if step_bar is not None:
+            step_bar.close()
 
     # ─────────────────────────────────────────────────────────────────────────
     # Core compute primitives
