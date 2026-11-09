@@ -133,7 +133,7 @@ def overfit_single_batch(
     model = model_builder().to(cfg.device)
     opt = torch.optim.Adam(model.parameters(), lr=cfg.lr)
 
-    x = torch.randint(0, cfg.vocab_size, (cfg.batch_size, cfg.seq_len), generator=gen, device=cfg.device)
+    x = torch.randint(0, cfg.vocab_size, (cfg.batch_size, cfg.seq_len), generator=gen).to(cfg.device)
     y = torch.roll(x, shifts=-1, dims=1)
 
     losses = []

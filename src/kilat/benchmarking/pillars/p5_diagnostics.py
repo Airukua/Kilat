@@ -49,7 +49,7 @@ def evaluate_position_loss(
 
     with torch.no_grad():
         for _ in range(n_batches):
-            x = torch.randint(0, cfg.vocab_size, (cfg.batch_size, cfg.seq_len), generator=gen, device=cfg.device)
+            x = torch.randint(0, cfg.vocab_size, (cfg.batch_size, cfg.seq_len), generator=gen).to(cfg.device)
             y = torch.roll(x, -1, dims=1)
             logits = extract_logits(model(x))
             loss_map = F.cross_entropy(logits.permute(0, 2, 1), y, reduction="none")
