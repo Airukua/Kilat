@@ -35,6 +35,7 @@ reports/
 # Coverage and build outputs
 .coverage
 .coverage.*
+coverage.xml
 htmlcov/
 build/
 dist/
