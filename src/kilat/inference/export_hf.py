@@ -354,7 +354,7 @@ def load_model_weights(
         bin_path = checkpoint_path / "pytorch_model.bin"
         logger.info(f"Loading weights from {bin_path}")
         try:
-            state_dict = torch.load(str(bin_path), map_location=device)
+            state_dict = torch.load(str(bin_path), map_location=device, weights_only=True)
             metadata["source"] = "pytorch_model.bin"
         except Exception as e:
             raise WeightLoadingError(f"Failed to load pytorch_model.bin: {e}")
@@ -364,7 +364,7 @@ def load_model_weights(
         training_state_path = checkpoint_path / "training_state.pt"
         logger.info(f"Loading weights from {training_state_path}")
         try:
-            training_state = torch.load(str(training_state_path), map_location=device)
+            training_state = torch.load(str(training_state_path), map_location=device, weights_only=True)
             if "model_state_dict" in training_state:
                 state_dict = training_state["model_state_dict"]
             elif "model" in training_state:

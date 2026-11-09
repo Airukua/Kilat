@@ -616,9 +616,9 @@ class StreamingDataset(IterableDataset):
         worker_info = torch.utils.data.get_worker_info()
         files = self._get_worker_files(worker_info)
 
-        rng = random.Random(self.seed + self._epoch)
+        rng = random.Random(self.seed + self._epoch)  # NOSONAR: PRNG used for ML data shuffling reproducibility
         if self.shuffle:
-            rng.shuffle(files)
+            rng.shuffle(files)  # NOSONAR: Non-cryptographic dataset file permutation
 
         for chunk in self._iter_chunks(files, rng):
             yield {self.key_name: chunk}
@@ -676,7 +676,7 @@ class StreamingDataset(IterableDataset):
 
                 pairs = list(zip(token_rows, mask_rows))
                 if self.shuffle:
-                    rng.shuffle(pairs)
+                    rng.shuffle(pairs)  # NOSONAR: Non-cryptographic batch shuffling
 
                 for token_ids, mask in pairs:
                     valid_len = int(sum(mask))
@@ -1054,8 +1054,8 @@ class ConcatDataset(Dataset):
                 index_map.append((ds_idx, local_idx))
 
         # Shuffle to interleave sources
-        rng = random.Random(seed)
-        rng.shuffle(index_map)
+        rng = random.Random(seed)  # NOSONAR: PRNG used for deterministic ML dataset interleaving
+        rng.shuffle(index_map)  # NOSONAR: Non-cryptographic dataset ordering
         return index_map
 
     # ── Dataset interface ─────────────────────────────────────────────────

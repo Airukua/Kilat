@@ -308,7 +308,7 @@ class KilatTransformer(KilatPreTrainedModel, GenerationMixin):
         weights_path = pretrained_path / WEIGHTS_NAME
         if weights_path.exists():
             try:
-                weights = torch.load(weights_path, map_location='cpu', weights_only=False)
+                weights = torch.load(weights_path, map_location='cpu', weights_only=True)
                 for key in weights.keys():
                     if 'q_rope_proj' in key or 'k_rope_proj' in key:
                         return True
@@ -343,7 +343,7 @@ class KilatTransformer(KilatPreTrainedModel, GenerationMixin):
         # Try pickle single file
         weights_path = pretrained_path / WEIGHTS_NAME
         if weights_path.exists():
-            return torch.load(weights_path, map_location='cpu', weights_only=False)
+            return torch.load(weights_path, map_location='cpu', weights_only=True)
 
         # Try sharded safetensors
         index_path = pretrained_path / SAFE_WEIGHTS_INDEX
@@ -367,7 +367,7 @@ class KilatTransformer(KilatPreTrainedModel, GenerationMixin):
             state_dict = {}
             for shard_name in shard_files:
                 shard_path = pretrained_path / shard_name
-                shard_dict = torch.load(shard_path, map_location='cpu', weights_only=False)
+                shard_dict = torch.load(shard_path, map_location='cpu', weights_only=True)
                 state_dict.update(shard_dict)
             return state_dict
 

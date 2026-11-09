@@ -752,12 +752,7 @@ class BasePreTrainedModel(nn.Module):
                     return _st_load(str(weights_file), device=str(map_location))
                 else:
                     # weights_only=True prevents arbitrary code execution during load
-                    # Added fallback for older models that may not support weights_only
-                    try:
-                        return torch.load(weights_file, map_location=map_location, weights_only=True)
-                    except Exception as e:
-                        logger.warning(f"Failed to load with weights_only=True: {e}. Trying without...")
-                        return torch.load(weights_file, map_location=map_location, weights_only=False)
+                    return torch.load(weights_file, map_location=map_location, weights_only=True)
             else:
                 # Index file - load all shards and merge
                 with open(weights_file, "r", encoding="utf-8") as f:
@@ -775,16 +770,9 @@ class BasePreTrainedModel(nn.Module):
                             raise ImportError("safetensors required to load this file.")
                         shard_dict = _st_load(str(shard_path), device=str(map_location))
                     else:
-                        # Added fallback for sharded pickle files too
-                        try:
-                            shard_dict = torch.load(
-                                shard_path, map_location=map_location, weights_only=True
-                            )
-                        except Exception as e:
-                            logger.warning(f"Failed to load shard with weights_only=True: {e}. Trying without...")
-                            shard_dict = torch.load(
-                                shard_path, map_location=map_location, weights_only=False
-                            )
+                        shard_dict = torch.load(
+                            shard_path, map_location=map_location, weights_only=True
+                        )
                     merged.update(shard_dict)
                 return merged
 
