@@ -104,14 +104,17 @@ def main():
     }
     target_pillars = pillar_map[args.command]
 
+    all_passed = True
     for model_name in args.models:
-        harness.certify_model(
+        results = harness.certify_model(
             model_name=model_name,
             output_dir=args.output,
             pillars=target_pillars,
         )
+        if any(not res.get("passed", True) for res in results.values()):
+            all_passed = False
 
-    return 0
+    return 0 if all_passed else 1
 
 
 if __name__ == "__main__":
