@@ -349,7 +349,7 @@ class KilatDashboard:
         return t
 
     def _render_overview(self, term_width: int) -> RenderableType:
-        """Render the progress bar and 6 stat cards."""
+        """Render the progress bar and 6 stat cards matching reference design exactly."""
         pct = (self.current_step / self.total_steps) * 100.0
 
         # Timing
@@ -375,38 +375,73 @@ class KilatDashboard:
         else:
             speed_str = f"{self.tokens_per_sec:.1f} tok/s"
 
-        # Step string formatting for 80-col responsiveness
-        if term_width >= 100:
-            step_val = f"[bold #FFFFFF]{self.current_step:,}[/] [dim]/ {self.total_steps:,}[/]"
-        else:
-            total_k = f"{self.total_steps // 1000}k" if self.total_steps >= 1000 else str(self.total_steps)
-            step_val = f"[bold #FFFFFF]{self.current_step:,}[/] [dim]/ {total_k}[/]"
+        # Top line: Title on left, percentage and steps on right
+        top = Table.grid(expand=True)
+        top.add_column()
+        top.add_column(justify="right")
+        top.add_row(
+            " [bold #FF8800]📊[/] [bold #FFFFFF]Training Overview[/]",
+            f"[bold #FF9900]{pct:.1f}%[/]\n[dim #888888]({self.current_step:,} / {self.total_steps:,} steps)[/]",
+        )
 
-        # Progress bar with inline percentage & step counter
-        pct_str = f" {pct:.1f}% ({self.current_step:,} / {self.total_steps:,})"
-        inner_width = max(10, term_width - 6 - len(pct_str))
-        filled = int(inner_width * (self.current_step / self.total_steps))
-        empty = max(0, inner_width - filled)
-        bar_str = f"[bold #FF6B00]{'━' * filled}[/][#262626]{'─' * empty}[/][bold #FF9900]{pct_str}[/]"
+        # Progress bar: thick rounded-style bar
+        inner_w = max(20, term_width - 6)
+        filled = max(0, min(inner_w, int(inner_w * (self.current_step / self.total_steps))))
+        empty = max(0, inner_w - filled)
+        bar_str = f" [bold #FF6B00]{'█' * filled}[/][#262626]{'█' * empty}[/]"
 
+        # 6 Stat cards with dividers
         stats = Table.grid(expand=True)
-        for _ in range(6):
-            stats.add_column(ratio=1, no_wrap=True)
+        div = "[dim #444444]│[/]"
 
-        c1 = f"[bold #00D4FF]🏃 STEP[/]\n{step_val}"
-        c2 = f"[bold #A855F7]📊 LOSS[/]\n[bold #FFFFFF]{self.train_loss:.4f}[/] {arrow}"
-        c3 = f"[bold #06B6D4]⏱ PPL[/]\n[bold #FFFFFF]{self.perplexity:.2f}[/]"
-        c4 = f"[bold #EAB308]⚡ SPEED[/]\n[bold #FFFFFF]{speed_str}[/]"
-        c5 = f"[bold #3B82F6]🕒 ELAPSED[/]\n[bold #FFFFFF]{self._format_time(elapsed)}[/]"
-        c6 = f"[bold #F97316]⏳ ETA[/]\n[bold #FFFFFF]{self._format_time(eta)}[/]"
+        if term_width >= 96:
+            stats.add_column(ratio=14, no_wrap=True)
+            stats.add_column(width=3, justify="center")
+            stats.add_column(ratio=13, no_wrap=True)
+            stats.add_column(width=3, justify="center")
+            stats.add_column(ratio=18, no_wrap=True)
+            stats.add_column(width=3, justify="center")
+            stats.add_column(ratio=11, no_wrap=True)
+            stats.add_column(width=3, justify="center")
+            stats.add_column(ratio=10, no_wrap=True)
+            stats.add_column(width=3, justify="center")
+            stats.add_column(ratio=11, no_wrap=True)
 
-        stats.add_row(c1, c2, c3, c4, c5, c6)
+            c1 = f" [bold #00D4FF]🏃 STEP[/]\n [bold #FFFFFF]{self.current_step:,}[/] [dim #888888]/ {self.total_steps:,}[/]"
+            c2 = f"[bold #A855F7]📊 TRAIN LOSS[/]\n[bold #FFFFFF]{self.train_loss:.4f}[/] {arrow}"
+            c3 = f"[bold #00E5FF]⏱ PERPLEXITY (PPL)[/]\n[bold #FFFFFF]{self.perplexity:.2f}[/]"
+            c4 = f"[bold #FFA500]⚡ SPEED[/]\n[bold #FFFFFF]{speed_str}[/]"
+            c5 = f"[bold #00B0FF]🕒 ELAPSED[/]\n[bold #FFFFFF]{self._format_time(elapsed)}[/]"
+            c6 = f"[bold #FF9100]⏳ ETA[/]\n[bold #FFFFFF]{self._format_time(eta)}[/]"
+            stats.add_row(c1, div, c2, div, c3, div, c4, div, c5, div, c6)
+        else:
+            stats.add_column(ratio=10, no_wrap=True)
+            stats.add_column(width=1)
+            stats.add_column(ratio=10, no_wrap=True)
+            stats.add_column(width=1)
+            stats.add_column(ratio=14, no_wrap=True)
+            stats.add_column(width=1)
+            stats.add_column(ratio=10, no_wrap=True)
+            stats.add_column(width=1)
+            stats.add_column(ratio=10, no_wrap=True)
+            stats.add_column(width=1)
+            stats.add_column(ratio=10, no_wrap=True)
+
+            c1 = f"[bold #00D4FF]🏃 STEP[/]\n[bold #FFFFFF]{self.current_step:,}[/]"
+            c2 = f"[bold #A855F7]📊 LOSS[/]\n[bold #FFFFFF]{self.train_loss:.4f}[/] {arrow}"
+            c3 = f"[bold #00E5FF]⏱ PERPLEXITY[/]\n[bold #FFFFFF]{self.perplexity:.2f}[/]"
+            c4 = f"[bold #FFA500]⚡ SPEED[/]\n[bold #FFFFFF]{speed_str}[/]"
+            c5 = f"[bold #00B0FF]🕒 ELAPSED[/]\n[bold #FFFFFF]{self._format_time(elapsed)}[/]"
+            c6 = f"[bold #FF9100]⏳ ETA[/]\n[bold #FFFFFF]{self._format_time(eta)}[/]"
+            stats.add_row(c1, div, c2, div, c3, div, c4, div, c5, div, c6)
 
         grid = Table.grid(expand=True)
+        grid.add_row(top)
         grid.add_row(bar_str)
+        grid.add_row("")
         grid.add_row(stats)
 
-        return Panel(grid, title="[bold #FFA500]📊 Training Overview[/]", border_style="#333333", width=term_width)
+        return Panel(grid, border_style="#333333", width=term_width)
 
     def _render_curves(self, width: int = 40, height: int = 3, max_val: float = 3.0) -> str:
         """Render dual Braille curves (Loss in orange, PPL in blue) with axes."""
