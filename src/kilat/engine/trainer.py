@@ -576,6 +576,7 @@ class KilatTrainer:
         cuda_dev = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU"
 
         try:
+            init_logs = getattr(self, "_initial_dashboard_logs", None)
             dashboard = KilatDashboard(
                 total_steps=total_steps,
                 initial_step=resume_step,
@@ -587,6 +588,7 @@ class KilatTrainer:
                 mixed_precision=mp_mode,
                 tf32=tf32_enabled,
                 cuda_device=cuda_dev,
+                initial_logs=init_logs,
             )
             dashboard.start()
             return dashboard
