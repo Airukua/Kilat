@@ -169,6 +169,7 @@ class TrainingArguments:
         # Reporting — accepts str or list[str] for integrations module
         report_to: Union[str, list[str]] = "none",
         run_name: Optional[str] = None,
+        torch_compile: bool = False,
         # Reproducibility
         seed: int = 42,
     ) -> None:
@@ -243,6 +244,7 @@ class TrainingArguments:
             self.report_to = list(report_to)
 
         self.run_name = run_name
+        self.torch_compile = bool(torch_compile)
         self.seed = seed
 
 
@@ -298,6 +300,7 @@ class TrainingArguments:
             "precision": self.precision,
             "report_to": list(self.report_to),
             "run_name": self.run_name,
+            "torch_compile": self.torch_compile,
             "seed": self.seed,
         }
 

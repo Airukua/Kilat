@@ -438,28 +438,43 @@ def _encode_record(
     key_name: str,
     text_key: str,
     tokenizer_obj: object | None,
+    append_eos: bool = False,
 ) -> list[int]:
-    if isinstance(record, list):
-        return [int(x) for x in record]
     tok = (
         tokenizer_obj
         if (tokenizer_obj is not None and not isinstance(tokenizer_obj, str))
         else _resolve_preprocess_tokenizer(tokenizer_obj)
     )
-    if isinstance(record, str):
+    ids: list[int] = []
+    if isinstance(record, list):
+        ids = [int(x) for x in record]
+    elif isinstance(record, str):
         encoded = tok.encode(record)  # type: ignore[attr-defined]
-        return [int(x) for x in encoded]
-    if isinstance(record, dict):
+        ids = [int(x) for x in encoded]
+    elif isinstance(record, dict):
         if key_name in record and record[key_name] is not None:
             val = record[key_name]
             if isinstance(val, list):
-                return [int(x) for x in val]
-        if text_key in record and record[text_key] is not None:
+                ids = [int(x) for x in val]
+        if not ids and text_key in record and record[text_key] is not None:
             encoded = tok.encode(str(record[text_key]))  # type: ignore[attr-defined]
-            return [int(x) for x in encoded]
-    raise KeyError(
-        f"Record does not contain '{key_name}' token list or '{text_key}' text field."
-    )
+            ids = [int(x) for x in encoded]
+    else:
+        raise KeyError(
+            f"Record does not contain '{key_name}' token list or '{text_key}' text field."
+        )
+
+    if not ids and isinstance(record, dict):
+        raise KeyError(
+            f"Record does not contain '{key_name}' token list or '{text_key}' text field."
+        )
+
+    if append_eos and tok is not None and ids:
+        eos_id = getattr(tok, "eos_token_id", None)
+        if eos_id is not None and ids[-1] != eos_id:
+            ids.append(int(eos_id))
+
+    return ids
 
 
 def prepare_memmap_dataset(
@@ -472,6 +487,7 @@ def prepare_memmap_dataset(
     dtype: Any = np.int32,
     force_overwrite: bool = False,
     verbose: bool = True,
+    append_eos: bool = False,
 ) -> dict[str, Any]:
     """
     Unified corpus-to-memmap ingestion pipeline supporting Parquet, JSONL/JSON, and TXT.
@@ -496,10 +512,11 @@ def prepare_memmap_dataset(
     # Resolve tokenizer instance once upfront to avoid O(N) reload overhead
     resolved_tokenizer = _resolve_preprocess_tokenizer(tokenizer) if tokenizer is not None else None
 
-    # Fast native path for pre-tokenized Parquet -> .npy when no text tokenization needed
+    # Fast native path for pre-tokenized Parquet -> .npy when no text tokenization or EOS injection needed
     if (
         out_path.suffix == ".npy"
         and tokenizer is None
+        and not append_eos
         and (in_path.is_dir() or in_path.suffix in {".parquet", ".parq"})
     ):
         parquet_to_memmap(
@@ -525,7 +542,9 @@ def prepare_memmap_dataset(
                     for item in batch.column(0).to_pylist():
                         if item is None or item == "" or item == []:
                             continue
-                        ids = _encode_record({col: item}, key_name, text_key, resolved_tokenizer)
+                        ids = _encode_record(
+                            {col: item}, key_name, text_key, resolved_tokenizer, append_eos=append_eos
+                        )
                         if ids:
                             token_chunks.append(np.asarray(ids, dtype=dtype_obj))
         elif in_path.suffix == ".jsonl":
@@ -535,7 +554,9 @@ def prepare_memmap_dataset(
                     if not stripped:
                         continue
                     obj = json.loads(stripped)
-                    ids = _encode_record(obj, key_name, text_key, resolved_tokenizer)
+                    ids = _encode_record(
+                        obj, key_name, text_key, resolved_tokenizer, append_eos=append_eos
+                    )
                     if ids:
                         token_chunks.append(np.asarray(ids, dtype=dtype_obj))
         elif in_path.suffix == ".json":
@@ -543,13 +564,17 @@ def prepare_memmap_dataset(
                 payload = json.load(f)
             records = payload if isinstance(payload, list) else [payload]
             for obj in records:
-                ids = _encode_record(obj, key_name, text_key, resolved_tokenizer)
+                ids = _encode_record(
+                    obj, key_name, text_key, resolved_tokenizer, append_eos=append_eos
+                )
                 if ids:
                     token_chunks.append(np.asarray(ids, dtype=dtype_obj))
         else:
             with open(in_path, "r", encoding="utf-8") as f:
                 text = f.read()
-            ids = _encode_record(text, key_name, text_key, tokenizer)
+            ids = _encode_record(
+                text, key_name, text_key, resolved_tokenizer, append_eos=append_eos
+            )
             if ids:
                 token_chunks.append(np.asarray(ids, dtype=dtype_obj))
 

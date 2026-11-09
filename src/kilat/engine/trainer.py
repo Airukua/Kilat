@@ -307,6 +307,10 @@ class KilatTrainer:
             epsilon=args.epsilon,
         )
 
+        # Optional JIT compilation via torch.compile (Triton backend)
+        if getattr(args, "torch_compile", False) and hasattr(torch, "compile"):
+            self.model = torch.compile(self.model)
+
         # Scheduler is created later in train() after total steps are known
         self.scheduler: Any = None
 

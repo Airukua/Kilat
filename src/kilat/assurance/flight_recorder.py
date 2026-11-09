@@ -122,7 +122,8 @@ class FlightRecorderCallback(TrainerCallback):
             os.makedirs(forensics_dir, exist_ok=True)
             forensic_path = os.path.join(forensics_dir, f"crash_step_{state.global_step}.pt")
 
-            raw_model = self._unwrap_model(model or self._model_ref)
+            m_in = model if model is not None else self._model_ref
+            raw_model = self._unwrap_model(m_in)
             layer_norms: dict[str, dict[str, float]] = {}
             if raw_model is not None:
                 for name, p in raw_model.named_parameters():
@@ -174,7 +175,8 @@ class FlightRecorderCallback(TrainerCallback):
     ) -> Optional[TrainerControl]:
         _ = control
         trainer = kwargs.get("trainer")
-        model = kwargs.get("model") or self._model_ref
+        kw_model = kwargs.get("model")
+        model = kw_model if kw_model is not None else self._model_ref
         if model is not None:
             self._model_ref = model
 
@@ -252,7 +254,9 @@ class FlightRecorderCallback(TrainerCallback):
             return None
 
         trainer = kwargs.get("trainer")
-        model = self._unwrap_model(kwargs.get("model") or self._model_ref)
+        kw_model = kwargs.get("model")
+        m_in = kw_model if kw_model is not None else self._model_ref
+        model = self._unwrap_model(m_in)
         now = time.perf_counter()
         elapsed = max(1e-6, now - (self._last_log_time or now))
         self._last_log_time = now

@@ -250,6 +250,14 @@ class KilatTransformer(KilatPreTrainedModel, GenerationMixin):
         self._apply_residual_depth_scaling()
         self._last_loss_breakdown: Optional[dict[str, torch.Tensor]] = None
 
+    def __len__(self) -> int:
+        """Return number of transformer layers."""
+        return len(self.layers)
+
+    def __bool__(self) -> bool:
+        """Always True to avoid Dynamo OptimizedModule truthiness traps."""
+        return True
+
     def _tie_weights(self):
         """
         Tie the weights between input embeddings and output embeddings.
@@ -437,10 +445,14 @@ class KilatTransformer(KilatPreTrainedModel, GenerationMixin):
 
         if missing:
             # Filter out tied weights from missing keys (they're expected)
-            tied_keys = set(model._tied_weights_keys.values())
+            tied_keys = set(model._tied_weights_keys.keys()) | set(
+                model._tied_weights_keys.values()
+            )
             missing_filtered = [k for k in missing if k not in tied_keys]
             if missing_filtered:
-                logger.warning(f"Missing keys (may affect functionality): {missing_filtered[:10]}...")
+                logger.warning(
+                    f"Missing keys (may affect functionality): {missing_filtered[:10]}..."
+                )
         if unexpected:
             logger.warning(f"Unexpected keys (ignored): {unexpected[:10]}...")
 

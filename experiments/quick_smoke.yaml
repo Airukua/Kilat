@@ -48,8 +48,8 @@ tokenizer:
 
 dataloader:
   dataset_format: memmap
-  train_data_path: data/tinystories/train.npy
-  eval_data_path: data/tinystories/eval.npy
+  train_data_path: experiments/train.npy
+  eval_data_path: experiments/eval.npy
   allow_train_val_overlap: true
   train_batch_size: 8
   eval_batch_size: 8

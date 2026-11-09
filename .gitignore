@@ -60,6 +60,8 @@ Thumbs.db
 /model/
 !src/kilat/models/
 !src/kilat/models/**
+src/kilat/models/**/__pycache__/
+src/kilat/models/**/*.py[cod]
 saved_models/
 saved_model/
 pretrained_models/

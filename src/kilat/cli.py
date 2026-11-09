@@ -199,6 +199,7 @@ def _cmd_prepare_data(args: argparse.Namespace) -> int:
         dtype=np.dtype(args.dtype),
         force_overwrite=bool(args.force),
         verbose=not bool(args.quiet or args.json),
+        append_eos=bool(args.append_eos),
     )
     if args.json:
         print(json.dumps(meta, indent=2))
@@ -223,12 +224,31 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         device_str = args.device
 
     model = KilatTransformer.from_pretrained(str(ckpt_dir))
-    try:
-        tokenizer = AutoTokenizer.from_pretrained(str(ckpt_dir), local_files_only=True)
-        if getattr(tokenizer, "eos_token_id", None) is None and getattr(model.config, "eos_token_id", None) is not None:
-            tokenizer.eos_token_id = int(model.config.eos_token_id)
-    except Exception:
-        tokenizer = ByteLevelDebugTokenizer(vocab_size=int(model.config.vocab_size))
+    cfg_yaml = ckpt_dir / "config.yaml"
+    if cfg_yaml.is_file():
+        try:
+            cfg = MainConfig.from_yaml(cfg_yaml)
+            tokenizer = cfg.tokenizer.build()
+        except Exception:
+            tokenizer = None
+    else:
+        tokenizer = None
+
+    if tokenizer is None:
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(
+                str(ckpt_dir), local_files_only=True
+            )
+        except Exception:
+            tokenizer = ByteLevelDebugTokenizer(
+                vocab_size=int(model.config.vocab_size)
+            )
+
+    if (
+        getattr(tokenizer, "eos_token_id", None) is None
+        and getattr(model.config, "eos_token_id", None) is not None
+    ):
+        tokenizer.eos_token_id = int(model.config.eos_token_id)
 
     generator = TextGenerator(model=model, tokenizer=tokenizer, device=device_str)
     generated = generator.generate(
@@ -415,6 +435,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="uint16",
         choices=["uint16", "int32", "int64"],
         help="Target integer dtype for memmap storage (default: uint16)",
+    )
+    p_prep.add_argument(
+        "--append-eos",
+        action="store_true",
+        default=False,
+        help="Append tokenizer EOS token ID at the end of each document/record",
     )
     p_prep.add_argument("--force", action="store_true", help="Overwrite output file if it exists")
     p_prep.add_argument("-q", "--quiet", action="store_true", help="Suppress banner and progress")

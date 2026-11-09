@@ -107,6 +107,8 @@ class TrainingConfig:
         # ---- Reporting ----
         report_to: Union[str, list[str]] = "none",
         run_name: Optional[str] = "kilat-run",
+        # ---- Optimization & compilation ----
+        torch_compile: bool = False,
         # ---- Reproducibility ----
         seed: int = 42,
     ):
@@ -275,6 +277,9 @@ class TrainingConfig:
             self.report_to = list(report_to)
         self.run_name = run_name
         
+        # Optimization & compilation
+        self.torch_compile: bool = bool(torch_compile)
+
         # Reproducibility
         self.seed = seed
 
@@ -322,6 +327,7 @@ class TrainingConfig:
             "precision": self.precision,
             "report_to": self.report_to,
             "run_name": self.run_name,
+            "torch_compile": self.torch_compile,
             "seed": self.seed,
         }
 
