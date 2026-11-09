@@ -1,0 +1,45 @@
+# Fast Smoke Test Configuration for KMCP Certification Pipeline (CPU/Laptop friendly)
+pillar1:
+  seq_len: 32
+  vocab_size: 64
+  batch_size: 4
+  overfit_steps: 100
+  overfit_loss_threshold: 0.08
+  lr: 0.003
+  seeds: [0, 1]
+  device: "cpu"
+
+pillar2:
+  task: "mqar"
+  context_lengths: [64, 128]
+  seeds: [0]
+  train_steps: 150
+  lr: 0.002
+  vocab_size: 128
+  batch_size: 16
+  device: "cpu"
+
+pillar3:
+  seq_lens: [64, 128]
+  token_budgets: [5000]
+  eval_every_tokens: 2500
+  lr: 0.0005
+  vocab_size: 128
+  batch_size: 8
+  device: "cpu"
+
+pillar4:
+  seq_lens: [64, 128]
+  batch_size: 4
+  n_warmup: 2
+  n_iters: 5
+  n_decode_steps: 8
+  vocab_size: 64
+  device: "cpu"
+
+pillar5:
+  seq_len: 128
+  vocab_size: 64
+  batch_size: 4
+  device: "cpu"
+  buckets: [0, 32, 64, 96, 128]

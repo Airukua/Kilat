@@ -1,0 +1,45 @@
+# Production GPU Certification Configuration for KMCP Pipeline
+pillar1:
+  seq_len: 128
+  vocab_size: 256
+  batch_size: 8
+  overfit_steps: 250
+  overfit_loss_threshold: 0.05
+  lr: 0.002
+  seeds: [0, 1, 2]
+  device: "cuda"
+
+pillar2:
+  task: "mqar"
+  context_lengths: [64, 128, 256, 512]
+  seeds: [0, 1, 2]
+  train_steps: 1200
+  lr: 0.001
+  vocab_size: 256
+  batch_size: 32
+  device: "cuda"
+
+pillar3:
+  seq_lens: [256, 512, 1024]
+  token_budgets: [500000]
+  eval_every_tokens: 100000
+  lr: 0.0003
+  vocab_size: 256
+  batch_size: 16
+  device: "cuda"
+
+pillar4:
+  seq_lens: [256, 512, 1024, 2048]
+  batch_size: 8
+  n_warmup: 5
+  n_iters: 20
+  n_decode_steps: 32
+  vocab_size: 256
+  device: "cuda"
+
+pillar5:
+  seq_len: 512
+  vocab_size: 256
+  batch_size: 8
+  device: "cuda"
+  buckets: [0, 128, 256, 384, 512]

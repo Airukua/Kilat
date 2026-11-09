@@ -44,6 +44,10 @@ def get_test_classification(file_path: str) -> str:
     norm_path = file_path.replace("\\", "/")
     if "tests/unit" in norm_path:
         return "unit"
+    if "tests/tools" in norm_path:
+        return "tools"
+    if "tests/benchmarking" in norm_path:
+        return "benchmark"
     if "tests/integration" in norm_path:
         return "integration"
     if "tests/component" in norm_path:
@@ -190,6 +194,14 @@ def _flush_bdd_report(exception: Optional[BaseException] = None) -> None:
         scenario_title = scenario_title[6:]
     elif scenario_title.startswith("Integration: "):
         scenario_title = scenario_title[13:]
+    elif scenario_title.startswith("Tools: "):
+        scenario_title = scenario_title[7:]
+    elif scenario_title.startswith("Tool: "):
+        scenario_title = scenario_title[6:]
+    elif scenario_title.startswith("Benchmark: "):
+        scenario_title = scenario_title[11:]
+    elif scenario_title.startswith("Benchmarking: "):
+        scenario_title = scenario_title[14:]
 
     lines = []
     lines.append(f"\n{status_tag}  {CYAN}{classification:<11}{RESET}  {rel_path}")

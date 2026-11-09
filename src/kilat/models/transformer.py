@@ -31,6 +31,23 @@ from kilat.utils.validators import (
 
 logger = logging.getLogger(__name__)
 
+# Register Kilat architecture with Hugging Face AutoConfig so AutoTokenizer
+# and HF ecosystem tools resolve checkpoints cleanly without fallback warnings.
+try:
+    from transformers import AutoConfig, PretrainedConfig
+
+    class KilatHFConfig(PretrainedConfig):
+        model_type = "kilat_transformer"
+
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            for k, v in kwargs.items():
+                setattr(self, k, v)
+
+    AutoConfig.register("kilat_transformer", KilatHFConfig)
+except Exception:
+    pass
+
 KilatModelOutput = CausalLMOutputWithPast
 
 

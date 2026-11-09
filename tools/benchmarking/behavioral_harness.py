@@ -82,12 +82,24 @@ def run_behavioral_suite(
     ckpt_p = Path(model_dir)
     model = KilatTransformer.from_pretrained(str(ckpt_p)).to(device).eval()
 
-    cfg_yaml = ckpt_p / "config.yaml"
-    if cfg_yaml.is_file():
-        cfg = MainConfig.from_yaml(cfg_yaml)
-        tokenizer = cfg.tokenizer.build()
-    else:
+    tokenizer = None
+    try:
         tokenizer = AutoTokenizer.from_pretrained(str(ckpt_p), local_files_only=True)
+    except Exception:
+        pass
+
+    if tokenizer is None:
+        cfg_yaml = ckpt_p / "config.yaml"
+        if cfg_yaml.is_file():
+            try:
+                cfg = MainConfig.from_yaml(cfg_yaml)
+                if hasattr(cfg, "tokenizer") and cfg.tokenizer is not None:
+                    tokenizer = cfg.tokenizer.build()
+            except Exception:
+                pass
+
+    if tokenizer is None:
+        raise ValueError(f"Could not load tokenizer from {ckpt_p}")
 
     tc_path = Path(test_cases_path)
     with tc_path.open("r", encoding="utf-8") as f:
