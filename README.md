@@ -43,8 +43,9 @@ print(f"{sum(p.numel() for p in model.parameters()) / 1e6:.1f}M total parameters
   - `kilat verify`: 6 pre-flight gates (Theory/Init, FP64 `gradcheck` & Causal Blindness, Reference Equivalence, Data & Leakage Forensics, Single-Batch Memorization, and `0.0` Bitwise Checkpoint/DDP Parity) + Stages 7–8 ($\mu\text{P}$ coordinate check & WSDLR scaling law harness).
   - `kilat chaos`: Non-destructive `Saboteur` injecting 8 classic silent ML bugs (`C-01`..`C-08`) in memory to prove 100% gate detection with zero false negatives.
   - `FlightRecorderCallback`: Asynchronous training telemetry (`telemetry.jsonl`) and automatic circuit breaker with forensic crash dumps before corrupting healthy checkpoints.
-- **Production Pre-Training Engine (`kilat.engine`)**: Mixed precision (`bf16` / `fp16` with `GradScaler`), Warmup-Stable-Decay (`wsdlr`) & cosine schedules, DDP collective evaluation (`all_reduce`), and atomic Rank-0 checkpoints with full RNG state (`python`, `numpy`, `torch`, `cuda`) + SHA-256 manifest verification.
-- **Zero-Copy Data, Inference, & Distillation**: Memory-mapped `.bin`/`.npy` ingestion (`kilat prepare-data`), zero-copy `KilatDataCollator`, `LayerHybridCache` incremental/chunked decoding, Hugging Face `safetensors` export (`kilat export-hf`), and Knowledge Distillation (`VanillaKDLoss`, `ReverseKDLoss`, `AdaptiveKDLoss`).
+- **Production Pre-Training Engine (`kilat.engine`)**: Mixed precision (`bf16` / `fp16` with `GradScaler`), JIT Triton kernel fusion (`torch.compile` with $>10\times$ speedup), experiment tracking (`wandb`, `tensorboard`, `mlflow`, `comet_ml`), Warmup-Stable-Decay (`wsdlr`) & cosine schedules, DDP collective evaluation (`all_reduce`), and atomic Rank-0 checkpoints with full RNG state (`python`, `numpy`, `torch`, `cuda`) + SHA-256 manifest verification.
+- **Zero-Copy Data, Inference, & Distillation**: Memory-mapped `.bin`/`.npy` ingestion with `--append-eos` boundary isolation (`kilat prepare-data`), zero-copy `KilatDataCollator`, `LayerHybridCache` incremental/chunked decoding, Hugging Face `safetensors` export (`kilat export-hf`), and Knowledge Distillation (`VanillaKDLoss`, `ReverseKDLoss`, `AdaptiveKDLoss`).
+- **Interpretability & Behavioral Benchmarking (`tools/`)**: Mechanistic interpretability (Layer Logit Lens, Activation Patching), data leak & N-gram contamination auditor (`tools/audit`), and counterfactual object tracking evaluation harness (`tools/benchmarking`).
 
 ---
 
@@ -175,6 +176,7 @@ Kilat uses a single validated YAML file (`MainConfig`) as its source of truth ac
 | Config File | Target Hardware | Architecture Summary | Data Format |
 | :--- | :--- | :--- | :--- |
 | [`configs/debug_cpu.yaml`](configs/debug_cpu.yaml) | Any CPU / Laptop (`< 5s`) | 2L Hybrid MLA/Decay + 4-expert MoE (`d=64`) | `synthetic` (offline byte tokenizer) |
+| [`experiments/train_gpu.yaml`](experiments/train_gpu.yaml) | 1x Consumer GPU (`RTX 4050 6GB`) | 8L 35M Hybrid MLA/Decay + SwiGLU + `torch.compile` Triton JIT | `memmap` TinyStories |
 | [`configs/small_dense.yaml`](configs/small_dense.yaml) | 1x GPU (`8–16 GB VRAM`) | 12L Dense SwiGLU + Hybrid MLA/Decay + RoPE (`d=768`) | `memmap` (`.npy` / `.bin`) |
 | [`configs/small_moe.yaml`](configs/small_moe.yaml) | 1x GPU (`8–16 GB VRAM`) | 10L DeepSeekMoE (8 experts, Top-2, 1 shared, `bias_free`) | `memmap` (`.npy` / `.bin`) |
 | [`configs/standard_moe.yaml`](configs/standard_moe.yaml) | Multi-Node FSDP / EP (`BF16`) | 24L DeepSeekMoE (64 experts, Top-8, 2 shared, 54.2B params, FSDP recipe target) | `memmap` + sequence packing |
@@ -275,16 +277,18 @@ Before spending GPU hours on a large run, `kilat verify` executes an 8-stage res
 Kilat/
 ├── configs/                 # Tiered YAML configs (debug_cpu, small_dense, small_moe, standard_moe)
 ├── docs/                    # Deep-dive architecture, math derivations, & assurance specs
+├── experiments/             # Pre-training benchmark recipes (TinyStories 35M GPU, clean data prep, eval suite)
 ├── src/kilat/
 │   ├── cli.py               # Unified `kilat` CLI entrypoint
 │   ├── configs/             # MainConfig, KilatConfig, TrainingConfig, DataLoaderConfig, TokenizerConfig
 │   ├── models/              # KilatTransformer, Block, RMSNorm, MLA/Decay Attention, DeepSeekMoE, RoPE, Triton
-│   ├── engine/              # KilatTrainer, TrainingArguments, DistributedContext, Checkpoint, Optimizer, Scheduler
+│   ├── engine/              # KilatTrainer, TrainingArguments, Integrations (W&B/TB), Checkpoint, Optimizer
 │   ├── data/                # Datasets, zero-copy KilatDataCollator, DataLoaders, Tokenizers, Memmap Preprocessor
 │   ├── inference/           # TextGenerator, GenerationMixin, Samplers, LogitProcessors, StoppingCriteria, HF Export
 │   ├── distillation/        # VanillaKDLoss, ReverseKDLoss, AdaptiveKDLoss, BaseStudent, BaseTeacher
 │   ├── assurance/           # Gates 1–6, Stages 7–8, Chaos Saboteur (C-01..C-08), FlightRecorderCallback
 │   └── utils/               # BaseConfig, BaseModel, validators, parameter breakdown reports
+├── tools/                   # Mechanistic interpretability (logit lens, patching), audit & behavioral benchmarks
 └── tests/                   # 387 BDD unit, seam, pipeline, assurance, and chaos tests
 ```
 
@@ -318,6 +322,8 @@ make pre-commit   # Run all git pre-commit hooks across the repository
 - [x] 8-Stage Pre-Training Assurance (`kilat verify`), Active Chaos `Saboteur` (`kilat chaos`), & `FlightRecorder`
 - [x] DDP-aware engine, atomic SHA-256 checkpoints (`0.0` bitwise resume parity), & `WSDLR` scheduler
 - [x] Knowledge Distillation (`VanillaKDLoss`, `ReverseKDLoss`, `AdaptiveKDLoss`) & Hugging Face export
+- [x] `torch.compile` Triton kernel fusion (TorchInductor JIT acceleration: $>10\times$ speedup)
+- [x] Multi-backend experiment tracking (TensorBoard, Weights & Biases, MLflow, Comet ML)
 - [ ] FSDP2 / Tensor Parallel multi-node sharding
 - [ ] Custom CUDA / Triton paged MLA decode kernels
 - [ ] ONNX / TorchScript runtime export
