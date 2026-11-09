@@ -167,7 +167,7 @@ class DeepSeekMoE(nn.Module):
         else:
             exp_bal = float(N_r) * (expert_fraction * prob_avg).sum()
             dev_bal = (
-                torch.var(expert_fraction, unbiased=False) * float(N_r)
+                torch.var(expert_fraction, dim=0, unbiased=False) * float(N_r)
                 if N_r > 1
                 else torch.zeros((), device=x.device, dtype=router_dtype)
             )
@@ -276,7 +276,7 @@ class DeepSeekMoE(nn.Module):
             expert_balance_loss = float(N_r) * (expert_fraction * router_prob_avg).sum()
             # Use population variance (unbiased=False) so uniform routing has exact 0.0 device imbalance
             device_balance_loss = (
-                torch.var(expert_fraction, unbiased=False) * float(N_r)
+                torch.var(expert_fraction, dim=0, unbiased=False) * float(N_r)
                 if N_r > 1
                 else torch.zeros((), device=x.device, dtype=router_dtype)
             )

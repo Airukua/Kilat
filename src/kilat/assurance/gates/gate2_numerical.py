@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import time
 from typing import Any, Optional
 
@@ -261,7 +262,7 @@ def run_gate2_numerical(
                     {"parameter": name},
                 )
             grad_norm = float(param.grad.detach().float().norm().item())
-            if grad_norm == 0.0 or ("router" in name and grad_norm < 1e-6):
+            if math.isclose(grad_norm, 0.0, abs_tol=1e-12) or ("router" in name and grad_norm < 1e-6):
                 # Catches both exact 0.0 gradients and Top-1 MoE w/(w+eps) ~1e-9 crushed router gradients
                 if ".routed_experts." not in name:
                     zero_grads.append(name)

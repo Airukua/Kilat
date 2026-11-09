@@ -152,7 +152,7 @@ class MultinomialSampler(Sampler):
             Token IDs and optionally their probabilities.
         """
         # Apply temperature
-        if self.temperature != 1.0:
+        if not math.isclose(self.temperature, 1.0, rel_tol=1e-5):
             logits = logits / self.temperature
 
         # Convert to probabilities
@@ -293,7 +293,7 @@ class TopKSampler(Sampler):
             return sampler(logits, return_probs=return_probs)
 
         # Apply temperature
-        if self.temperature != 1.0:
+        if not math.isclose(self.temperature, 1.0, rel_tol=1e-5):
             logits = logits / self.temperature
 
         # Get top-k values
@@ -385,7 +385,7 @@ class TopPSampler(Sampler):
             return sampler(logits, return_probs=return_probs)
 
         # Apply temperature
-        if self.temperature != 1.0:
+        if not math.isclose(self.temperature, 1.0, rel_tol=1e-5):
             logits = logits / self.temperature
 
         # Sort logits
@@ -478,7 +478,7 @@ class TopKTopPSampler(Sampler):
             Token IDs and optionally their probabilities.
         """
         # Apply temperature
-        if self.temperature != 1.0:
+        if not math.isclose(self.temperature, 1.0, rel_tol=1e-5):
             logits = logits / self.temperature
 
         # Step 1: Top-K filtering
@@ -588,7 +588,7 @@ class TypicalSampler(Sampler):
             return sampler(logits, return_probs=return_probs)
 
         # Apply temperature
-        if self.temperature != 1.0:
+        if not math.isclose(self.temperature, 1.0, rel_tol=1e-5):
             logits = logits / self.temperature
 
         # Get probabilities and log probabilities

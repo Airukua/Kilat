@@ -320,7 +320,7 @@ class RepetitionPenaltyLogitsProcessor(LogitsProcessor):
 
         for batch_idx in range(input_ids.shape[0]):
             # Get unique tokens from this batch's sequence
-            unique_tokens = torch.unique(input_ids[batch_idx])
+            unique_tokens = torch.unique(input_ids[batch_idx], dim=0)
 
             for token_id in unique_tokens:
                 if processed_scores[batch_idx, token_id] < 0:
@@ -806,7 +806,7 @@ def get_logits_warper(
         return warpers
 
     # Temperature warper
-    if generation_config.temperature != 1.0:
+    if not math.isclose(generation_config.temperature, 1.0, rel_tol=1e-5):
         warpers.append(TemperatureLogitsWarper(generation_config.temperature))
 
     # Top-K warper
@@ -840,7 +840,7 @@ def get_logits_processor(
     processors = LogitsProcessorList()
 
     # Repetition penalty
-    if generation_config.repetition_penalty != 1.0:
+    if not math.isclose(generation_config.repetition_penalty, 1.0, rel_tol=1e-5):
         processors.append(RepetitionPenaltyLogitsProcessor(generation_config.repetition_penalty))
 
     # N-gram repetition blocking

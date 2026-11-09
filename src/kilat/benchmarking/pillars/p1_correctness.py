@@ -110,7 +110,7 @@ def check_gradient_connectivity(
             n_nan += 1
         if torch.isinf(p.grad).any():
             n_inf += 1
-        if p.grad.abs().max().item() == 0.0:
+        if math.isclose(float(p.grad.abs().max().item()), 0.0, abs_tol=1e-12):
             n_dead += 1
 
     passed = (n_nan == 0) and (n_inf == 0) and (n_dead == 0) and (n_params > 0)

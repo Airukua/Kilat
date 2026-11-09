@@ -40,6 +40,7 @@ htmlcov/
 build/
 dist/
 *.egg-info/
+.scannerwork/
 
 # Notebook and editor junk
 .ipynb_checkpoints/

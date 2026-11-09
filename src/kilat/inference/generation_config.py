@@ -9,9 +9,10 @@ WHY THIS EXISTS:
 """
 
 from dataclasses import dataclass, field
-from typing import Optional, List, Union
 import json
+import math
 from pathlib import Path
+from typing import Optional, List, Union
 
 
 @dataclass
@@ -361,6 +362,10 @@ class GenerationConfig:
             sampling_info += f", temp={self.temperature}, top_k={self.top_k}, top_p={self.top_p}"
         
         beam_info = f", beams={self.num_beams}" if self.num_beams > 1 else ""
-        penalty_info = f", rep_penalty={self.repetition_penalty}" if self.repetition_penalty != 1.0 else ""
+        penalty_info = (
+            f", rep_penalty={self.repetition_penalty}"
+            if not math.isclose(self.repetition_penalty, 1.0, rel_tol=1e-5)
+            else ""
+        )
         
         return f"GenerationConfig({sampling_info}{beam_info}{penalty_info})"

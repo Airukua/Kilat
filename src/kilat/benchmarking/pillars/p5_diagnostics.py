@@ -138,7 +138,7 @@ def evaluate_ngram_contamination(
         "eval_ngrams_checked": eval_total,
         "contaminated_ngrams": eval_hits,
         "contamination_rate": float(rate),
-        "clean": rate == 0.0,
+        "clean": eval_hits == 0,
     }
 
 
@@ -156,7 +156,7 @@ def audit_eos_boundaries(
 
     arr = arr.reshape(-1)
     total_tokens = int(len(arr))
-    eos_indices = np.where(arr == eos_token_id)[0]
+    eos_indices = np.nonzero(arr == eos_token_id)[0]
     eos_count = int(len(eos_indices))
 
     if eos_count == 0:
