@@ -17,6 +17,7 @@ pillar2:
   lr: 0.001
   vocab_size: 256
   batch_size: 32
+  pass_threshold: 0.80
   device: "cuda"
 
 pillar3:

@@ -17,6 +17,7 @@ pillar2:
   lr: 0.002
   vocab_size: 128
   batch_size: 16
+  pass_threshold: 0.05
   device: "cpu"
 
 pillar3:

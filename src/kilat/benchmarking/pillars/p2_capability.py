@@ -28,6 +28,7 @@ class CapabilityConfig:
     vocab_size: int = 128
     batch_size: int = 32
     device: str = "cpu"
+    pass_threshold: float = 0.80
 
 
 def _train_and_eval_single(
@@ -124,9 +125,9 @@ def run_pillar2(
         )
         grid_results[seq_len] = summarize(seed_results)
 
-    # Overall pass criterion: average accuracy at shortest context >= 0.85
+    # Overall pass criterion: average accuracy at shortest context >= pass_threshold
     base_acc = grid_results[cfg.context_lengths[0]].get("accuracy", {}).get("mean", 0.0)
-    passed = base_acc >= 0.80
+    passed = base_acc >= cfg.pass_threshold
 
     return {
         "pillar": "P2_MECHANISTIC_CAPABILITY",
