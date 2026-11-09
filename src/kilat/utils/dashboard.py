@@ -90,6 +90,7 @@ class KilatDashboard:
         model_desc: str = "Hybrid Sub-Quadratic Global Decay + Latent MLA",
         console: Optional[Console] = None,
         max_log_entries: int = 4,
+        initial_logs: Optional[list[str]] = None,
     ) -> None:
         self.total_steps = max(1, total_steps)
         self.current_step = initial_step
@@ -143,6 +144,9 @@ class KilatDashboard:
         # Seed initial log
         dev_info = self.cuda_device if self.cuda_device != "Active" else "1 GPU (CUDA)"
         self.add_log(f"Starting training on {dev_info}", level="INFO")
+        if initial_logs:
+            for l_msg in initial_logs:
+                self.add_log(l_msg, level="INFO")
 
     def _init_nvml(self) -> None:
         if _HAS_PYNVML:
