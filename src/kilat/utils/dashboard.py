@@ -316,7 +316,7 @@ class KilatDashboard:
     def _render_header(self, term_width: int) -> RenderableType:
         """Render the warm gradient KILAT logo, subtitle, and live badge."""
         logo = (
-            "[bold #FF6B00] ⚡ ██╗  ██╗██╗██╗      █████╗ ████████╗[/]\n"
+            "[bold #FF6B00]   ██╗  ██╗██╗██╗      █████╗ ████████╗[/]\n"
             "[bold #FF8800]   ██║ ██╔╝██║██║     ██╔══██╗╚══██╔══╝[/]\n"
             "[bold #FFA500]   █████╔╝ ██║██║     ███████║   ██║   [/]\n"
             "[bold #FFB700]   ██╔═██╗ ██║██║     ██╔══██║   ██║   [/]\n"
@@ -325,9 +325,9 @@ class KilatDashboard:
         )
 
         desc = (
-            "\n [dim #444444]│[/]  [bold #FFFFFF]Kernelized Lightweight[/]\n"
-            " [dim #444444]│[/]  [bold #FFFFFF]Attention Transformer[/] [dim #888888](v2.0.0)[/]\n"
-            " [dim #444444]│[/]  [dim #AAAAAA]Hybrid Sub-Quadratic Global Decay + Latent MLA[/]"
+            "\n [bold #FF9900]⚡[/] [bold #FFFFFF]Kernelized Lightweight[/]\n"
+            "   [bold #FFFFFF]Attention Transformer[/] [dim #888888](v2.0.0)[/]\n"
+            "   [dim #AAAAAA]Hybrid Sub-Quadratic Global Decay + Latent MLA[/]"
         )
 
         now_str = datetime.datetime.now().strftime("%b %d, %Y  %H:%M:%S")
@@ -337,9 +337,9 @@ class KilatDashboard:
         )
 
         t = Table.grid(expand=True)
-        if term_width >= 110:
+        if term_width >= 105:
             t.add_column(width=42, no_wrap=True)
-            t.add_column(no_wrap=True)
+            t.add_column(ratio=1, no_wrap=True)
             t.add_column(justify="right", no_wrap=True)
             t.add_row(logo, desc, badge)
         else:
@@ -351,20 +351,6 @@ class KilatDashboard:
     def _render_overview(self, term_width: int) -> RenderableType:
         """Render the progress bar and 6 stat cards."""
         pct = (self.current_step / self.total_steps) * 100.0
-
-        top = Table.grid(expand=True)
-        top.add_column()
-        top.add_column(justify="right")
-        top.add_row(
-            "",
-            f"[bold #FF9900]{pct:.1f}%[/] [dim]({self.current_step:,} / {self.total_steps:,} steps)[/]",
-        )
-
-        # Progress bar
-        inner_width = max(20, term_width - 6)
-        filled = int(inner_width * (self.current_step / self.total_steps))
-        empty = max(0, inner_width - filled)
-        bar_str = f"[bold #FF6B00]{'━' * filled}[/][#262626]{'─' * empty}[/]"
 
         # Timing
         elapsed = time.monotonic() - self.start_time
@@ -389,13 +375,27 @@ class KilatDashboard:
         else:
             speed_str = f"{self.tokens_per_sec:.1f} tok/s"
 
+        # Step string formatting for 80-col responsiveness
+        if term_width >= 100:
+            step_val = f"[bold #FFFFFF]{self.current_step:,}[/] [dim]/ {self.total_steps:,}[/]"
+        else:
+            total_k = f"{self.total_steps // 1000}k" if self.total_steps >= 1000 else str(self.total_steps)
+            step_val = f"[bold #FFFFFF]{self.current_step:,}[/] [dim]/ {total_k}[/]"
+
+        # Progress bar with inline percentage & step counter
+        pct_str = f" {pct:.1f}% ({self.current_step:,} / {self.total_steps:,})"
+        inner_width = max(10, term_width - 6 - len(pct_str))
+        filled = int(inner_width * (self.current_step / self.total_steps))
+        empty = max(0, inner_width - filled)
+        bar_str = f"[bold #FF6B00]{'━' * filled}[/][#262626]{'─' * empty}[/][bold #FF9900]{pct_str}[/]"
+
         stats = Table.grid(expand=True)
         for _ in range(6):
             stats.add_column(ratio=1, no_wrap=True)
 
-        c1 = f"[bold #00D4FF]🏃 STEP[/]\n[bold #FFFFFF]{self.current_step:,}[/] [dim]/ {self.total_steps:,}[/]"
-        c2 = f"[bold #A855F7]📊 TRAIN LOSS[/]\n[bold #FFFFFF]{self.train_loss:.4f}[/] {arrow}"
-        c3 = f"[bold #06B6D4]⏱ PERPLEXITY (PPL)[/]\n[bold #FFFFFF]{self.perplexity:.2f}[/]"
+        c1 = f"[bold #00D4FF]🏃 STEP[/]\n{step_val}"
+        c2 = f"[bold #A855F7]📊 LOSS[/]\n[bold #FFFFFF]{self.train_loss:.4f}[/] {arrow}"
+        c3 = f"[bold #06B6D4]⏱ PPL[/]\n[bold #FFFFFF]{self.perplexity:.2f}[/]"
         c4 = f"[bold #EAB308]⚡ SPEED[/]\n[bold #FFFFFF]{speed_str}[/]"
         c5 = f"[bold #3B82F6]🕒 ELAPSED[/]\n[bold #FFFFFF]{self._format_time(elapsed)}[/]"
         c6 = f"[bold #F97316]⏳ ETA[/]\n[bold #FFFFFF]{self._format_time(eta)}[/]"
@@ -403,14 +403,12 @@ class KilatDashboard:
         stats.add_row(c1, c2, c3, c4, c5, c6)
 
         grid = Table.grid(expand=True)
-        grid.add_row(top)
         grid.add_row(bar_str)
-        grid.add_row("")
         grid.add_row(stats)
 
-        return Panel(grid, title="[bold #FFA500]📊 Training Overview[/]", border_style="#333333")
+        return Panel(grid, title="[bold #FFA500]📊 Training Overview[/]", border_style="#333333", width=term_width)
 
-    def _render_curves(self, width: int = 58, height: int = 4, max_val: float = 3.0) -> str:
+    def _render_curves(self, width: int = 40, height: int = 3, max_val: float = 3.0) -> str:
         """Render dual Braille curves (Loss in orange, PPL in blue) with axes."""
         dot_w = width * 2
         dot_h = height * 4
@@ -474,43 +472,40 @@ class KilatDashboard:
         lines.append(f"[#888888]{x_lbl[:width + 6]}[/]")
         return "\n".join(lines)
 
+    def _render_optimization(self, term_width: int) -> RenderableType:
+        """Render full-width Optimization panel without cramped text wrapping."""
+        t_opt = Table.grid(padding=(0, 1), expand=True)
+        t_opt.add_column(ratio=11, no_wrap=True)
+        t_opt.add_column(ratio=9, no_wrap=True)
+
+        t_opt.add_row(
+            f"[dim #AAAAAA]Optimizer    :[/] [bold #FFFFFF]{self.optimizer_name}[/]",
+            f"[dim #AAAAAA]Learning Rate :[/] [bold #FFFFFF]{self.learning_rate:.2e}[/]",
+        )
+        t_opt.add_row(
+            f"[dim #AAAAAA]Weight Decay :[/] [bold #FFFFFF]{self.weight_decay:.2e}[/]",
+            f"[dim #AAAAAA]Batch Size    :[/] [bold #FFFFFF]{self.batch_size}[/]  [dim]│[/]  [dim #AAAAAA]Clip:[/] [bold #FFFFFF]{self.grad_clip:.1f}[/]",
+        )
+        return Panel(t_opt, title="[bold #00D4FF]⚙ Optimization[/]", border_style="#333333", width=term_width)
+
     def _render_middle_row(self, term_width: int) -> RenderableType:
-        """Render Optimization settings and Training Curves."""
-        t_opt = Table.grid(padding=(0, 1))
-        t_opt.add_column(style="dim #AAAAAA")
-        t_opt.add_column(style="dim #666666")
-        t_opt.add_column(style="bold #FFFFFF")
+        """Render Training Curves side-by-side with System Monitor & Status."""
+        hw_w = 38
+        curve_w = max(30, term_width - hw_w)
+        inner_chart_w = max(10, curve_w - 12)
 
-        t_opt.add_row("Learning Rate", ":", f"{self.learning_rate:.2e}")
-        t_opt.add_row("Batch Size", ":", str(self.batch_size))
-        t_opt.add_row("Optimizer", ":", self.optimizer_name)
-        t_opt.add_row("Weight Decay", ":", f"{self.weight_decay:.2e}")
-        t_opt.add_row("Grad Clip", ":", f"{self.grad_clip:.1f}")
-
-        opt_width = 36
-        p_opt = Panel(t_opt, title="[bold #00D4FF]⚙ Optimization[/]", border_style="#333333", width=opt_width)
-
-        curve_width = max(25, term_width - opt_width - 8)
-        chart_str = self._render_curves(width=curve_width, height=4, max_val=3.0)
+        chart_str = self._render_curves(width=inner_chart_w, height=3, max_val=3.0)
         p_curves = Panel(
             chart_str,
-            title="[bold #00D4FF]📈 Training Curves[/]          [bold #FF6B00]● Loss[/]   [bold #38BDF8]● PPL[/]",
+            title="[bold #00D4FF]📈 Training Curves[/]   [bold #FF6B00]● Loss[/] [bold #38BDF8]● PPL[/]",
             border_style="#333333",
+            width=curve_w,
         )
 
-        row = Table.grid(expand=True)
-        row.add_column(width=opt_width)
-        row.add_column()
-        row.add_row(p_opt, p_curves)
-        return row
-
-    def _render_bottom_row(self, term_width: int) -> RenderableType:
-        """Render System Monitor, Status, and Recent Logs."""
-        # 1. System Monitor
+        # System Monitor & Hardware Panel
         sys_grid = Table.grid(padding=(0, 1))
-        sys_grid.add_column(style="dim #AAAAAA")
-        sys_grid.add_column(style="dim #666666")
-        sys_grid.add_column()
+        sys_grid.add_column(width=10, style="dim #AAAAAA", no_wrap=True)
+        sys_grid.add_column(no_wrap=True)
 
         def mini_bar(pct: float, color: str) -> str:
             w = 10
@@ -518,79 +513,63 @@ class KilatDashboard:
             return f"[{color}]" + "█" * f + f"[/][#262626]" + "░" * (w - f) + "[/]"
 
         u_bar = mini_bar(self.gpu_util, "#00FF66")
-        sys_grid.add_row("GPU Utilization", ":", f"[bold #00FF66]{self.gpu_util}%[/]  {u_bar}")
+        sys_grid.add_row("GPU Util", f": [bold #00FF66]{self.gpu_util}%[/] {u_bar}")
 
-        v_pct = (self.vram_used_gb / max(0.1, self.vram_total_gb)) * 100.0
-        v_bar = mini_bar(v_pct, "#00D4FF")
         sys_grid.add_row(
-            "VRAM Usage",
-            ":",
-            f"[bold #00D4FF]{self.vram_used_gb:.1f} / {self.vram_total_gb:.1f} GB[/] {v_bar}",
+            "VRAM",
+            f": [bold #00D4FF]{self.vram_used_gb:.1f} / {self.vram_total_gb:.1f} GB[/]",
         )
 
         t_color = "#00FF66" if self.gpu_temp < 65 else ("#FFA500" if self.gpu_temp < 80 else "#FF4444")
         temp_str = f"🌡 [{t_color}]{self.gpu_temp}°C[/]" if self.gpu_temp > 0 else "[dim]n/a[/]"
-        sys_grid.add_row("GPU Temp", ":", temp_str)
+        sys_grid.add_row("GPU Temp", f": {temp_str}")
 
-        sys_width = 38
-        p_sys = Panel(sys_grid, title="[bold #00D4FF]🖥 System Monitor[/]", border_style="#333333", width=sys_width)
+        # Shorten device name cleanly so it fits without wrapping
+        dev_short = self.cuda_device
+        for prefix in ("NVIDIA GeForce ", "NVIDIA ", "GeForce "):
+            if dev_short.startswith(prefix):
+                dev_short = dev_short[len(prefix):]
+        sys_grid.add_row("Device", f": [bold #FFFFFF]{dev_short}[/]")
+        sys_grid.add_row(
+            "Status",
+            f": [bold #00FF66]{self.mixed_precision}[/] [dim]│[/] TF32: [bold #00FF66]{'ON' if self.tf32 else 'OFF'}[/]",
+        )
 
-        # 2. Status Panel
-        stat_grid = Table.grid()
-        stat_grid.add_column(style="bold #00FF66")
-        stat_grid.add_column(style="bold #00FF66")
-        stat_grid.add_column(style="white")
-        stat_grid.add_row("┃ ", "CUDA: ", self.cuda_device)
-        stat_grid.add_row("┃ ", "Mixed Precision: ", f"ON ({self.mixed_precision})")
-        stat_grid.add_row("┃ ", "TF32: ", "Enabled" if self.tf32 else "Disabled")
+        p_sys = Panel(sys_grid, title="[bold #00D4FF]🖥 System Monitor & Status[/]", border_style="#333333", width=hw_w)
 
-        # 3. Recent Logs
+        row = Table.grid(expand=True)
+        row.add_column(width=curve_w)
+        row.add_column(width=hw_w)
+        row.add_row(p_curves, p_sys)
+        return row
+
+    def _render_recent_logs(self, term_width: int) -> RenderableType:
+        """Render recent logs panel across full terminal width."""
         log_grid = Table.grid()
         log_grid.add_column(no_wrap=True)
         if not self.recent_logs:
             log_grid.add_row("[dim #666666]No log events recorded yet.[/]")
         else:
-            for l in list(self.recent_logs)[-3:]:
+            for l in list(self.recent_logs)[-2:]:
                 log_grid.add_row(l)
 
-        if term_width >= 120:
-            sys_width = 36
-            stat_width = 28
-            p_sys = Panel(sys_grid, title="[bold #00D4FF]🖥 System Monitor[/]", border_style="#333333", width=sys_width)
-            p_stat = Panel(stat_grid, title="[bold #00FF66]✔ Status[/]", border_style="#333333", width=stat_width)
-            p_logs = Panel(log_grid, title="[bold #00D4FF]📄 Recent Logs[/]", border_style="#333333")
+        return Panel(log_grid, title="[bold #00D4FF]📄 Recent Logs[/]", border_style="#333333", width=term_width)
 
-            row = Table.grid(expand=True)
-            row.add_column(width=sys_width)
-            row.add_column(width=stat_width)
-            row.add_column()
-            row.add_row(p_sys, p_stat, p_logs)
-            return row
-        else:
-            p_sys = Panel(sys_grid, title="[bold #00D4FF]🖥 System Monitor[/]", border_style="#333333")
-            p_stat = Panel(stat_grid, title="[bold #00FF66]✔ Status[/]", border_style="#333333")
-            p_logs = Panel(log_grid, title="[bold #00D4FF]📄 Recent Logs[/]", border_style="#333333")
-
-            top_subrow = Table.grid(expand=True)
-            top_subrow.add_column(ratio=1)
-            top_subrow.add_column(ratio=1)
-            top_subrow.add_row(p_sys, p_stat)
-
-            combined = Table.grid(expand=True)
-            combined.add_row(top_subrow)
-            combined.add_row(p_logs)
-            return combined
-
-    def _render_footer(self) -> RenderableType:
+    def _render_footer(self, term_width: int = 80) -> RenderableType:
         """Render the sleek cyberpunk footer line."""
         t = Table.grid(expand=True)
-        t.add_column()
-        t.add_column(justify="center")
-        t.add_column(justify="right")
+        t.add_column(no_wrap=True)
+        t.add_column(justify="right", no_wrap=True)
+
+        slogan = (
+            "[bold #FFA500]⚡[/] [italic #CCCCCC]Building Efficient LLMs for a Smarter Tomorrow[/]"
+            if term_width >= 100
+            else "[bold #FFA500]⚡[/] [italic #CCCCCC]Building Efficient LLMs[/]"
+        )
+
         t.add_row(
-            "[bold #FFA500]⚡[/] [italic #CCCCCC]Building Efficient LLMs for a Smarter Tomorrow[/]",
-            "[dim #444444]│[/]  [bold #FFFFFF]KILAT v2.0.0[/]  [dim #444444]│[/]",
-            "[dim #00D4FF]https://github.com/AiRukua/Kilat[/]",
+            slogan,
+            "[dim #444444]│[/]  [bold #FFFFFF]KILAT v2.0.0[/]  [dim #444444]│[/]  [dim #00D4FF]https://github.com/AiRukua/Kilat[/]",
         )
         return t
 
@@ -601,9 +580,10 @@ class KilatDashboard:
         grid = Table.grid(expand=True)
         grid.add_row(self._render_header(term_width))
         grid.add_row(self._render_overview(term_width))
+        grid.add_row(self._render_optimization(term_width))
         grid.add_row(self._render_middle_row(term_width))
-        grid.add_row(self._render_bottom_row(term_width))
-        grid.add_row(self._render_footer())
+        grid.add_row(self._render_recent_logs(term_width))
+        grid.add_row(self._render_footer(term_width))
         return grid
 
 
