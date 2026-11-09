@@ -137,4 +137,5 @@ filterwarnings = [
     "ignore:.*pin_memory.*:UserWarning",
     "ignore:.*Tokenizer vocabulary could not be resolved.*:UserWarning",
     "ignore:.*KilatDataset is deprecated.*:DeprecationWarning",
+    "ignore:.*utcfromtimestamp\\(\\) is deprecated.*:DeprecationWarning",
 ]
