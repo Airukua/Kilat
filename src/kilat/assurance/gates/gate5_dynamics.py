@@ -92,7 +92,7 @@ def _check_grad_scaler_skipped_step_scheduler_guard() -> bool:
 def run_gate5_dynamics(
     model_config: KilatConfig,
     model: Optional[KilatTransformer] = None,
-    memorization_steps: int = 45,
+    memorization_steps: int = 60,
 ) -> GateResult:
     """
     Gate 5: Micro-Training Dynamics & Frontier Stability Proxies (`G5_MICRO_DYNAMICS`).

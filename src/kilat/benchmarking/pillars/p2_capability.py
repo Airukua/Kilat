@@ -37,11 +37,14 @@ def _train_and_eval_single(
     seq_len: int,
     seed: int,
 ) -> Dict[str, Any]:
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
     gen_train = torch.Generator().manual_seed(seed)
     gen_eval = torch.Generator().manual_seed(10_000 + seed)
     max_len = max(cfg.context_lengths)
     model = model_builder(vocab_size=cfg.vocab_size, max_seq_len=max_len).to(cfg.device)
-    opt = torch.optim.Adam(model.parameters(), lr=cfg.lr)
+    opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, betas=(0.9, 0.98), weight_decay=0.01)
 
     # Resolve task generator and loss functions
     if cfg.task == "mqar":

@@ -3,88 +3,10 @@ import torch.nn as nn
 from typing import Any, Literal, Optional, Tuple
 from .attention import KilatAttention, KilatAttentionRoPE
 from .ffn import FeedForward
+from .norm import RMSNorm
 
-class RMSNorm(nn.Module):
-    """
-    Root Mean Square Layer Normalization (RMSNorm).
-
-    Normalizes the input tensor along the last dimension by dividing by the
-    root mean square of its elements, then applies a learnable per‑dimension
-    scale.  Unlike standard LayerNorm, it **omits the mean subtraction step**,
-    making it more memory‑efficient and slightly faster, while maintaining
-    comparable training stability.  RMSNorm is used in recent large language
-    models such as LLaMA, LLaMA 2, and Mistral.
-
-    The forward pass computes:
-
-        out = x / sqrt(mean(x^2) + eps) * weight
-
-    where ``weight`` is a trainable parameter of shape ``normalized_shape``.
-
-    Why RMSNorm over LayerNorm?
-    ---------------------------
-    1. **Memory efficiency**: No mean subtraction means no need to compute
-       or store the mean. This saves one reduction operation and one tensor
-       in the computation graph, which matters for large models where
-       activation memory dominates.
-    2. **Speed**: Fewer operations per normalization step. For large
-       transformers with many layers, this accumulates to meaningful
-       throughput improvements (~5-10%).
-    3. **Empirical equivalence**: Zhang & Sennrich (2019) showed RMSNorm
-       performs comparably to LayerNorm for transformer training. LLaMA
-       and Mistral models confirmed this at scale.
-    4. **Scale-only transformation**: By focusing only on rescaling
-       (not re-centering), RMSNorm is more similar to weight normalization
-       techniques that have shown success in deep networks.
-
-    The key insight is that for transformer activations, variance control
-    (via scaling) is more important than mean centering. The learnable
-    weight parameter allows the model to adjust per-dimension magnitude
-    as needed.
-
-    Incremental Decoding Compatibility
-    ----------------------------------
-    RMSNorm is stateless — each position is normalized independently using
-    only its own feature values. This means no cache is needed and no changes
-    are required for incremental decoding. Unlike attention or recurrent
-    layers, normalization layers don't accumulate state across time steps.
-
-    Parameters
-    ----------
-    normalized_shape : int or tuple
-        Shape of the normalization dimension(s). Typically the last
-        dimension, e.g., ``(d_model,)`` or just ``d_model``.
-    eps : float
-        Small constant for numerical stability (default: 1e‑6).
-        Added inside the sqrt to prevent division by zero when all
-        inputs are exactly zero. 1e-6 is standard and doesn't affect
-        the gradient in normal operation.
-
-    Example:
-        >>> rms = RMSNorm(512)
-        >>> x = torch.randn(2, 128, 512)    # (batch, seq_len, dim)
-        >>> y = rms(x)
-        >>> print(y.shape)
-        torch.Size([2, 128, 512])
-    """
-
-    def __init__(self, normalized_shape, eps=1e-6):
-        super().__init__()
-        # Learnable scale parameter initialized to 1.0 (identity).
-        # Starting at 1 ensures the normalization is initially just
-        # the RMS scaling, and the model can learn to amplify or
-        # attenuate specific dimensions as training progresses.
-        self.weight = nn.Parameter(torch.ones(normalized_shape))
-        self.eps = eps
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Upcast to float32 (preserving float64 for gradcheck) before squaring
-        # to prevent FP16 overflow when |x| > 255.9 (65504^0.5).
-        compute_dtype = torch.float64 if x.dtype == torch.float64 else torch.float32
-        x_up = x.to(compute_dtype)
-        variance = x_up.pow(2).mean(dim=-1, keepdim=True)
-        x_normed = (x_up * torch.rsqrt(variance + self.eps)).to(x.dtype)
-        return x_normed * self.weight
+# RMSNorm is imported from .norm for modularity and re-exported here for compatibility
+__all__ = ["RMSNorm", "Block"]
 
 
 class Block(nn.Module):
@@ -184,6 +106,8 @@ class Block(nn.Module):
         # ---------- Attention parameters ----------
         recall_ratio: float = 0.5,
         latent_dim: Optional[int] = None,
+        q_lora_rank: Optional[int] = None,
+        use_fusion_gate: bool = False,
         attn_drop: float = 0.0,
         # ---------- RoPE parameters (optional) ----------
         use_rope: bool = False,
@@ -216,6 +140,8 @@ class Block(nn.Module):
             n_head = int(config.n_head)
             recall_ratio = float(config.recall_ratio)
             latent_dim = config.latent_dim
+            q_lora_rank = getattr(config, "q_lora_rank", None)
+            use_fusion_gate = bool(getattr(config, "use_fusion_gate", False))
             attn_drop = float(config.attn_drop)
             use_rope = bool(getattr(config, "use_rope", False))
             rope_head_dim = getattr(config, "rope_head_dim", None)
@@ -245,6 +171,8 @@ class Block(nn.Module):
                 n_head=n_head,
                 recall_ratio=recall_ratio,
                 latent_dim=latent_dim,
+                q_lora_rank=q_lora_rank,
+                use_fusion_gate=use_fusion_gate,
                 attn_drop=attn_drop,
                 rope_head_dim=rope_head_dim,
                 rope_base=rope_base,
@@ -255,6 +183,8 @@ class Block(nn.Module):
                 n_head=n_head,
                 recall_ratio=recall_ratio,
                 latent_dim=latent_dim,
+                q_lora_rank=q_lora_rank,
+                use_fusion_gate=use_fusion_gate,
                 attn_drop=attn_drop,
             )
 

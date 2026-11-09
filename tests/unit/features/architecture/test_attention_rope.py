@@ -99,3 +99,76 @@ def test_hybrid_cache_prefill_decode_and_chunked_equivalence_matrix():
                             assert cache_chk.seq_len == 9
                             assert torch.max(torch.abs(out_full - out_inc)).item() < 1e-5
                             assert torch.max(torch.abs(out_full - out_chunked)).item() < 1e-5
+
+
+def test_deepseek_mla_alignment_direct_q_and_lora():
+    with Scenario("Unit: DeepSeek-V2-Lite MLA Alignment (Direct Q vs LoRA Q and Fusion Gate)"):
+        with Given("KilatAttention and KilatAttentionRoPE modules in Direct Q and Low-Rank Q configurations"):
+            torch.manual_seed(42)
+            n_embd, n_head = 64, 4
+            x = torch.randn(2, 8, n_embd, requires_grad=True)
+
+            configs = [
+                # (use_rope, q_lora_rank, use_fusion_gate, recall_ratio)
+                (False, None, False, 0.5),  # Direct Q, No Gate, No RoPE
+                (False, 16, True, 0.5),    # LoRA Q, Fusion Gate, No RoPE
+                (True, None, False, 0.5),   # Direct Q, No Gate, RoPE (DeepSeek-V2-Lite standard)
+                (True, 16, False, 0.5),    # LoRA Q, No Gate, RoPE
+                (True, None, True, 1.0),   # Direct Q, Fusion Gate, Pure MLA
+            ]
+
+            for use_rope, q_lora_rank, use_fusion_gate, recall_ratio in configs:
+                with When(
+                    f"forwarding and backwarding with rope={use_rope}, q_lora_rank={q_lora_rank}, gate={use_fusion_gate}, ratio={recall_ratio}"
+                ):
+                    if use_rope:
+                        attn = KilatAttentionRoPE(
+                            n_embd=n_embd,
+                            n_head=n_head,
+                            recall_ratio=recall_ratio,
+                            latent_dim=32,
+                            q_lora_rank=q_lora_rank,
+                            use_fusion_gate=use_fusion_gate,
+                            rope_head_dim=8,
+                        )
+                    else:
+                        attn = KilatAttention(
+                            n_embd=n_embd,
+                            n_head=n_head,
+                            recall_ratio=recall_ratio,
+                            latent_dim=32,
+                            q_lora_rank=q_lora_rank,
+                            use_fusion_gate=use_fusion_gate,
+                        )
+
+                    out, cache = attn(x, use_cache=True)
+                    loss = out.sum()
+                    loss.backward(retain_graph=True)
+
+                    with Then("output is finite, matches input dimensions, and all parameters receive finite gradients"):
+                        assert out.shape == (2, 8, n_embd)
+                        assert torch.isfinite(out).all()
+                        assert isinstance(cache, LayerHybridCache)
+
+                        for name, param in attn.named_parameters():
+                            if param.requires_grad:
+                                assert param.grad is not None, f"Parameter {name} has None gradient"
+                                assert torch.isfinite(param.grad).all(), f"Parameter {name} has non-finite gradient"
+                                assert param.grad.abs().sum().item() > 0.0, f"Parameter {name} has zero gradient"
+
+                        # Structural assertions for Direct Q vs LoRA Q
+                        if q_lora_rank is None and recall_ratio > 0.0:
+                            assert hasattr(attn, "q_proj") and attn.q_proj is not None
+                            assert attn.q_a_proj is None
+                            if use_rope:
+                                assert attn.q_rope_proj.in_features == n_embd
+                        elif q_lora_rank is not None and recall_ratio > 0.0:
+                            assert attn.q_proj is None
+                            assert hasattr(attn, "q_a_proj") and attn.q_a_proj is not None
+                            if use_rope:
+                                assert attn.q_rope_proj.in_features == q_lora_rank
+
+                        if use_fusion_gate:
+                            assert attn.gamma_net is not None
+                        else:
+                            assert attn.gamma_net is None

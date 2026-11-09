@@ -162,10 +162,14 @@ def _build_kilat_preset(
         n_head=n_heads,
         recall_ratio=recall_ratio,
         latent_dim=max(16, d_model // 2),
+        q_lora_rank=kwargs.pop("q_lora_rank", None),
+        use_fusion_gate=kwargs.pop("use_fusion_gate", False),
         use_rope=True,
         rope_head_dim=max(4, (d_model // n_heads) // 2),
         ffn_mode="swiglu",
         max_position_embeddings=max_seq_len,
+        tie_word_embeddings=kwargs.pop("tie_word_embeddings", False),
+        initializer_range=kwargs.pop("initializer_range", None),
         **kwargs,
     )
     return KilatTransformer(cfg)

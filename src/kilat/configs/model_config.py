@@ -76,6 +76,8 @@ class KilatConfig(BaseConfig):
         # ---- Attention configuration ----
         recall_ratio: float = 0.5,
         latent_dim: Optional[int] = None,
+        q_lora_rank: Optional[int] = None,
+        use_fusion_gate: bool = False,
         attn_drop: float = 0.0,
         # ---- Decoupled RoPE configuration (DeepSeek-V2 MLA extension) ----
         use_rope: bool = False,
@@ -135,6 +137,8 @@ class KilatConfig(BaseConfig):
         # Attention parameters
         self.recall_ratio = recall_ratio
         self.latent_dim = latent_dim
+        self.q_lora_rank = q_lora_rank
+        self.use_fusion_gate = use_fusion_gate
         self.attn_drop = attn_drop
 
         # Decoupled RoPE parameters

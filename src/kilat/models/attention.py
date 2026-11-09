@@ -8,6 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .kernels.flash_decay import compute_decay_normalizer_from_logit, triton_global_decay
+from .norm import RMSNorm
 from .rope import apply_rotary_pos_emb, build_rope_cache
 
 
@@ -63,6 +64,8 @@ class KilatAttention(nn.Module):
         n_head: int,
         recall_ratio: float = 0.5,
         latent_dim: Optional[int] = None,
+        q_lora_rank: Optional[int] = None,
+        use_fusion_gate: bool = False,
         attn_drop: float = 0.0,
     ) -> None:
         super().__init__()
@@ -72,6 +75,8 @@ class KilatAttention(nn.Module):
         self.n_recall_heads = int(n_head * recall_ratio)
         self.n_global_heads = n_head - self.n_recall_heads
         self.latent_dim = latent_dim if latent_dim is not None else (n_embd // 4)
+        self.q_lora_rank = q_lora_rank
+        self.use_fusion_gate = use_fusion_gate
 
         # Path 1: Global Decay heads
         self.log_lambda: Optional[nn.Parameter]
@@ -84,19 +89,32 @@ class KilatAttention(nn.Module):
             self.register_parameter("log_lambda", None)
             self.v_proj_global = None
 
-        # Path 2: Latent MLA recall heads
+        # Path 2: Latent MLA recall heads (DeepSeek-V2-Lite alignment)
         if self.n_recall_heads > 0:
-            self.q_a_proj: Optional[nn.Linear] = nn.Linear(n_embd, self.latent_dim, bias=False)
-            self.q_a_norm: Optional[nn.LayerNorm] = nn.LayerNorm(self.latent_dim)
-            self.q_b_proj: Optional[nn.Linear] = nn.Linear(
-                self.latent_dim, self.n_recall_heads * self.head_dim, bias=False
-            )
+            # Query path: Direct (q_lora_rank is None, DeepSeek-V2-Lite standard) or Low-Rank
+            if self.q_lora_rank is None:
+                self.q_proj: Optional[nn.Linear] = nn.Linear(
+                    n_embd, self.n_recall_heads * self.head_dim, bias=False
+                )
+                self.q_a_proj: Optional[nn.Linear] = None
+                self.q_a_norm: Optional[nn.Module] = None
+                self.q_b_proj: Optional[nn.Linear] = None
+            else:
+                self.q_proj = None
+                self.q_a_proj = nn.Linear(n_embd, self.q_lora_rank, bias=False)
+                self.q_a_norm = RMSNorm(self.q_lora_rank)
+                self.q_b_proj = nn.Linear(
+                    self.q_lora_rank, self.n_recall_heads * self.head_dim, bias=False
+                )
+
+            # KV compression path (DeepSeek Low-Rank KV Joint Compression)
             self.kv_a_proj: Optional[nn.Linear] = nn.Linear(n_embd, self.latent_dim, bias=False)
-            self.kv_a_norm: Optional[nn.LayerNorm] = nn.LayerNorm(self.latent_dim)
+            self.kv_a_norm: Optional[nn.Module] = RMSNorm(self.latent_dim)
             self.kv_b_proj: Optional[nn.Linear] = nn.Linear(
                 self.latent_dim, 2 * self.n_recall_heads * self.head_dim, bias=False
             )
         else:
+            self.q_proj = None
             self.q_a_proj = None
             self.q_a_norm = None
             self.q_b_proj = None
@@ -104,13 +122,17 @@ class KilatAttention(nn.Module):
             self.kv_a_norm = None
             self.kv_b_proj = None
 
-        # Fusion gate & output projection
-        self.gamma_net = nn.Sequential(
-            nn.Linear(2 * n_embd, n_embd),
-            nn.ReLU(),
-            nn.Linear(n_embd, n_embd),
-            nn.Sigmoid(),
-        )
+        # Optional fusion gate & standard multi-head output projection
+        if self.use_fusion_gate:
+            self.gamma_net: Optional[nn.Sequential] = nn.Sequential(
+                nn.Linear(2 * n_embd, n_embd),
+                nn.ReLU(),
+                nn.Linear(n_embd, n_embd),
+                nn.Sigmoid(),
+            )
+        else:
+            self.gamma_net = None
+
         self.c_proj = nn.Linear(n_embd, n_embd, bias=False)
         self.attn_drop = attn_drop
 
@@ -200,11 +222,12 @@ class KilatAttention(nn.Module):
 
         # Path 2: Latent MLA
         new_latent_kv: Optional[torch.Tensor] = None
+        has_q = (self.q_proj is not None) or (
+            self.q_a_proj is not None and self.q_a_norm is not None and self.q_b_proj is not None
+        )
         if (
             self.n_recall_heads == 0
-            or self.q_a_proj is None
-            or self.q_a_norm is None
-            or self.q_b_proj is None
+            or not has_q
             or self.kv_a_proj is None
             or self.kv_a_norm is None
             or self.kv_b_proj is None
@@ -213,8 +236,12 @@ class KilatAttention(nn.Module):
             if use_cache:
                 new_latent_kv = torch.zeros(B, 0, self.latent_dim, device=x.device, dtype=x.dtype)
         else:
-            q_latent = self.q_a_norm(self.q_a_proj(x))
-            Q_rec = self.q_b_proj(q_latent).view(B, N, self.n_recall_heads, Dh).transpose(1, 2)
+            if self.q_proj is not None:
+                Q_rec = self.q_proj(x).view(B, N, self.n_recall_heads, Dh).transpose(1, 2)
+            else:
+                assert self.q_a_proj is not None and self.q_a_norm is not None and self.q_b_proj is not None
+                q_latent = self.q_a_norm(self.q_a_proj(x))
+                Q_rec = self.q_b_proj(q_latent).view(B, N, self.n_recall_heads, Dh).transpose(1, 2)
 
             kv_latent = self.kv_a_norm(self.kv_a_proj(x))
             if has_cache and past_latent_kv is not None and past_latent_kv.shape[1] > 0:
@@ -253,8 +280,11 @@ class KilatAttention(nn.Module):
 
         # Fusion & Output Projection
         out_combined = torch.cat([out_global, out_recall], dim=-1)
-        gate = self.gamma_net(torch.cat([x, out_combined], dim=-1))
-        output = self.c_proj(out_combined * gate)
+        if self.gamma_net is not None:
+            gate = self.gamma_net(torch.cat([x, out_combined], dim=-1))
+            output = self.c_proj(out_combined * gate)
+        else:
+            output = self.c_proj(out_combined)
 
         if use_cache:
             cache_obj = LayerHybridCache(
@@ -278,11 +308,21 @@ class KilatAttentionRoPE(KilatAttention):
         n_head: int,
         recall_ratio: float = 0.5,
         latent_dim: Optional[int] = None,
+        q_lora_rank: Optional[int] = None,
+        use_fusion_gate: bool = False,
         attn_drop: float = 0.0,
         rope_head_dim: Optional[int] = None,
         rope_base: float = 10000.0,
     ) -> None:
-        super().__init__(n_embd, n_head, recall_ratio, latent_dim, attn_drop)
+        super().__init__(
+            n_embd=n_embd,
+            n_head=n_head,
+            recall_ratio=recall_ratio,
+            latent_dim=latent_dim,
+            q_lora_rank=q_lora_rank,
+            use_fusion_gate=use_fusion_gate,
+            attn_drop=attn_drop,
+        )
 
         self.rope_base = rope_base
         self.rope_head_dim = rope_head_dim if rope_head_dim is not None else (self.head_dim // 2)
@@ -290,11 +330,18 @@ class KilatAttentionRoPE(KilatAttention):
             raise ValueError(f"rope_head_dim must be even, got {self.rope_head_dim}")
 
         if self.n_recall_heads > 0:
-            self.q_rope_proj: Optional[nn.Linear] = nn.Linear(
-                self.latent_dim,
-                self.n_recall_heads * self.rope_head_dim,
-                bias=False,
-            )
+            if self.q_lora_rank is None:
+                self.q_rope_proj: Optional[nn.Linear] = nn.Linear(
+                    n_embd,
+                    self.n_recall_heads * self.rope_head_dim,
+                    bias=False,
+                )
+            else:
+                self.q_rope_proj = nn.Linear(
+                    self.q_lora_rank,
+                    self.n_recall_heads * self.rope_head_dim,
+                    bias=False,
+                )
             self.k_rope_proj: Optional[nn.Linear] = nn.Linear(
                 n_embd,
                 self.rope_head_dim,
@@ -359,11 +406,12 @@ class KilatAttentionRoPE(KilatAttention):
         new_latent_kv: Optional[torch.Tensor] = None
         new_rope_k: Optional[torch.Tensor] = None
 
+        has_q = (self.q_proj is not None) or (
+            self.q_a_proj is not None and self.q_a_norm is not None and self.q_b_proj is not None
+        )
         if (
             Hr == 0
-            or self.q_a_proj is None
-            or self.q_a_norm is None
-            or self.q_b_proj is None
+            or not has_q
             or self.kv_a_proj is None
             or self.kv_a_norm is None
             or self.kv_b_proj is None
@@ -375,9 +423,14 @@ class KilatAttentionRoPE(KilatAttention):
                 new_latent_kv = torch.zeros(B, 0, self.latent_dim, device=x.device, dtype=x.dtype)
                 new_rope_k = torch.zeros(B, 0, Rd, device=x.device, dtype=x.dtype)
         else:
-            q_latent = self.q_a_norm(self.q_a_proj(x))
-            Q_sem = self.q_b_proj(q_latent).view(B, N, Hr, Dh).transpose(1, 2)
-            Q_rope = self.q_rope_proj(q_latent).view(B, N, Hr, Rd).transpose(1, 2)
+            if self.q_proj is not None:
+                Q_sem = self.q_proj(x).view(B, N, Hr, Dh).transpose(1, 2)
+                Q_rope = self.q_rope_proj(x).view(B, N, Hr, Rd).transpose(1, 2)
+            else:
+                assert self.q_a_proj is not None and self.q_a_norm is not None and self.q_b_proj is not None
+                q_latent = self.q_a_norm(self.q_a_proj(x))
+                Q_sem = self.q_b_proj(q_latent).view(B, N, Hr, Dh).transpose(1, 2)
+                Q_rope = self.q_rope_proj(q_latent).view(B, N, Hr, Rd).transpose(1, 2)
 
             kv_latent = self.kv_a_norm(self.kv_a_proj(x))
             k_rope_raw_new = self.k_rope_proj(x)  # (B, N, Rd)
@@ -439,8 +492,11 @@ class KilatAttentionRoPE(KilatAttention):
             out_recall = torch.matmul(attn_weights, V_rec).transpose(1, 2).reshape(B, N, Hr * Dh)
 
         out_combined = torch.cat([out_global, out_recall], dim=-1)
-        gate = self.gamma_net(torch.cat([x, out_combined], dim=-1))
-        output = self.c_proj(out_combined * gate)
+        if self.gamma_net is not None:
+            gate = self.gamma_net(torch.cat([x, out_combined], dim=-1))
+            output = self.c_proj(out_combined * gate)
+        else:
+            output = self.c_proj(out_combined)
 
         if use_cache:
             cache_obj = LayerHybridCache(
