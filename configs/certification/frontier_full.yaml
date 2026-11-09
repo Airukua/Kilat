@@ -14,7 +14,7 @@ pillar2:
   context_lengths: [64, 128, 256, 512]
   seeds: [0, 1, 2]
   train_steps: 1200
-  lr: 0.001
+  lr: 0.002
   vocab_size: 256
   batch_size: 32
   pass_threshold: 0.80

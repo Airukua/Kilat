@@ -210,6 +210,16 @@ class MainConfig:
         return self.model.latent_dim
 
     @property
+    def q_lora_rank(self) -> Optional[int]:
+        """Query low-rank compression dimension for MLA (None = uncompressed direct Q)."""
+        return getattr(self.model, "q_lora_rank", None)
+
+    @property
+    def use_fusion_gate(self) -> bool:
+        """Whether to apply nonlinear fusion gate to combined heads."""
+        return getattr(self.model, "use_fusion_gate", False)
+
+    @property
     def attn_drop(self) -> float:
         """Attention dropout (delegated from model)."""
         return self.model.attn_drop

@@ -90,8 +90,12 @@ class KilatPreTrainedModel(BasePreTrainedModel):
     def _init_weights(self, module: nn.Module):
         """
         Default initialisation: Linear/Embedding weights ~ N(0, initializer_range), biases = 0.
+        When initializer_range is None, preserves PyTorch module default initialization.
         """
-        std = float(getattr(getattr(self, "config", None), "initializer_range", 0.02))
+        init_range = getattr(getattr(self, "config", None), "initializer_range", 0.02)
+        if init_range is None:
+            return
+        std = float(init_range)
         if isinstance(module, nn.Linear):
             torch.nn.init.normal_(module.weight, mean=0.0, std=std)
             if module.bias is not None:
@@ -106,8 +110,11 @@ class KilatPreTrainedModel(BasePreTrainedModel):
         Applied to residual-branch output projections (`attn.c_proj` and FFN `.down`)
         so residual stream variance remains O(1) across depth L.
         """
+        init_range = getattr(self.config, "initializer_range", 0.02)
+        if init_range is None:
+            return
         n_layer = max(1, int(getattr(self.config, "n_layer", 1)))
-        base_std = float(getattr(self.config, "initializer_range", 0.02))
+        base_std = float(init_range)
         res_std = base_std / (float(2 * n_layer) ** 0.5)
         for name, module in self.named_modules():
             if isinstance(module, nn.Linear) and (name.endswith("attn.c_proj") or name.endswith(".down")):
@@ -258,9 +265,12 @@ class KilatTransformer(KilatPreTrainedModel, GenerationMixin):
         self.ln_f = RMSNorm(config.n_embd)
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
-        # Weight tying
-        self.wte.weight = self.lm_head.weight
-        self._tied_weights_keys = {"lm_head.weight": "wte.weight"}
+        # Weight tying (optional, based on config)
+        if getattr(config, "tie_word_embeddings", True):
+            self.wte.weight = self.lm_head.weight
+            self._tied_weights_keys = {"lm_head.weight": "wte.weight"}
+        else:
+            self._tied_weights_keys = {}
 
         # Initialise weights + residual depth scaling
         self.post_init()
