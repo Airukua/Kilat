@@ -30,6 +30,7 @@ data/fine-web-edu/**/tokenizer/
 checkpoints/
 logs/
 artifacts/
+reports/
 
 # Coverage and build outputs
 .coverage
