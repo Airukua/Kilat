@@ -114,6 +114,9 @@ def _enrich_checkpoint_metadata(ckpt_dir: Path, cfg: MainConfig) -> None:
 def _cmd_train(args: argparse.Namespace) -> int:
     setup_distributed()
     try:
+        import logging
+
+        logging.getLogger("torch._inductor").setLevel(logging.ERROR)
         is_main = is_main_process()
         print_kilat_banner(version=CLI_VERSION, quiet=bool(args.quiet or not is_main))
         cfg = MainConfig.from_yaml(args.config)
@@ -159,6 +162,8 @@ def _cmd_train(args: argparse.Namespace) -> int:
             tokenizer = ByteLevelDebugTokenizer(vocab_size=int(cfg.model.vocab_size))
 
         train_args = cfg.to_training_arguments()
+        if getattr(args, "no_dashboard", False):
+            train_args.use_dashboard = False
         flight_recorder = FlightRecorderCallback(output_dir=train_args.output_dir)
 
         trainer = KilatTrainer(
@@ -410,6 +415,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--skip-preflight",
         action="store_true",
         help="Skip fast Gate 1 theoretical preflight verification before training",
+    )
+    p_train.add_argument(
+        "--no-dashboard",
+        dest="no_dashboard",
+        action="store_true",
+        help="Disable interactive Rich live dashboard and use classic tqdm output",
     )
     p_train.add_argument("-q", "--quiet", action="store_true", help="Suppress banner")
     p_train.set_defaults(handler=_cmd_train)

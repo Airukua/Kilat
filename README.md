@@ -9,7 +9,7 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue?style=flat-square)](https://www.python.org/downloads/)
 [![PyTorch 2.0+](https://img.shields.io/badge/PyTorch-2.0%2B-EE4C2C?style=flat-square&logo=pytorch&logoColor=white)](https://pytorch.org/)
 [![Assurance: 8-Stage Verified](https://img.shields.io/badge/assurance-8--stage%20verified-success?style=flat-square)](docs/04_ASSURANCE_AND_CHAOS_ENGINEERING_PLAN.md)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg?style=flat-square)](LICENSE)
 [![HuggingFace](https://img.shields.io/badge/🤗-AiRukua-FFD21E?style=flat-square)](https://huggingface.co/AiRukua)
 
 <p align="center">
@@ -354,4 +354,4 @@ Focus: efficient sequence modeling, Indonesian NLP, low-resource language techno
 
 ---
 
-*Licensed under MIT. See [LICENSE](LICENSE) for details.*
+*Licensed under Apache 2.0. See [LICENSE](LICENSE) for details.*

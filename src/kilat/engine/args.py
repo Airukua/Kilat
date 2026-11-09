@@ -170,6 +170,7 @@ class TrainingArguments:
         report_to: Union[str, list[str]] = "none",
         run_name: Optional[str] = None,
         torch_compile: bool = False,
+        use_dashboard: bool = True,
         # Reproducibility
         seed: int = 42,
     ) -> None:
@@ -245,6 +246,7 @@ class TrainingArguments:
 
         self.run_name = run_name
         self.torch_compile = bool(torch_compile)
+        self.use_dashboard = bool(use_dashboard)
         self.seed = seed
 
 
@@ -307,4 +309,8 @@ class TrainingArguments:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> TrainingArguments:
         """Reconstruct a validated TrainingArguments instance from a dictionary."""
-        return cls(**data)
+        import inspect
+
+        valid_keys = set(inspect.signature(cls.__init__).parameters.keys())
+        filtered = {k: v for k, v in data.items() if k in valid_keys}
+        return cls(**filtered)
