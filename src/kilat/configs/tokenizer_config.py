@@ -99,6 +99,7 @@ class TokenizerConfig:
         custom_module: Optional[str] = None,
         custom_class: Optional[str] = None,
         custom_kwargs: Optional[dict] = None,
+        **extra_kwargs: Any,
     ):
         """
         Initialise tokenizer configuration with validation.
@@ -182,6 +183,7 @@ class TokenizerConfig:
         self.custom_module = custom_module
         self.custom_class = custom_class
         self.custom_kwargs = custom_kwargs or {}
+        self.extra_kwargs = extra_kwargs
 
     def build(self) -> Any:
         """
@@ -462,6 +464,40 @@ class TokenizerConfig:
             json.dump(self.to_dict(), f, indent=2, ensure_ascii=False)
 
     @classmethod
+    def from_dict(
+        cls, data: dict[str, Any], default_path: Optional[str] = None
+    ) -> "TokenizerConfig":
+        """
+        Create a TokenizerConfig from a dictionary.
+
+        Handles both native Kilat TokenizerConfig dictionaries and HuggingFace
+        tokenizer_config.json dictionaries seamlessly.
+        """
+        data_copy = dict(data)
+        if "tokenizer_type" not in data_copy:
+            data_copy["tokenizer_type"] = "auto"
+            if "tokenizer_name_or_path" not in data_copy:
+                if default_path is not None:
+                    data_copy["tokenizer_name_or_path"] = str(default_path)
+                elif "tokenizer_class" in data_copy and "gpt2" in str(data_copy["tokenizer_class"]).lower():
+                    data_copy["tokenizer_name_or_path"] = "gpt2"
+
+        known_keys = {
+            "tokenizer_type",
+            "tokenizer_name_or_path",
+            "tokenizer_model_path",
+            "use_fast",
+            "local_files_only",
+            "custom_builder",
+            "custom_module",
+            "custom_class",
+            "custom_kwargs",
+        }
+        init_kwargs = {k: v for k, v in data_copy.items() if k in known_keys}
+        extra_kwargs = {k: v for k, v in data_copy.items() if k not in known_keys}
+        return cls(**init_kwargs, **extra_kwargs)
+
+    @classmethod
     def from_json(cls, json_path: str | Path) -> "TokenizerConfig":
         """
         Load tokenizer configuration from a JSON file.
@@ -486,11 +522,11 @@ class TokenizerConfig:
         json_path = Path(json_path)
         if not json_path.exists():
             raise FileNotFoundError(f"Tokenizer config not found: {json_path}")
-        
-        with open(json_path, 'r', encoding='utf-8') as f:
+
+        with open(json_path, "r", encoding="utf-8") as f:
             config_dict = json.load(f)
-        
-        return cls(**config_dict)
+
+        return cls.from_dict(config_dict, default_path=str(json_path.parent))
 
     def to_yaml(self, path: Optional[str | Path] = None) -> str:
         """
@@ -545,7 +581,8 @@ class TokenizerConfig:
             If the loaded configuration contains invalid values.
         """
         config_dict = load_yaml_file(yaml_path)
-        return cls(**config_dict)
+        yaml_path = Path(yaml_path)
+        return cls.from_dict(config_dict, default_path=str(yaml_path.parent))
 
     def warn_if_vocab_mismatch(self, expected_vocab_size: int) -> None:
         """

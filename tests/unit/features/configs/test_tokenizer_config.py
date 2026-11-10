@@ -105,3 +105,35 @@ def test_tokenizer_config_build_and_save():
                     with Then("both tokenizer_config.json and tokenizer_config.yaml are written"):
                         assert (save_dir / "tokenizer_config.json").exists()
                         assert (save_dir / "tokenizer_config.yaml").exists()
+
+
+def test_tokenizer_config_from_hf_dict_and_json():
+    import json
+
+    with Scenario("Unit: TokenizerConfig from HuggingFace Dictionary and JSON"):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+
+            with Given("a Hugging Face style tokenizer dictionary with extra kwargs"):
+                hf_dict = {
+                    "tokenizer_class": "GPT2Tokenizer",
+                    "add_prefix_space": False,
+                    "bos_token": "<|endoftext|>",
+                    "eos_token": "<|endoftext|>",
+                    "model_max_length": 1024,
+                }
+
+                with When("parsing via TokenizerConfig.from_dict"):
+                    cfg = TokenizerConfig.from_dict(hf_dict, default_path="/tmp/fake_ckpt")
+                    with Then("tokenizer_type defaults to auto and extra kwargs are stored"):
+                        assert cfg.tokenizer_type == "auto"
+                        assert cfg.tokenizer_name_or_path == "/tmp/fake_ckpt"
+                        assert cfg.extra_kwargs.get("add_prefix_space") is False
+
+                with When("saving to JSON and loading via TokenizerConfig.from_json"):
+                    json_file = tmp_path / "hf_tokenizer_config.json"
+                    json_file.write_text(json.dumps(hf_dict))
+                    cfg_from_file = TokenizerConfig.from_json(json_file)
+                    with Then("configuration is parsed seamlessly"):
+                        assert cfg_from_file.tokenizer_type == "auto"
+                        assert cfg_from_file.extra_kwargs.get("add_prefix_space") is False
