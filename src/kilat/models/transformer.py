@@ -117,7 +117,12 @@ class KilatPreTrainedModel(BasePreTrainedModel):
         base_std = float(init_range)
         res_std = base_std / (float(2 * n_layer) ** 0.5)
         for name, module in self.named_modules():
-            if isinstance(module, nn.Linear) and (name.endswith("attn.c_proj") or name.endswith(".down")):
+            if isinstance(module, nn.Linear) and (
+                name.endswith("attn.c_proj")
+                or name.endswith("attn.o_proj_recall")
+                or name.endswith("attn.o_proj_global")
+                or name.endswith(".down")
+            ):
                 torch.nn.init.normal_(module.weight, mean=0.0, std=res_std)
 
 
@@ -232,7 +237,7 @@ class KilatTransformer(KilatPreTrainedModel, GenerationMixin):
                 f"use `KilatTransformer.from_pretrained(...)`."
             )
 
-        # ===== BACKWARD COMPATIBILITY: Inject missing RoPE fields =====
+        # ===== BACKWARD COMPATIBILITY: Inject missing RoPE & Synergy fields =====
         # Older configs (NoPE models) don't have these fields
         if not hasattr(config, 'use_rope'):
             config.use_rope = False
@@ -242,6 +247,14 @@ class KilatTransformer(KilatPreTrainedModel, GenerationMixin):
             config.rope_base = 10000.0
         if not hasattr(config, 'ff_mult'):
             config.ff_mult = 8 / 3
+        if not hasattr(config, 'recall_pattern'):
+            config.recall_pattern = "uniform"
+        if not hasattr(config, 'recall_ratios'):
+            config.recall_ratios = None
+        if not hasattr(config, 'yarn_scale'):
+            config.yarn_scale = None
+        if not hasattr(config, 'yarn_base_seq_len'):
+            config.yarn_base_seq_len = 4096
         # ===============================================================
 
         super().__init__(config)
@@ -255,10 +268,18 @@ class KilatTransformer(KilatPreTrainedModel, GenerationMixin):
             nn.Dropout(config.embd_drop) if config.embd_drop > 0 else nn.Identity()
         )
 
+        # Determine per-layer recall ratios (Macro-Synergy vs Uniform vs Custom)
+        if config.recall_pattern == "macro_synergy":
+            layer_recall_ratios = [0.0 if (i % 2 == 0) else 1.0 for i in range(config.n_layer)]
+        elif config.recall_pattern == "custom" and config.recall_ratios is not None:
+            layer_recall_ratios = [float(r) for r in config.recall_ratios]
+        else:
+            layer_recall_ratios = [float(config.recall_ratio) for _ in range(config.n_layer)]
+
         # Stack of transformer blocks configured from single source of truth (KilatConfig)
         self.layers = nn.ModuleList([
-            Block(config=config)
-            for _ in range(config.n_layer)
+            Block(config=config, layer_recall_ratio=layer_recall_ratios[i])
+            for i in range(config.n_layer)
         ])
 
         # Final normalisation + LM head

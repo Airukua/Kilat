@@ -75,6 +75,8 @@ class KilatConfig(BaseConfig):
         n_head: int = 12,
         # ---- Attention configuration ----
         recall_ratio: float = 0.5,
+        recall_pattern: Literal["uniform", "macro_synergy", "custom"] = "uniform",
+        recall_ratios: Optional[list[float]] = None,
         latent_dim: Optional[int] = None,
         q_lora_rank: Optional[int] = None,
         use_fusion_gate: bool = False,
@@ -83,6 +85,8 @@ class KilatConfig(BaseConfig):
         use_rope: bool = False,
         rope_head_dim: Optional[int] = None,
         rope_base: float = 10000.0,
+        yarn_scale: Optional[float] = None,
+        yarn_base_seq_len: int = 4096,
         # ---- Feed-forward configuration ----
         ffn_mode: Literal["dense", "moe", "swiglu"] = "moe",
         ff_mult: float = 8 / 3,
@@ -136,6 +140,8 @@ class KilatConfig(BaseConfig):
 
         # Attention parameters
         self.recall_ratio = recall_ratio
+        self.recall_pattern = recall_pattern
+        self.recall_ratios = recall_ratios
         self.latent_dim = latent_dim
         self.q_lora_rank = q_lora_rank
         self.use_fusion_gate = use_fusion_gate
@@ -145,6 +151,8 @@ class KilatConfig(BaseConfig):
         self.use_rope = use_rope
         self.rope_head_dim = rope_head_dim
         self.rope_base = rope_base
+        self.yarn_scale = yarn_scale
+        self.yarn_base_seq_len = yarn_base_seq_len
 
         # Feed-forward parameters
         self.ffn_mode = ffn_mode
@@ -240,9 +248,24 @@ class KilatConfig(BaseConfig):
         if self.z_loss_coef < 0.0:
             raise ValueError(f"z_loss_coef must be >= 0.0, got {self.z_loss_coef}.")
 
-        # Recall ratio bounds (hybrid attention split)
+        # Recall ratio and pattern validation
         if not 0 <= self.recall_ratio <= 1:
             raise ValueError(f"recall_ratio must be in [0, 1], got {self.recall_ratio}.")
+        if self.recall_pattern not in ("uniform", "macro_synergy", "custom"):
+            raise ValueError(
+                f"recall_pattern must be 'uniform', 'macro_synergy', or 'custom', got {self.recall_pattern!r}."
+            )
+        if self.recall_pattern == "custom":
+            if not self.recall_ratios or len(self.recall_ratios) != self.n_layer:
+                raise ValueError(
+                    f"recall_pattern='custom' requires recall_ratios of length {self.n_layer}, "
+                    f"got {len(self.recall_ratios) if self.recall_ratios else 0}."
+                )
+            for i, r in enumerate(self.recall_ratios):
+                if not 0.0 <= r <= 1.0:
+                    raise ValueError(f"recall_ratios[{i}] must be in [0, 1], got {r}.")
+        if self.yarn_scale is not None and self.yarn_scale < 1.0:
+            raise ValueError(f"yarn_scale must be >= 1.0, got {self.yarn_scale}.")
 
         # Dropout probability bounds (all share same [0, 1) range)
         for name in ["attn_drop", "ffn_dropout", "embd_drop", "resid_drop"]:
