@@ -24,6 +24,7 @@ Welcome to Kilat. When working as an AI agent in this codebase, adhere strictly 
 - ML Testing: `.agents/skills/core/ml-testing/SKILL.md`
 - GPU Performance: `.agents/skills/core/gpu-performance/SKILL.md`
 - Assurance & Chaos Engineering: `.agents/skills/core/assurance-chaos-engineering/SKILL.md`
+- Senior Software Architecture: `.agents/skills/core/senior-software-architecture/SKILL.md`
 
 ## Mandatory Anti-Hallucination & Implementation Plan (`docs/`)
 Before modifying `src/` or `tests/`, read `docs/01_AGENT_ANTI_HALLUCINATION_CONTRACT.md`, `docs/02_MATHEMATICAL_SPEC_AND_BUGFIX_PLAN.md`, `docs/03_CODEBASE_RESTRUCTURE_PLAN.md`, `docs/04_ASSURANCE_AND_CHAOS_ENGINEERING_PLAN.md`, and execute strictly in the atomic order defined in `docs/05_STEP_BY_STEP_EXECUTION_CHECKLIST.md`.
