@@ -23,6 +23,7 @@ from kilat.benchmarking.tasks.mqar import (
     MQARAnalyticalOracle,
     MQARConfig,
     compute_causal_accuracy as compute_mqar_acc,
+    compute_causal_loss as compute_mqar_loss,
     generate_batch as generate_mqar_batch,
 )
 from kilat.benchmarking.tasks.selective_copying import (
@@ -148,3 +149,29 @@ def test_selective_copying_negative_delimiter_sabotage():
 
         with Then("the Oracle fails to trigger reproduction and accuracy drops to 0%"):
             assert acc == 0.0
+
+
+def test_mqar_reference_attention_overfit_and_convergence():
+    with Scenario("Benchmark: MQAR Reference Attention Ground Truth Overfit Verification"):
+        with Given("an MQAR batch with B=8, N=32, d=2, V=64 and a Reference Attention model"):
+            cfg = MQARConfig(seq_len=32, vocab_size=64, num_kv_pairs=2, batch_size=8)
+            gen = torch.Generator().manual_seed(42)
+            x, y = generate_mqar_batch(cfg, generator=gen)
+            from kilat.benchmarking.registry import build_model
+            model = build_model("reference-attention", vocab_size=64, d_model=32, n_heads=2, max_seq_len=32)
+            opt = torch.optim.AdamW(model.parameters(), lr=5e-3)
+
+        with When("training the Reference Attention transformer on the micro batch for 80 steps"):
+            model.train()
+            for _ in range(80):
+                opt.zero_grad()
+                logits = model(x)
+                loss = compute_mqar_loss(logits, y)
+                loss.backward()
+                opt.step()
+
+        with Then("the model achieves >= 95% accuracy, proving standard attention solves MQAR"):
+            model.eval()
+            with torch.no_grad():
+                acc = compute_mqar_acc(model(x), y)
+            assert acc >= 0.95

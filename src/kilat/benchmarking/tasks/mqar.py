@@ -1,13 +1,15 @@
 """Zoology Multi-Query Associative Recall (MQAR) Benchmark Task.
 
-Reference: Arora et al., "Zoology: Measuring and Improving Recall in Efficient Language Models", ICLR 2024.
-Enforces strict causal alignment: predictions at position p predict labels at position p + 1.
+Reference:
+    Arora, Eyuboglu et al., "Zoology: Measuring and Improving Recall in Efficient Language Models", ICLR 2024.
+    Implementation aligned 1:1 with Stanford Hazy Research Zoology repository (zoology/data/multiquery_ar.py).
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -21,6 +23,78 @@ class MQARConfig:
     vocab_size: int = 256
     num_kv_pairs: int = 8
     batch_size: int = 32
+    power_a: float = 0.01
+    random_non_queries: bool = False
+    num_passes: int = 1
+
+
+def generate_dataset(
+    cfg: MQARConfig,
+    num_examples: int,
+    seed: int,
+    device: str = "cpu",
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Generate a full MQAR dataset aligned 1:1 with Stanford Zoology multiquery_ar.
+
+    Structure:
+        Context: [k1, v1, k2, v2, ..., kd, vd] (length = 2 * d * num_passes)
+        Query region: queries placed according to power-law gap distribution.
+        Inputs: examples[:, :-1] of length seq_len.
+        Labels: labels[:, 1:] of length seq_len, where position t contains the target
+                value for the query key present at input position t, and -100 elsewhere.
+    """
+    assert cfg.seq_len % 2 == 0, "seq_len must be even"
+    context_size = cfg.num_kv_pairs * 2 * cfg.num_passes
+    assert (
+        context_size + cfg.num_kv_pairs * 2 <= cfg.seq_len
+    ), f"seq_len {cfg.seq_len} too short for {cfg.num_kv_pairs} KV pairs (requires >= {context_size + cfg.num_kv_pairs * 2})"
+    assert (
+        cfg.vocab_size // 2 > cfg.num_kv_pairs
+    ), f"vocab_size {cfg.vocab_size} too small to draw {cfg.num_kv_pairs} unique keys"
+
+    rng = np.random.RandomState(seed)
+
+    key_vocab_size = cfg.vocab_size // 2
+    key_choices = np.arange(1, key_vocab_size)
+    value_choices = np.arange(key_vocab_size, cfg.vocab_size)
+
+    keys = np.zeros((num_examples, cfg.num_kv_pairs), dtype=np.int64)
+    values = np.zeros((num_examples, cfg.num_kv_pairs), dtype=np.int64)
+    for i in range(num_examples):
+        keys[i] = rng.choice(key_choices, size=cfg.num_kv_pairs, replace=False)
+        values[i] = rng.choice(value_choices, size=cfg.num_kv_pairs, replace=False)
+
+    kvs = np.zeros((num_examples, context_size), dtype=np.int64)
+    kvs[:, 0::2] = keys
+    kvs[:, 1::2] = values
+    if cfg.num_passes > 1:
+        kvs = np.tile(kvs, (1, cfg.num_passes))
+
+    space = (cfg.seq_len - context_size) // 2
+    p = cfg.power_a * np.arange(1, space + 1) ** (cfg.power_a - 1)
+    p = p / p.sum()
+
+    gaps = np.zeros((num_examples, cfg.num_kv_pairs), dtype=np.int64)
+    slots_arr = np.arange(space, dtype=np.int64)
+    for i in range(num_examples):
+        gaps[i] = rng.choice(slots_arr, size=cfg.num_kv_pairs, replace=False, p=p)
+
+    queries = np.zeros((num_examples, cfg.seq_len - context_size + 1), dtype=np.int64)
+    np.put_along_axis(queries, (gaps * 2), values=keys, axis=1)
+    examples = np.concatenate([kvs, queries], axis=1)
+
+    labels = np.full((num_examples, cfg.seq_len + 1), -100, dtype=np.int64)
+    np.put_along_axis(labels, (gaps * 2) + context_size + 1, values=values, axis=1)
+
+    inputs_t = torch.tensor(examples[:, :-1], dtype=torch.long)
+    labels_t = torch.tensor(labels[:, 1:], dtype=torch.long)
+
+    if cfg.random_non_queries:
+        zero_mask = inputs_t == 0
+        rand_tokens = torch.from_numpy(rng.randint(0, cfg.vocab_size, size=inputs_t.shape))
+        inputs_t[zero_mask] = rand_tokens[zero_mask]
+
+    return inputs_t.to(device), labels_t.to(device)
 
 
 def generate_batch(
@@ -28,79 +102,36 @@ def generate_batch(
     device: str = "cpu",
     generator: Optional[torch.Generator] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Generate an MQAR batch with non-overlapping keys and values.
-
-    Input sequence structure:
-        [k1, v1, k2, v2, ..., kd, vd, 0, 0, q1, 0, 0, q2, 0, ...]
-    Labels:
-        -100 everywhere except at query_pos + 1, where the true value resides.
-    """
-    B, L = cfg.batch_size, cfg.seq_len
-    d = cfg.num_kv_pairs
-    ctx_len = 2 * d
-    query_region = L - ctx_len
-    if query_region < 2 * d:
-        raise ValueError(
-            f"seq_len={L} is too short for {d} KV pairs and {d} queries (requires >= {4 * d})"
-        )
-
-    half = cfg.vocab_size // 2
-    if half - 1 < d:
-        raise ValueError(f"vocab_size={cfg.vocab_size} too small to draw {d} unique keys")
-
-    input_ids = torch.full((B, L), FILLER_TOKEN, dtype=torch.long)
-    labels = torch.full((B, L), -100, dtype=torch.long)
-
-    # Unique keys from [1, half) and values from [half, vocab_size)
-    key_pool = torch.rand(B, half - 1, generator=generator).argsort(dim=1)[:, :d] + 1
-    values = torch.randint(half, cfg.vocab_size, (B, d), generator=generator)
-
-    input_ids[:, 0:ctx_len:2] = key_pool
-    input_ids[:, 1:ctx_len:2] = values
-
-    # Sample query positions (even offsets in query region)
-    n_slots = query_region // 2
-    slot_scores = torch.rand(B, n_slots, generator=generator)
-    slots = slot_scores.argsort(dim=1)[:, :d]
-    query_pos = ctx_len + 2 * slots
-    order = torch.rand(B, d, generator=generator).argsort(dim=1)
-
-    rows = torch.arange(B).unsqueeze(1).expand(-1, d)
-    q_keys = torch.gather(key_pool, 1, order)
-    q_vals = torch.gather(values, 1, order)
-
-    input_ids[rows, query_pos] = q_keys
-    labels[rows, query_pos + 1] = q_vals
-
-    return input_ids.to(device), labels.to(device)
+    """Generate a single MQAR batch aligned with Stanford Zoology."""
+    if generator is not None:
+        seed = int(torch.randint(0, 2**31 - 1, (1,), generator=generator).item())
+    else:
+        seed = int(torch.randint(0, 2**31 - 1, (1,)).item())
+    return generate_dataset(cfg, num_examples=cfg.batch_size, seed=seed, device=device)
 
 
 def compute_causal_accuracy(logits: torch.Tensor, labels: torch.Tensor) -> float:
-    """Compute exact match accuracy using standard causal shift (logits[:-1] vs labels[1:])."""
-    shift_logits = logits[:, :-1, :]
-    shift_labels = labels[:, 1:]
-    mask = shift_labels != -100
+    """Exact match accuracy at target query positions (Zoology convention)."""
+    mask = labels != -100
     if not mask.any():
         return 0.0
-    preds = shift_logits.argmax(dim=-1)
-    correct = (preds[mask] == shift_labels[mask]).float().sum().item()
+    preds = logits.argmax(dim=-1)
+    correct = (preds[mask] == labels[mask]).float().sum().item()
     total = mask.sum().item()
     return correct / max(1, total)
 
 
 def compute_causal_loss(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
-    """Compute cross-entropy loss using standard causal shift."""
-    shift_logits = logits[:, :-1, :].contiguous()
-    shift_labels = labels[:, 1:].contiguous()
+    """Cross-entropy loss at target query positions (Zoology convention)."""
     return F.cross_entropy(
-        shift_logits.view(-1, shift_logits.size(-1)),
-        shift_labels.view(-1),
+        logits.contiguous().view(-1, logits.size(-1)),
+        labels.contiguous().view(-1),
         ignore_index=-100,
     )
 
 
 class MQARAnalyticalOracle(nn.Module):
-    """Analytical non-parametric Oracle for MQAR verification (proves task solvable with 100% accuracy)."""
+    """Analytical non-parametric Oracle for MQAR verification (achieves 100% exact match)."""
 
     def __init__(self, vocab_size: int):
         super().__init__()
@@ -112,15 +143,13 @@ class MQARAnalyticalOracle(nn.Module):
         for b in range(B):
             row = input_ids[b].tolist()
             kv_map = {}
-            # Reconstruct KV prefix (stops when non-key encountered or query region)
             for i in range(0, L - 1, 2):
                 k, v = row[i], row[i + 1]
-                if k != FILLER_TOKEN and v != FILLER_TOKEN:
+                if k > 0 and v > 0 and k < self.vocab_size // 2 and v >= self.vocab_size // 2:
                     kv_map[k] = v
                 else:
                     break
-            # Predict values immediately following query keys
-            for t in range(L - 1):
+            for t in range(L):
                 tok = row[t]
                 if tok in kv_map:
                     target_v = kv_map[tok]

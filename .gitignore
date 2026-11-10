@@ -119,3 +119,6 @@ experiments/
 checkpoints/
 telemetry.jsonl
 verify_signoff/
+
+# External references
+external/
