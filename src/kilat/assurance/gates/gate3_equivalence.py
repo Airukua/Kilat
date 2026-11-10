@@ -12,6 +12,7 @@ from kilat.engine.checkpoint import capture_rng_state, get_device, restore_rng_s
 from kilat.models.attention import KilatAttention, KilatAttentionRoPE
 from kilat.models.ffn import DeepSeekMoE
 from kilat.models.kernels.flash_decay import (
+    HAS_TRITON,
     _reference_global_decay_fp64,
     compute_decay_normalizer_from_logit,
     triton_global_decay,
@@ -44,6 +45,7 @@ def run_gate3_equivalence(
         torch.manual_seed(20261111)
 
         # ── 1. Global Decay Precision Equivalence vs Exact FP64 Reference ────────
+        # Tests both CPU PyTorch fallback and CUDA Triton kernel when hardware is available
         V_ref = torch.randn(2, 3, 10, 8, dtype=torch.float64, requires_grad=True)
         lam_ref = torch.tensor([0.65, 0.92, 0.9995], dtype=torch.float64, requires_grad=True)
         out_ref = _reference_global_decay_fp64(lam_ref, V_ref)
@@ -56,32 +58,38 @@ def run_gate3_equivalence(
             ("fp16", torch.float16, 5e-3, 1e-2),
             ("bf16", torch.bfloat16, 2e-2, 3e-2),
         ]
+        target_devices = [torch.device("cpu")]
+        if torch.cuda.is_available() and HAS_TRITON:
+            target_devices.append(torch.device("cuda:0"))
+
         decay_errors: dict[str, float] = {}
-        for label, dt, fwd_tol, bwd_tol in dtype_specs:
-            V_dt = V_ref.detach().to(dt).requires_grad_(True)
-            lam_dt = lam_ref.detach().to(torch.float32).requires_grad_(True)
-            out_dt = triton_global_decay(lam_dt, V_dt)
-            if not torch.isfinite(out_dt).all():
-                raise AssuranceError(
-                    AssuranceFailureCode.ERR_EQUIVALENCE_DRIFT,
-                    f"Non-finite Global Decay forward output in {label}.",
-                )
-            out_dt.backward(grad_out_ref.to(dt))
-            assert V_dt.grad is not None and lam_dt.grad is not None
+        for dev in target_devices:
+            dev_tag = "cuda_triton" if dev.type == "cuda" else "cpu"
+            for label, dt, fwd_tol, bwd_tol in dtype_specs:
+                V_dt = V_ref.detach().to(device=dev, dtype=dt).requires_grad_(True)
+                lam_dt = lam_ref.detach().to(device=dev, dtype=torch.float32).requires_grad_(True)
+                out_dt = triton_global_decay(lam_dt, V_dt)
+                if not torch.isfinite(out_dt).all():
+                    raise AssuranceError(
+                        AssuranceFailureCode.ERR_EQUIVALENCE_DRIFT,
+                        f"Non-finite Global Decay forward output in {dev_tag}_{label}.",
+                    )
+                out_dt.backward(grad_out_ref.to(device=dev, dtype=dt))
+                assert V_dt.grad is not None and lam_dt.grad is not None
 
-            err_fwd = _relative_linf_error(out_dt, out_ref)
-            err_dv = _relative_linf_error(V_dt.grad, V_ref.grad)
-            err_dlam = _relative_linf_error(lam_dt.grad, lam_ref.grad)
-            decay_errors[f"{label}_fwd_rel_err"] = err_fwd
-            decay_errors[f"{label}_grad_rel_err"] = max(err_dv, err_dlam)
+                err_fwd = _relative_linf_error(out_dt.cpu(), out_ref)
+                err_dv = _relative_linf_error(V_dt.grad.cpu(), V_ref.grad)
+                err_dlam = _relative_linf_error(lam_dt.grad.cpu(), lam_ref.grad)
+                decay_errors[f"{dev_tag}_{label}_fwd_rel_err"] = err_fwd
+                decay_errors[f"{dev_tag}_{label}_grad_rel_err"] = max(err_dv, err_dlam)
 
-            if err_fwd > fwd_tol or max(err_dv, err_dlam) > bwd_tol:
-                raise AssuranceError(
-                    AssuranceFailureCode.ERR_EQUIVALENCE_DRIFT,
-                    f"Global Decay {label} equivalence exceeded tolerance "
-                    f"(fwd={err_fwd:.3e} vs {fwd_tol:.1e}, grad={max(err_dv, err_dlam):.3e} vs {bwd_tol:.1e}).",
-                    decay_errors,
-                )
+                if err_fwd > fwd_tol or max(err_dv, err_dlam) > bwd_tol:
+                    raise AssuranceError(
+                        AssuranceFailureCode.ERR_EQUIVALENCE_DRIFT,
+                        f"Global Decay {dev_tag}_{label} equivalence exceeded tolerance "
+                        f"(fwd={err_fwd:.3e} vs {fwd_tol:.1e}, grad={max(err_dv, err_dlam):.3e} vs {bwd_tol:.1e}).",
+                        decay_errors,
+                    )
 
         # Near-unity horizon singularity guard (log_lambda = 25.0 => 1 - float32(lam) == 0.0)
         extreme_logit = torch.tensor([25.0, 30.0], dtype=torch.float32)
