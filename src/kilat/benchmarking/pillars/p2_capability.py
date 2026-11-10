@@ -12,6 +12,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 import torch
 import torch.nn as nn
+from torch.utils.data import DataLoader, TensorDataset
 
 from ..protocol import run_with_seeds, summarize
 from ..registry import extract_logits
@@ -27,6 +28,7 @@ class CapabilityConfig:
     lr: float = 2e-3
     vocab_size: int = 128
     batch_size: int = 32
+    d_model: Optional[int] = None
     device: str = "cpu"
     pass_threshold: float = 0.80
 
@@ -40,38 +42,91 @@ def _train_and_eval_single(
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
-    gen_train = torch.Generator().manual_seed(seed)
-    gen_eval = torch.Generator().manual_seed(10_000 + seed)
+
     max_len = max(cfg.context_lengths)
-    model = model_builder(vocab_size=cfg.vocab_size, max_seq_len=max_len).to(cfg.device)
+    builder_kwargs: Dict[str, Any] = {
+        "vocab_size": cfg.vocab_size,
+        "max_seq_len": max_len,
+    }
+    if cfg.d_model is not None:
+        builder_kwargs["d_model"] = cfg.d_model
+
+    model = model_builder(**builder_kwargs).to(cfg.device)
     opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, betas=(0.9, 0.98), weight_decay=0.01)
+    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(1, cfg.train_steps))
 
     # Resolve task generator and loss functions
     if cfg.task == "mqar":
+        num_kv = max(4, seq_len // 16)
         task_cfg = mqar.MQARConfig(
             seq_len=seq_len,
             vocab_size=cfg.vocab_size,
-            num_kv_pairs=max(4, seq_len // 16),
+            num_kv_pairs=num_kv,
             batch_size=cfg.batch_size,
         )
 
-        def gen_fn(g):
-            return mqar.generate_batch(task_cfg, device=cfg.device, generator=g)
+        n_train_examples = max(cfg.batch_size * 4, min(cfg.train_steps * cfg.batch_size, 3000))
+        n_eval_examples = max(cfg.batch_size, 300)
+
+        x_train, y_train = mqar.generate_dataset(
+            task_cfg, num_examples=n_train_examples, seed=seed, device=cfg.device
+        )
+        x_eval, y_eval = mqar.generate_dataset(
+            task_cfg, num_examples=n_eval_examples, seed=10_000 + seed, device=cfg.device
+        )
+
+        train_loader = DataLoader(
+            TensorDataset(x_train, y_train),
+            batch_size=cfg.batch_size,
+            shuffle=True,
+        )
+        loader_iter = iter(train_loader)
 
         loss_fn = mqar.compute_causal_loss
         acc_fn = mqar.compute_causal_accuracy
+
+        model.train()
+        for _ in range(cfg.train_steps):
+            try:
+                bx, by = next(loader_iter)
+            except StopIteration:
+                loader_iter = iter(train_loader)
+                bx, by = next(loader_iter)
+
+            opt.zero_grad()
+            logits = extract_logits(model(bx))
+            loss = loss_fn(logits, by)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 10.0)
+            opt.step()
+            sched.step()
+
+        model.eval()
+        with torch.no_grad():
+            eval_logits = extract_logits(model(x_eval))
+            final_acc = acc_fn(eval_logits, y_eval)
+            final_loss = loss_fn(eval_logits, y_eval).item()
+
+        return {
+            "accuracy": final_acc,
+            "loss": final_loss,
+        }
+
     elif cfg.task == "induction_heads":
         task_cfg = induction_heads.InductionHeadsConfig(
             vocab_size=cfg.vocab_size,
             seq_len=seq_len,
             batch_size=cfg.batch_size,
         )
+        gen_train = torch.Generator().manual_seed(seed)
+        gen_eval = torch.Generator().manual_seed(10_000 + seed)
 
         def gen_fn(g):
             return induction_heads.generate_batch(task_cfg, device=cfg.device, generator=g)
 
         loss_fn = induction_heads.compute_causal_loss
         acc_fn = induction_heads.compute_causal_accuracy
+
     elif cfg.task == "selective_copying":
         task_cfg = selective_copying.SelectiveCopyingConfig(
             seq_len=seq_len,
@@ -79,6 +134,8 @@ def _train_and_eval_single(
             num_data_tokens=min(8, cfg.vocab_size - 4),
             batch_size=cfg.batch_size,
         )
+        gen_train = torch.Generator().manual_seed(seed)
+        gen_eval = torch.Generator().manual_seed(10_000 + seed)
 
         def gen_fn(g):
             return selective_copying.generate_batch(task_cfg, device=cfg.device, generator=g)
@@ -88,7 +145,7 @@ def _train_and_eval_single(
     else:
         raise ValueError(f"Unknown task: {cfg.task}")
 
-    # Training loop
+    # Training loop for streaming tasks (induction heads, selective copying)
     model.train()
     for _ in range(cfg.train_steps):
         x, y = gen_fn(gen_train)
@@ -98,6 +155,7 @@ def _train_and_eval_single(
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 10.0)
         opt.step()
+        sched.step()
 
     # Evaluation on held-out distribution
     model.eval()
@@ -114,7 +172,7 @@ def _train_and_eval_single(
 
 
 def run_pillar2(
-    model_builder: Callable[[], nn.Module],
+    model_builder: Callable[..., nn.Module],
     cfg: CapabilityConfig,
     arch_name: str = "model",
 ) -> Dict[str, Any]:
