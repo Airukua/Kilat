@@ -170,7 +170,6 @@ class TrainingArguments:
         report_to: Union[str, list[str]] = "none",
         run_name: Optional[str] = None,
         torch_compile: bool = False,
-        use_dashboard: bool = True,
         # Reproducibility
         seed: int = 42,
     ) -> None:
@@ -246,7 +245,6 @@ class TrainingArguments:
 
         self.run_name = run_name
         self.torch_compile = bool(torch_compile)
-        self.use_dashboard = bool(use_dashboard)
         self.seed = seed
 
 

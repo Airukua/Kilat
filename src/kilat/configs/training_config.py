@@ -109,7 +109,6 @@ class TrainingConfig:
         run_name: Optional[str] = "kilat-run",
         # ---- Optimization & compilation ----
         torch_compile: bool = False,
-        use_dashboard: bool = True,
         # ---- Reproducibility ----
         seed: int = 42,
     ):
@@ -280,7 +279,6 @@ class TrainingConfig:
         
         # Optimization & compilation
         self.torch_compile: bool = bool(torch_compile)
-        self.use_dashboard: bool = bool(use_dashboard)
 
         # Reproducibility
         self.seed = seed
@@ -330,7 +328,6 @@ class TrainingConfig:
             "report_to": self.report_to,
             "run_name": self.run_name,
             "torch_compile": self.torch_compile,
-            "use_dashboard": self.use_dashboard,
             "seed": self.seed,
         }
 
