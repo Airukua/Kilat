@@ -66,6 +66,67 @@ def apply_rotary_pos_emb(
     return x * cos + rotated * sin
 
 
+def build_yarn_rope_cache(
+    seq_len: int,
+    rope_dim: int,
+    device: torch.device,
+    dtype: torch.dtype = torch.float32,
+    base: float = 10000.0,
+    offset: int = 0,
+    scale: float = 1.0,
+    original_max_position_embeddings: int = 4096,
+    beta_fast: float = 32.0,
+    beta_slow: float = 1.0,
+) -> Tuple[torch.Tensor, torch.Tensor, float]:
+    """
+    Build YaRN (Yet another RoPE extensioN) cache for context window extension.
+
+    YaRN applies multi-band frequency interpolation:
+    - High frequencies (local details, small wavelengths): NO interpolation.
+    - Low frequencies (global dependencies, large wavelengths): FULL interpolation by scale.
+    - Intermediate frequencies: smooth ramp interpolation between 1 and scale.
+    - Temperature multiplier: sharpens attention entropy by factor sqrt(0.1 * ln(scale) + 1).
+
+    References:
+        Peng et al., 2023 ("YaRN: Efficient Context Window Extension of Large Language Models")
+
+    Returns:
+        (cos_cache, sin_cache, attn_factor)
+    """
+    assert rope_dim % 2 == 0, f"rope_dim must be even, got {rope_dim}"
+    half_dim = rope_dim // 2
+
+    # Standard base inverse frequencies theta_i = base^{-2i/d}
+    theta = 1.0 / (base ** (torch.arange(0, half_dim, device=device).float() / half_dim))
+
+    if scale <= 1.0:
+        theta_prime = theta
+        attn_factor = 1.0
+    else:
+        # Wavelength lambda_i = 2 * pi / theta_i
+        wavelength = 2.0 * math.pi / theta
+        # Ratio r_i = original_max_position_embeddings / wavelength_i
+        r = original_max_position_embeddings / wavelength
+
+        # Ramp function gamma(r) in [0, 1]
+        # r > beta_fast -> gamma = 1 (no interpolation)
+        # r < beta_slow -> gamma = 0 (full interpolation by scale)
+        gamma = torch.clamp((r - beta_slow) / max(1e-6, beta_fast - beta_slow), 0.0, 1.0)
+        # theta_prime = (1 - gamma) * (theta / scale) + gamma * theta
+        theta_prime = (1.0 - gamma) * (theta / scale) + gamma * theta
+
+        # Attention entropy temperature scale
+        attn_factor = math.sqrt(0.1 * math.log(scale) + 1.0)
+
+    positions = torch.arange(offset, offset + seq_len, device=device).float()
+    freqs = torch.outer(positions, theta_prime)
+    emb = torch.cat([freqs, freqs], dim=-1)
+
+    cos_cache = emb.cos()[None, None, :, :].to(dtype)
+    sin_cache = emb.sin()[None, None, :, :].to(dtype)
+    return cos_cache, sin_cache, attn_factor
+
+
 def build_rope_cache(
     seq_len: int,
     rope_dim: int,
@@ -73,9 +134,12 @@ def build_rope_cache(
     dtype: torch.dtype = torch.float32,
     base: float = 10000.0,
     offset: int = 0,
+    scale: float = 1.0,
+    original_max_position_embeddings: int = 4096,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Precompute cosine and sine caches for rotary position embedding.
+    Supports optional YaRN length scaling via `scale > 1.0`.
     
     This function implements the standard RoPE frequency formulation from
     "RoFormer: Enhanced Transformer with Rotary Position Embedding" (Su et al., 2021):
@@ -95,6 +159,8 @@ def build_rope_cache(
         offset: Starting position index for incremental decoding.
             When decoding sequentially, positions are offset by previously
             generated tokens (e.g., if 5 tokens already exist, offset=5)
+        scale: YaRN context scale factor (default: 1.0 = standard RoPE).
+        original_max_position_embeddings: Base context window for YaRN ramp (default: 4096).
     
     Returns:
         Tuple of (cos_cache, sin_cache) each with shape (1, 1, seq_len, rope_dim)
@@ -105,6 +171,19 @@ def build_rope_cache(
         >>> # For incremental decoding starting at position 10
         >>> cos, sin = build_rope_cache(1, 64, torch.device('cuda'), offset=10)
     """
+    if scale > 1.0:
+        cos_cache, sin_cache, _ = build_yarn_rope_cache(
+            seq_len=seq_len,
+            rope_dim=rope_dim,
+            device=device,
+            dtype=dtype,
+            base=base,
+            offset=offset,
+            scale=scale,
+            original_max_position_embeddings=original_max_position_embeddings,
+        )
+        return cos_cache, sin_cache
+
     # Validate rope_dim is even (requirement for proper rotation)
     assert rope_dim % 2 == 0, f"rope_dim must be even, got {rope_dim}"
     

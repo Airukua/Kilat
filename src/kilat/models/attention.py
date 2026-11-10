@@ -9,7 +9,7 @@ import torch.nn.functional as F
 
 from .kernels.flash_decay import compute_decay_normalizer_from_logit, triton_global_decay
 from .norm import RMSNorm
-from .rope import apply_rotary_pos_emb, build_rope_cache
+from .rope import apply_rotary_pos_emb, build_rope_cache, build_yarn_rope_cache
 
 
 class LayerHybridCache(tuple):
@@ -69,6 +69,7 @@ class KilatAttention(nn.Module):
         attn_drop: float = 0.0,
     ) -> None:
         super().__init__()
+        self.n_embd = n_embd
         self.n_head = n_head
         self.head_dim = n_embd // n_head
 
@@ -77,6 +78,7 @@ class KilatAttention(nn.Module):
         self.latent_dim = latent_dim if latent_dim is not None else (n_embd // 4)
         self.q_lora_rank = q_lora_rank
         self.use_fusion_gate = use_fusion_gate
+        self.attn_drop = attn_drop
 
         # Path 1: Global Decay heads
         self.log_lambda: Optional[nn.Parameter]
@@ -85,9 +87,13 @@ class KilatAttention(nn.Module):
             self.v_proj_global: Optional[nn.Linear] = nn.Linear(
                 n_embd, self.n_global_heads * self.head_dim, bias=False
             )
+            self.o_proj_global: Optional[nn.Linear] = nn.Linear(
+                self.n_global_heads * self.head_dim, n_embd, bias=False
+            )
         else:
             self.register_parameter("log_lambda", None)
             self.v_proj_global = None
+            self.o_proj_global = None
 
         # Path 2: Latent MLA recall heads (DeepSeek-V2-Lite alignment)
         if self.n_recall_heads > 0:
@@ -113,6 +119,9 @@ class KilatAttention(nn.Module):
             self.kv_b_proj: Optional[nn.Linear] = nn.Linear(
                 self.latent_dim, 2 * self.n_recall_heads * self.head_dim, bias=False
             )
+            self.o_proj_recall: Optional[nn.Linear] = nn.Linear(
+                self.n_recall_heads * self.head_dim, n_embd, bias=False
+            )
         else:
             self.q_proj = None
             self.q_a_proj = None
@@ -121,8 +130,15 @@ class KilatAttention(nn.Module):
             self.kv_a_proj = None
             self.kv_a_norm = None
             self.kv_b_proj = None
+            self.o_proj_recall = None
 
-        # Optional fusion gate & standard multi-head output projection
+        # Mechanistic synergy balance gate: learnable scalar balancing Global Decay and MLA Recall
+        if self.n_global_heads > 0 and self.n_recall_heads > 0:
+            self.synergy_gate = nn.Parameter(torch.zeros(1))
+        else:
+            self.register_parameter("synergy_gate", None)
+
+        # Optional fusion gate (gamma_net)
         if self.use_fusion_gate:
             self.gamma_net: Optional[nn.Sequential] = nn.Sequential(
                 nn.Linear(2 * n_embd, n_embd),
@@ -133,8 +149,14 @@ class KilatAttention(nn.Module):
         else:
             self.gamma_net = None
 
-        self.c_proj = nn.Linear(n_embd, n_embd, bias=False)
-        self.attn_drop = attn_drop
+    @property
+    def c_proj(self) -> nn.Linear:
+        """Backward-compatible alias for primary residual output projection."""
+        if self.o_proj_recall is not None:
+            return self.o_proj_recall
+        if self.o_proj_global is not None:
+            return self.o_proj_global
+        raise RuntimeError("No active output projection found in attention layer.")
 
     def _run_global_decay_path(
         self,
@@ -278,13 +300,23 @@ class KilatAttention(nn.Module):
             )
             out_recall = out_recall.transpose(1, 2).reshape(B, N, self.n_recall_heads * Dh)
 
-        # Fusion & Output Projection
-        out_combined = torch.cat([out_global, out_recall], dim=-1)
-        if self.gamma_net is not None:
-            gate = self.gamma_net(torch.cat([x, out_combined], dim=-1))
-            output = self.c_proj(out_combined * gate)
+        # Mechanistic Decoupled Projections & Synergy Gating
+        h_global = self.o_proj_global(out_global) if (self.n_global_heads > 0 and self.o_proj_global is not None) else None
+        h_recall = self.o_proj_recall(out_recall) if (self.n_recall_heads > 0 and self.o_proj_recall is not None) else None
+
+        if h_recall is not None and h_global is not None and self.synergy_gate is not None:
+            gate = torch.sigmoid(self.synergy_gate)
+            output = gate * h_recall + (1.0 - gate) * h_global
+        elif h_recall is not None:
+            output = h_recall
+        elif h_global is not None:
+            output = h_global
         else:
-            output = self.c_proj(out_combined)
+            output = torch.zeros(B, N, self.n_embd, device=x.device, dtype=x.dtype)
+
+        if self.gamma_net is not None:
+            gamma = self.gamma_net(torch.cat([x, output], dim=-1))
+            output = output * gamma
 
         if use_cache:
             cache_obj = LayerHybridCache(
@@ -313,6 +345,8 @@ class KilatAttentionRoPE(KilatAttention):
         attn_drop: float = 0.0,
         rope_head_dim: Optional[int] = None,
         rope_base: float = 10000.0,
+        yarn_scale: Optional[float] = None,
+        yarn_base_seq_len: int = 4096,
     ) -> None:
         super().__init__(
             n_embd=n_embd,
@@ -328,6 +362,13 @@ class KilatAttentionRoPE(KilatAttention):
         self.rope_head_dim = rope_head_dim if rope_head_dim is not None else (self.head_dim // 2)
         if self.rope_head_dim % 2 != 0:
             raise ValueError(f"rope_head_dim must be even, got {self.rope_head_dim}")
+
+        self.yarn_scale = yarn_scale
+        self.yarn_base_seq_len = yarn_base_seq_len
+        if self.yarn_scale is not None and self.yarn_scale > 1.0:
+            self.yarn_attn_factor = math.sqrt(0.1 * math.log(self.yarn_scale) + 1.0)
+        else:
+            self.yarn_attn_factor = 1.0
 
         if self.n_recall_heads > 0:
             if self.q_lora_rank is None:
@@ -368,6 +409,8 @@ class KilatAttentionRoPE(KilatAttention):
             dtype=t.dtype,
             base=self.rope_base,
             offset=seq_offset,
+            scale=self.yarn_scale if self.yarn_scale is not None else 1.0,
+            original_max_position_embeddings=self.yarn_base_seq_len,
         )
         return apply_rotary_pos_emb(t, cos, sin)
 
@@ -469,7 +512,7 @@ class KilatAttentionRoPE(KilatAttention):
             KV_rec = kv_full.view(B, kv_len, 2, Hr, Dh).permute(2, 0, 3, 1, 4)
             K_sem, V_rec = KV_rec[0], KV_rec[1]
 
-            scale = math.sqrt(Dh + Rd)
+            scale = math.sqrt(Dh + Rd) * getattr(self, "yarn_attn_factor", 1.0)
             score_dtype = torch.float64 if x.dtype == torch.float64 else torch.float32
             score_sem = torch.matmul(Q_sem.to(score_dtype), K_sem.to(score_dtype).transpose(-2, -1))
             score_rope = torch.matmul(
@@ -491,12 +534,23 @@ class KilatAttentionRoPE(KilatAttention):
 
             out_recall = torch.matmul(attn_weights, V_rec).transpose(1, 2).reshape(B, N, Hr * Dh)
 
-        out_combined = torch.cat([out_global, out_recall], dim=-1)
-        if self.gamma_net is not None:
-            gate = self.gamma_net(torch.cat([x, out_combined], dim=-1))
-            output = self.c_proj(out_combined * gate)
+        # Mechanistic Decoupled Projections & Synergy Gating
+        h_global = self.o_proj_global(out_global) if (self.n_global_heads > 0 and self.o_proj_global is not None) else None
+        h_recall = self.o_proj_recall(out_recall) if (self.n_recall_heads > 0 and self.o_proj_recall is not None) else None
+
+        if h_recall is not None and h_global is not None and self.synergy_gate is not None:
+            gate = torch.sigmoid(self.synergy_gate)
+            output = gate * h_recall + (1.0 - gate) * h_global
+        elif h_recall is not None:
+            output = h_recall
+        elif h_global is not None:
+            output = h_global
         else:
-            output = self.c_proj(out_combined)
+            output = torch.zeros(B, N, self.n_embd, device=x.device, dtype=x.dtype)
+
+        if self.gamma_net is not None:
+            gamma = self.gamma_net(torch.cat([x, output], dim=-1))
+            output = output * gamma
 
         if use_cache:
             cache_obj = LayerHybridCache(

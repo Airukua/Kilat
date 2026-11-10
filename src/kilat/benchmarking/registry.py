@@ -153,19 +153,22 @@ def _build_kilat_preset(
     n_layers: int = 2,
     n_heads: int = 4,
     max_seq_len: int = 4096,
+    recall_pattern: str = "uniform",
     **kwargs: Any,
 ) -> KilatTransformer:
+    head_dim = d_model // n_heads
     cfg = KilatConfig(
         vocab_size=vocab_size,
         n_embd=d_model,
         n_layer=n_layers,
         n_head=n_heads,
         recall_ratio=recall_ratio,
-        latent_dim=max(16, d_model // 2),
+        recall_pattern=recall_pattern,
+        latent_dim=kwargs.pop("latent_dim", max(32, d_model)),
         q_lora_rank=kwargs.pop("q_lora_rank", None),
         use_fusion_gate=kwargs.pop("use_fusion_gate", False),
         use_rope=True,
-        rope_head_dim=max(4, (d_model // n_heads) // 2),
+        rope_head_dim=kwargs.pop("rope_head_dim", max(8, head_dim if head_dim % 2 == 0 else head_dim - 1)),
         ffn_mode="swiglu",
         max_position_embeddings=max_seq_len,
         tie_word_embeddings=kwargs.pop("tie_word_embeddings", False),
@@ -185,7 +188,7 @@ def _build_kilat_hybrid(
     max_seq_len: int = 4096,
     **kwargs: Any,
 ) -> KilatTransformer:
-    """Kilat v2 Hybrid Sub-Quadratic (Global Decay + Latent MLA at recall_ratio=0.5)."""
+    """Kilat v2 Hybrid Sub-Quadratic (Global Decay + Latent MLA at recall_ratio=0.5 with Decoupled Synergy)."""
     return _build_kilat_preset(
         recall_ratio=0.5,
         vocab_size=vocab_size,
@@ -193,6 +196,28 @@ def _build_kilat_hybrid(
         n_layers=n_layers,
         n_heads=n_heads,
         max_seq_len=max_seq_len,
+        **kwargs,
+    )
+
+
+@register_model("kilat-macro-synergy")
+def _build_kilat_macro_synergy(
+    vocab_size: int = 64,
+    d_model: int = 64,
+    n_layers: int = 2,
+    n_heads: int = 4,
+    max_seq_len: int = 4096,
+    **kwargs: Any,
+) -> KilatTransformer:
+    """Kilat Macro Synergy (Interleaved Stacking: L0 Global Decay -> L1 Latent MLA)."""
+    return _build_kilat_preset(
+        recall_ratio=0.5,
+        vocab_size=vocab_size,
+        d_model=d_model,
+        n_layers=n_layers,
+        n_heads=n_heads,
+        max_seq_len=max_seq_len,
+        recall_pattern="macro_synergy",
         **kwargs,
     )
 

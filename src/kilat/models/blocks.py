@@ -127,6 +127,7 @@ class Block(nn.Module):
         # ---------- Residual dropout & diagnostics ----------
         resid_drop: float = 0.0,
         debug_nan_checks: bool = False,
+        layer_recall_ratio: Optional[float] = None,
         config: Optional[Any] = None,
     ):
         """
@@ -135,6 +136,8 @@ class Block(nn.Module):
         """
         super().__init__()
 
+        yarn_scale = None
+        yarn_base_seq_len = 4096
         if config is not None:
             n_embd = int(config.n_embd)
             n_head = int(config.n_head)
@@ -146,6 +149,8 @@ class Block(nn.Module):
             use_rope = bool(getattr(config, "use_rope", False))
             rope_head_dim = getattr(config, "rope_head_dim", None)
             rope_base = float(getattr(config, "rope_base", 10000.0))
+            yarn_scale = getattr(config, "yarn_scale", None)
+            yarn_base_seq_len = int(getattr(config, "yarn_base_seq_len", 4096))
             ffn_mode = config.ffn_mode
             ff_mult = float(getattr(config, "ff_mult", 8 / 3))
             ffn_dropout = float(config.ffn_dropout)
@@ -158,6 +163,9 @@ class Block(nn.Module):
             router_balance_mode = getattr(config, "router_balance_mode", "aux_loss")
             resid_drop = float(config.resid_drop)
             debug_nan_checks = bool(getattr(config, "debug_nan_checks", False))
+
+        if layer_recall_ratio is not None:
+            recall_ratio = float(layer_recall_ratio)
 
         if n_embd is None or n_head is None:
             raise ValueError("Block requires either `config` or both `n_embd` and `n_head`.")
@@ -176,6 +184,8 @@ class Block(nn.Module):
                 attn_drop=attn_drop,
                 rope_head_dim=rope_head_dim,
                 rope_base=rope_base,
+                yarn_scale=yarn_scale,
+                yarn_base_seq_len=yarn_base_seq_len,
             )
         else:
             self.attn = KilatAttention(
