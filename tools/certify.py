@@ -39,7 +39,7 @@ def parse_args(argv: List[str] = None):
     common_parser.add_argument(
         "--output",
         type=str,
-        default="reports/certification",
+        default="verify_signoff",
         help="Directory to save markdown and JSON dossiers.",
     )
     common_parser.add_argument(

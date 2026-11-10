@@ -34,7 +34,7 @@ class CertificationHarness:
     def certify_model(
         self,
         model_name: str,
-        output_dir: str = "reports/certification",
+        output_dir: str = "verify_signoff",
         pillars: Optional[List[str]] = None,
         baseline_name: Optional[str] = "reference-attention",
     ) -> Dict[str, Any]:
