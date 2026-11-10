@@ -118,14 +118,7 @@ def _cmd_train(args: argparse.Namespace) -> int:
 
         logging.getLogger("torch._inductor").setLevel(logging.ERROR)
         is_main = is_main_process()
-        interactive_dashboard = (
-            is_main
-            and sys.stdout.isatty()
-            and not bool(getattr(args, "no_dashboard", False))
-            and not bool(args.quiet)
-        )
-        if not interactive_dashboard:
-            print_kilat_banner(version=CLI_VERSION, quiet=bool(args.quiet or not is_main))
+        print_kilat_banner(version=CLI_VERSION, quiet=bool(args.quiet or not is_main))
         cfg = MainConfig.from_yaml(args.config)
         if args.set:
             cfg.apply_overrides(args.set)
@@ -142,7 +135,6 @@ def _cmd_train(args: argparse.Namespace) -> int:
         train_loader, eval_loader = build_dataloaders_from_config(cfg)
         model = KilatTransformer(cfg.model)
 
-        initial_dashboard_logs: list[str] = []
         if not args.skip_preflight:
             g1 = run_gate1_theory(
                 model_config=cfg.model,
@@ -156,10 +148,7 @@ def _cmd_train(args: argparse.Namespace) -> int:
                     )
                 return 1
             if not args.quiet and is_main:
-                if not interactive_dashboard:
-                    print(f"Preflight Gate 1 PASS ({g1.duration_ms / 1000.0:.3f}s)")
-                else:
-                    initial_dashboard_logs.append(f"Preflight Gate 1 PASS ({g1.duration_ms / 1000.0:.3f}s)")
+                print(f"Preflight Gate 1 PASS ({g1.duration_ms / 1000.0:.3f}s)")
             # Re-seed so model & dataloader state starts cleanly after preflight probe
             set_seed(int(cfg.training.seed))
             train_loader, eval_loader = build_dataloaders_from_config(cfg)
@@ -173,8 +162,6 @@ def _cmd_train(args: argparse.Namespace) -> int:
             tokenizer = ByteLevelDebugTokenizer(vocab_size=int(cfg.model.vocab_size))
 
         train_args = cfg.to_training_arguments()
-        if getattr(args, "no_dashboard", False):
-            train_args.use_dashboard = False
         flight_recorder = FlightRecorderCallback(output_dir=train_args.output_dir)
 
         trainer = KilatTrainer(
@@ -185,8 +172,6 @@ def _cmd_train(args: argparse.Namespace) -> int:
             tokenizer=tokenizer,
             callbacks=[flight_recorder],
         )
-        if initial_dashboard_logs:
-            trainer._initial_dashboard_logs = initial_dashboard_logs
         state = trainer.train()
 
         if is_main:
@@ -428,12 +413,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--skip-preflight",
         action="store_true",
         help="Skip fast Gate 1 theoretical preflight verification before training",
-    )
-    p_train.add_argument(
-        "--no-dashboard",
-        dest="no_dashboard",
-        action="store_true",
-        help="Disable interactive Rich live dashboard and use classic tqdm output",
     )
     p_train.add_argument("-q", "--quiet", action="store_true", help="Suppress banner")
     p_train.set_defaults(handler=_cmd_train)
