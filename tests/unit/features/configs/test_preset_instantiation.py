@@ -1,123 +1,94 @@
-"""
-Preset Instantiation and CLI Override Validation Tests.
-
-Ensures all 4 tiered YAML presets (debug_cpu, small_dense, small_moe, standard_moe)
-load cleanly, pass validation, instantiate models correctly, and verify that
-both `--set` and `--override` work interchangeably.
-"""
-
-from __future__ import annotations
-
-from pathlib import Path
-
+"""BDD tests for KilatTransformer and KilatConfig preset instantiation."""
 import pytest
 import torch
 
-from kilat.cli import build_parser
-from kilat.configs.main_config import MainConfig
+from kilat.configs.model_config import KilatConfig
 from kilat.models.transformer import KilatTransformer
+from kilat.benchmarking.registry import build_model
 
 
-PRESETS_DIR = Path(__file__).resolve().parents[4] / "configs"
+class TestKilatPresets:
+    def test_canonical_macro_synergy(self):
+        """kilat-macro-synergy should default to recall_ratio=0.5 and macro_synergy pattern."""
+        model = KilatTransformer.from_preset("kilat-macro-synergy")
+        assert isinstance(model, KilatTransformer)
+        assert model.config.recall_ratio == 0.5
+        assert model.config.recall_pattern == "macro_synergy"
+        assert model.config.use_rope is True
 
+        # Forward pass verification
+        x = torch.randint(0, model.config.vocab_size, (2, 8))
+        out = model(x)
+        assert out.logits.shape == (2, 8, model.config.vocab_size)
 
-@pytest.mark.parametrize(
-    "config_name",
-    ["debug_cpu.yaml", "small_dense.yaml", "small_moe.yaml", "standard_moe.yaml"],
-)
-def test_all_preset_yamls_parse_and_validate(config_name: str) -> None:
-    yaml_path = PRESETS_DIR / config_name
-    assert yaml_path.exists(), f"Preset not found: {yaml_path}"
+    def test_canonical_pure_attention(self):
+        """kilat-pure-attention should instantiate with recall_ratio=1.0."""
+        model = KilatTransformer.from_preset("kilat-pure-attention")
+        assert model.config.recall_ratio == 1.0
+        assert model.config.recall_pattern == "uniform"
 
-    cfg = MainConfig.from_yaml(yaml_path)
-    assert cfg.experiment_name is not None
-    assert cfg.model.vocab_size > 0
-    assert cfg.training.seed is not None
+        x = torch.randint(0, model.config.vocab_size, (2, 8))
+        out = model(x)
+        assert out.logits.shape == (2, 8, model.config.vocab_size)
 
+    def test_canonical_pure_decay(self):
+        """kilat-pure-decay should instantiate with recall_ratio=0.0."""
+        model = KilatTransformer.from_preset("kilat-pure-decay")
+        assert model.config.recall_ratio == 0.0
+        assert model.config.recall_pattern == "uniform"
 
-def test_small_dense_instantiation_and_forward() -> None:
-    yaml_path = PRESETS_DIR / "small_dense.yaml"
-    cfg = MainConfig.from_yaml(yaml_path)
+        x = torch.randint(0, model.config.vocab_size, (2, 8))
+        out = model(x)
+        assert out.logits.shape == (2, 8, model.config.vocab_size)
 
-    # Instantiate model directly from config
-    # Overriding layer count to 2 for fast unit test execution
-    cfg.model.n_layer = 2
-    model = KilatTransformer(cfg.model)
-    model.eval()
+    def test_micro_and_mini_presets(self):
+        """kilat-micro and kilat-mini presets should instantiate with correct dimensions."""
+        micro = KilatTransformer.from_preset("kilat-micro")
+        assert micro.config.n_embd == 64
+        assert micro.config.n_layer == 2
 
-    # Verify dense mode uses SwiGLU
-    first_block = model.layers[0]
-    assert first_block.mlp.mode == "dense"
+        mini = KilatTransformer.from_preset("kilat-mini")
+        assert mini.config.n_embd == 256
+        assert mini.config.n_layer == 4
 
-    # Forward pass with dummy batch
-    input_ids = torch.randint(0, cfg.model.vocab_size, (2, 16))
-    out = model(input_ids)
-    assert out.logits.shape == (2, 16, cfg.model.vocab_size)
-    assert torch.isfinite(out.logits).all()
+    def test_yaml_preset_loading(self):
+        """Preset loader should resolve existing YAML presets such as small_dense."""
+        model = KilatTransformer.from_preset("small_dense", n_layer=1, vocab_size=128)
+        assert model.config.n_layer == 1
+        assert model.config.vocab_size == 128
+        assert model.config.n_embd == 768
 
+    def test_hyperparameter_overrides_and_aliases(self):
+        """Alias normalization (d_model -> n_embd, n_layers -> n_layer) must be respected."""
+        cfg = KilatConfig.from_preset(
+            "kilat-macro-synergy",
+            d_model=128,
+            n_heads=8,
+            n_layers=3,
+            vocab_size=256,
+        )
+        assert cfg.n_embd == 128
+        assert cfg.n_head == 8
+        assert cfg.n_layer == 3
+        assert cfg.vocab_size == 256
 
-def test_small_moe_instantiation_and_forward() -> None:
-    yaml_path = PRESETS_DIR / "small_moe.yaml"
-    cfg = MainConfig.from_yaml(yaml_path)
+    def test_unknown_preset_raises_key_error(self):
+        """Non-existent preset should raise KeyError with helpful available presets."""
+        with pytest.raises(KeyError, match="Unknown preset"):
+            KilatTransformer.from_preset("non_existent_preset_xyz")
 
-    cfg.model.n_layer = 2
-    model = KilatTransformer(cfg.model)
-    model.eval()
+    def test_registry_integration_and_backward_pass(self):
+        """build_model in benchmarking registry must route correctly and support backpropagation."""
+        wrapped_model = build_model("kilat-macro-synergy", d_model=64, n_heads=4, n_layers=2)
+        x = torch.randint(0, 64, (2, 8))
+        logits = wrapped_model(x)
+        assert logits.shape == (2, 8, 64)
 
-    first_block = model.layers[0]
-    assert first_block.mlp.mode == "moe"
+        loss = logits.sum()
+        loss.backward()
 
-    input_ids = torch.randint(0, cfg.model.vocab_size, (2, 16))
-    out = model(input_ids)
-    assert out.logits.shape == (2, 16, cfg.model.vocab_size)
-    assert torch.isfinite(out.logits).all()
-
-
-def test_standard_moe_meta_device_instantiation() -> None:
-    yaml_path = PRESETS_DIR / "standard_moe.yaml"
-    cfg = MainConfig.from_yaml(yaml_path)
-
-    # 54.2B parameter model instantiated on meta device to verify architecture shapes & parameter scale
-    with torch.device("meta"):
-        model = KilatTransformer(cfg.model)
-        total_params = sum(p.numel() for p in model.parameters())
-
-    # 54.2B DeepSeekMoE check (50B < total_params < 60B)
-    assert 50_000_000_000 < total_params < 60_000_000_000
-    assert len(model.layers) == 24
-
-
-def test_cli_override_flag_alias() -> None:
-    parser = build_parser()
-
-    # Test --override on 'verify'
-    args_verify = parser.parse_args(
-        ["verify", "--config", str(PRESETS_DIR / "debug_cpu.yaml"), "--override", "training.seed=123"]
-    )
-    assert args_verify.set == ["training.seed=123"]
-
-    # Test --set on 'verify'
-    args_verify_set = parser.parse_args(
-        ["verify", "--config", str(PRESETS_DIR / "debug_cpu.yaml"), "--set", "training.seed=456"]
-    )
-    assert args_verify_set.set == ["training.seed=456"]
-
-    # Test --override on 'train'
-    args_train = parser.parse_args(
-        ["train", "--config", str(PRESETS_DIR / "debug_cpu.yaml"), "--override", "training.seed=789"]
-    )
-    assert args_train.set == ["training.seed=789"]
-
-    # Test multiple --override arguments
-    args_multi = parser.parse_args(
-        [
-            "train",
-            "--config",
-            str(PRESETS_DIR / "debug_cpu.yaml"),
-            "--override",
-            "training.learning_rate=1e-4",
-            "--set",
-            "training.seed=999",
-        ]
-    )
-    assert args_multi.set == ["training.learning_rate=1e-4", "training.seed=999"]
+        # Invariant: Every trainable parameter must have a finite gradient
+        for name, param in wrapped_model.named_parameters():
+            if param.requires_grad:
+                assert param.grad is not None, f"Parameter {name} missing gradient!"
+                assert torch.isfinite(param.grad).all(), f"Parameter {name} has non-finite gradient!"

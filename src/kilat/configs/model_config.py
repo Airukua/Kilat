@@ -1,10 +1,22 @@
 from __future__ import annotations
 from pathlib import Path
-from typing import Optional, Literal
+from typing import Optional, Literal, Any
 import warnings
 import yaml
 from .base import dump_yaml_file, load_yaml_file
-from kilat.utils.base_model import BaseConfig
+from kilat.models.base import BaseConfig
+
+
+def _normalize_aliases(d: dict) -> None:
+    """Normalize common hyperparameter alias names."""
+    if "d_model" in d and "n_embd" not in d:
+        d["n_embd"] = d.pop("d_model")
+    if "n_heads" in d and "n_head" not in d:
+        d["n_head"] = d.pop("n_heads")
+    if "n_layers" in d and "n_layer" not in d:
+        d["n_layer"] = d.pop("n_layers")
+    if "max_seq_len" in d and "max_position_embeddings" not in d:
+        d["max_position_embeddings"] = d.pop("max_seq_len")
 
 class KilatConfig(BaseConfig):
     """
@@ -391,3 +403,150 @@ class KilatConfig(BaseConfig):
         # Additionally save human-readable YAML version
         save_dir = Path(save_directory)
         self.to_yaml(save_dir / "config.yaml")
+
+    @classmethod
+    def from_preset(
+        cls,
+        preset_name: str,
+        **override_kwargs: Any,
+    ) -> "KilatConfig":
+        """
+        Instantiate a KilatConfig from a canonical preset name, YAML preset, or file path.
+
+        Canonical Presets:
+            - 'kilat' / 'kilat-macro-synergy': Flagship interleaved L0 Decay -> L1 Latent MLA
+            - 'kilat-pure-attention': Pure Latent MLA Attention (recall_ratio=1.0)
+            - 'kilat-pure-decay': Pure Sub-Quadratic Global Decay (recall_ratio=0.0)
+            - 'kilat-micro': Minimal 2-layer test model (d_model=64, n_heads=4)
+            - 'kilat-mini': Compact 4-layer model (d_model=256, n_heads=4)
+            - 'small_dense', 'small_moe', 'standard_moe', 'debug_cpu': Standard repository YAML presets
+            - 'custom': Custom base configuration accepting arbitrary overrides
+            - Direct file path to .yaml or .json configuration
+
+        Args:
+            preset_name: Canonical preset name or path to configuration file.
+            **override_kwargs: Hyperparameter overrides applied to the preset.
+        """
+        # 1. Check if preset_name is a direct file path or repository preset yaml
+        target_path: Optional[Path] = None
+        preset_path = Path(preset_name)
+        if preset_path.is_file():
+            target_path = preset_path
+        else:
+            repo_root = Path(__file__).resolve().parents[3]
+            candidate = repo_root / "configs" / f"{preset_name}.yaml"
+            if candidate.is_file():
+                target_path = candidate
+
+        if target_path is not None:
+            raw_data = load_yaml_file(target_path)
+            model_data = raw_data.get("model", raw_data)
+            _normalize_aliases(override_kwargs)
+            model_data.update(override_kwargs)
+            return cls(**model_data)
+
+        # 2. Normalize hyperparameter aliases
+        _normalize_aliases(override_kwargs)
+
+        # 3. Canonical preset dictionaries
+        canonical_presets = {
+            "kilat": {
+                "vocab_size": 64,
+                "n_embd": 64,
+                "n_layer": 2,
+                "n_head": 4,
+                "recall_ratio": 0.5,
+                "recall_pattern": "macro_synergy",
+                "use_rope": True,
+                "ffn_mode": "swiglu",
+                "max_position_embeddings": 4096,
+            },
+            "kilat-macro-synergy": {
+                "vocab_size": 64,
+                "n_embd": 64,
+                "n_layer": 2,
+                "n_head": 4,
+                "recall_ratio": 0.5,
+                "recall_pattern": "macro_synergy",
+                "use_rope": True,
+                "ffn_mode": "swiglu",
+                "max_position_embeddings": 4096,
+            },
+            "kilat-pure-attention": {
+                "vocab_size": 64,
+                "n_embd": 64,
+                "n_layer": 2,
+                "n_head": 4,
+                "recall_ratio": 1.0,
+                "recall_pattern": "uniform",
+                "use_rope": True,
+                "ffn_mode": "swiglu",
+                "max_position_embeddings": 4096,
+            },
+            "kilat-pure-decay": {
+                "vocab_size": 64,
+                "n_embd": 64,
+                "n_layer": 2,
+                "n_head": 4,
+                "recall_ratio": 0.0,
+                "recall_pattern": "uniform",
+                "use_rope": True,
+                "ffn_mode": "swiglu",
+                "max_position_embeddings": 4096,
+            },
+            "kilat-micro": {
+                "vocab_size": 64,
+                "n_embd": 64,
+                "n_layer": 2,
+                "n_head": 4,
+                "latent_dim": 64,
+                "rope_head_dim": 8,
+                "recall_ratio": 0.5,
+                "recall_pattern": "macro_synergy",
+                "use_rope": True,
+                "ffn_mode": "swiglu",
+                "max_position_embeddings": 4096,
+            },
+            "kilat-mini": {
+                "vocab_size": 1024,
+                "n_embd": 256,
+                "n_layer": 4,
+                "n_head": 4,
+                "latent_dim": 128,
+                "rope_head_dim": 32,
+                "recall_ratio": 0.5,
+                "recall_pattern": "macro_synergy",
+                "use_rope": True,
+                "ffn_mode": "swiglu",
+                "max_position_embeddings": 4096,
+            },
+            "custom": {
+                "vocab_size": 64,
+                "n_embd": 64,
+                "n_layer": 2,
+                "n_head": 4,
+                "recall_ratio": 0.5,
+                "recall_pattern": "uniform",
+                "use_rope": True,
+                "ffn_mode": "swiglu",
+                "max_position_embeddings": 4096,
+            },
+        }
+
+        if preset_name not in canonical_presets:
+            available = sorted(list(canonical_presets.keys()) + ["small_dense", "small_moe", "standard_moe", "debug_cpu"])
+            raise KeyError(
+                f"Unknown preset '{preset_name}'. Available presets: {available}"
+            )
+
+        config_kwargs = dict(canonical_presets[preset_name])
+        n_embd = override_kwargs.get("n_embd", config_kwargs["n_embd"])
+        n_head = override_kwargs.get("n_head", config_kwargs["n_head"])
+        head_dim = n_embd // n_head
+        if "latent_dim" not in config_kwargs and "latent_dim" not in override_kwargs:
+            config_kwargs["latent_dim"] = max(32, n_embd)
+        if "rope_head_dim" not in config_kwargs and "rope_head_dim" not in override_kwargs:
+            config_kwargs["rope_head_dim"] = max(8, head_dim if head_dim % 2 == 0 else head_dim - 1)
+
+        config_kwargs.update(override_kwargs)
+        return cls(**config_kwargs)
