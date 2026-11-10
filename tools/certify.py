@@ -3,10 +3,10 @@
 
 Usage examples:
     python tools/certify.py list-models
-    python tools/certify.py run-all --models kilat-v2 reference-attention
-    python tools/certify.py p1-correctness --models kilat-v2
-    python tools/certify.py p2-capability --models kilat-v2
-    python tools/certify.py p4-efficiency --models kilat-v2 --device cuda
+    python tools/certify.py run-all --models kilat-macro-synergy reference-attention
+    python tools/certify.py p1-correctness --models kilat-macro-synergy
+    python tools/certify.py p2-capability --models kilat-macro-synergy
+    python tools/certify.py p4-efficiency --models kilat-macro-synergy --device cuda
 """
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ def parse_args(argv: List[str] = None):
     common_parser.add_argument(
         "--models",
         nargs="+",
-        default=["kilat-v2"],
+        default=["kilat-macro-synergy"],
         help="One or more registered model names to evaluate.",
     )
     common_parser.add_argument(

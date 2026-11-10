@@ -64,7 +64,7 @@ def test_ngram_contamination_clean_and_contaminated():
 def test_counterfactual_margin_probing():
     with Scenario("Benchmark: Counterfactual Logit Margin Probing"):
         with Given("a loaded micro Kilat model and prompt input ids"):
-            model = build_model("kilat-v2", vocab_size=32, d_model=32, n_layers=2, n_heads=2)
+            model = build_model("kilat-macro-synergy", vocab_size=32, d_model=32, n_layers=2, n_heads=2)
             input_ids = torch.randint(0, 32, (1, 16))
 
         with When("evaluating margin between target token 5 and foil token 10"):
@@ -82,7 +82,7 @@ def test_counterfactual_margin_probing():
 def test_residual_stream_and_activation_patching():
     with Scenario("Benchmark: Residual Cache Extraction & Activation Patching"):
         with Given("a micro Kilat model, clean input ids, and length-matched corrupt ids"):
-            model = build_model("kilat-v2", vocab_size=32, d_model=32, n_layers=2, n_heads=2)
+            model = build_model("kilat-macro-synergy", vocab_size=32, d_model=32, n_layers=2, n_heads=2)
             clean_ids = torch.randint(0, 32, (1, 8))
             corrupt_ids = torch.randint(0, 32, (1, 8))
 
@@ -103,7 +103,7 @@ def test_residual_stream_and_activation_patching():
 def test_activation_patching_negative_mismatched_lengths():
     with Scenario("Benchmark: Activation Patching Negative Test - Mismatched Lengths"):
         with Given("clean and corrupt sequences of unequal lengths"):
-            model = build_model("kilat-v2", vocab_size=32, d_model=32, n_layers=2, n_heads=2)
+            model = build_model("kilat-macro-synergy", vocab_size=32, d_model=32, n_layers=2, n_heads=2)
             clean_ids = torch.randint(0, 32, (1, 8))
             corrupt_ids = torch.randint(0, 32, (1, 16))
 

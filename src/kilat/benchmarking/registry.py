@@ -178,28 +178,7 @@ def _build_kilat_preset(
     return KilatTransformer(cfg)
 
 
-@register_model("kilat-v2")
-@register_model("kilat-hybrid")
-def _build_kilat_hybrid(
-    vocab_size: int = 64,
-    d_model: int = 64,
-    n_layers: int = 2,
-    n_heads: int = 4,
-    max_seq_len: int = 4096,
-    **kwargs: Any,
-) -> KilatTransformer:
-    """Kilat v2 Hybrid Sub-Quadratic (Global Decay + Latent MLA at recall_ratio=0.5 with Decoupled Synergy)."""
-    return _build_kilat_preset(
-        recall_ratio=0.5,
-        vocab_size=vocab_size,
-        d_model=d_model,
-        n_layers=n_layers,
-        n_heads=n_heads,
-        max_seq_len=max_seq_len,
-        **kwargs,
-    )
-
-
+@register_model("kilat")
 @register_model("kilat-macro-synergy")
 def _build_kilat_macro_synergy(
     vocab_size: int = 64,
@@ -209,7 +188,7 @@ def _build_kilat_macro_synergy(
     max_seq_len: int = 4096,
     **kwargs: Any,
 ) -> KilatTransformer:
-    """Kilat Macro Synergy (Interleaved Stacking: L0 Global Decay -> L1 Latent MLA)."""
+    """Kilat Macro Synergy Flagship (Interleaved Stacking: L0 Global Decay -> L1 Latent MLA)."""
     return _build_kilat_preset(
         recall_ratio=0.5,
         vocab_size=vocab_size,

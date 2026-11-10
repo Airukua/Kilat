@@ -75,7 +75,7 @@ class KilatConfig(BaseConfig):
         n_head: int = 12,
         # ---- Attention configuration ----
         recall_ratio: float = 0.5,
-        recall_pattern: Literal["uniform", "macro_synergy", "custom"] = "uniform",
+        recall_pattern: Literal["uniform", "macro_synergy", "custom"] = "macro_synergy",
         recall_ratios: Optional[list[float]] = None,
         latent_dim: Optional[int] = None,
         q_lora_rank: Optional[int] = None,

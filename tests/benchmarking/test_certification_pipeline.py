@@ -36,7 +36,7 @@ def test_pillar1_mechanical_correctness_kilat():
             def builder(**kw):
                 params = {"vocab_size": 32, "d_model": 32, "n_layers": 2, "n_heads": 2}
                 params.update(kw)
-                return build_model("kilat-v2", **params)
+                return build_model("kilat-macro-synergy", **params)
 
         with When("executing Pillar 1 battery"):
             report = run_pillar1(builder, cfg)
@@ -67,7 +67,7 @@ def test_pillar4_efficiency_and_speedup():
             def model_builder(**kw):
                 params = {"vocab_size": 32, "d_model": 32, "n_layers": 2, "n_heads": 2}
                 params.update(kw)
-                return build_model("kilat-v2", **params)
+                return build_model("kilat-macro-synergy", **params)
 
             def base_builder(**kw):
                 params = {"vocab_size": 32, "d_model": 32, "n_layers": 2, "n_heads": 2}
