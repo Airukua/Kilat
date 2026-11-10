@@ -457,7 +457,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_gen.add_argument("-c", "--checkpoint", type=str, required=True, help="Checkpoint directory")
     p_gen.add_argument("-p", "--prompt", type=str, required=True, help="Input text prompt")
-    p_gen.add_argument("--max-new-tokens", type=int, default=32, help="Maximum tokens to generate")
+    p_gen.add_argument(
+        "--max-new-tokens",
+        type=int,
+        default=128,
+        help="Maximum tokens to generate (default: 128)",
+    )
     p_gen.add_argument("--temperature", type=float, default=1.0, help="Sampling temperature")
     p_gen.add_argument("--top-k", type=int, default=50, help="Top-k sampling filter")
     p_gen.add_argument("--top-p", type=float, default=1.0, help="Top-p nucleus filter")

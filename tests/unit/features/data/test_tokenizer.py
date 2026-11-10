@@ -210,3 +210,37 @@ def test_autotokenizer_cache_check_and_priority_3():
                         fb_tok = AutoTokenizer._fallback_tokenizer(local_files_only=True)
                         with Then("fallback returns default tokenizer instance"):
                             assert fb_tok.vocab_size == 50257
+
+
+def test_autotokenizer_hf_format_compatibility():
+    from unittest.mock import patch
+
+    with Scenario("Unit: AutoTokenizer HuggingFace Format Compatibility"):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+
+            with Given("a directory containing HF-style tokenizer_config.json with add_prefix_space"):
+                hf_config = {
+                    "add_prefix_space": False,
+                    "backend": "tokenizers",
+                    "bos_token": "<|endoftext|>",
+                    "eos_token": "<|endoftext|>",
+                    "errors": "replace",
+                    "is_local": False,
+                    "local_files_only": True,
+                    "model_max_length": 1024,
+                    "pad_token": "<|endoftext|>",
+                    "tokenizer_class": "GPT2Tokenizer",
+                    "unk_token": "<|endoftext|>",
+                }
+                (tmp_path / "tokenizer_config.json").write_text(json.dumps(hf_config))
+                (tmp_path / "vocab.json").write_text("{}")
+                (tmp_path / "merges.txt").write_text("")
+
+                with When("AutoTokenizer loads from directory without throwing TypeError"):
+                    with patch("transformers.AutoTokenizer.from_pretrained") as mock_hf:
+                        mock_hf.return_value = DummyCustomTokenizer(50257)
+                        tok = AutoTokenizer.from_pretrained(tmp_path)
+                        with Then("the tokenizer is loaded successfully from Priority 1"):
+                            assert tok.vocab_size == 50257
+                            mock_hf.assert_called_once()
