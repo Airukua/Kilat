@@ -14,7 +14,7 @@ from .blocks import Block, RMSNorm
 from kilat.configs.model_config import KilatConfig
 from kilat.configs.main_config import MainConfig
 from kilat.inference.generation_mixin import GenerationMixin
-from kilat.utils.base_model import (
+from .base import (
     BasePreTrainedModel,
     CONFIG_NAME,
     WEIGHTS_NAME,

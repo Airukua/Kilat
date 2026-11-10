@@ -1,5 +1,6 @@
 """Canonical neural architecture primitives for Kilat."""
 
+from kilat.models.base import BaseConfig, BasePreTrainedModel
 from kilat.models.attention import KilatAttention, KilatAttentionRoPE, LayerHybridCache
 from kilat.models.blocks import Block, RMSNorm
 from kilat.models.ffn import DeepSeekMoE, FeedForward, SwiGLU
@@ -23,6 +24,8 @@ from kilat.models.transformer import (
 )
 
 __all__ = [
+    "BaseConfig",
+    "BasePreTrainedModel",
     "KilatAttention",
     "KilatAttentionRoPE",
     "LayerHybridCache",
