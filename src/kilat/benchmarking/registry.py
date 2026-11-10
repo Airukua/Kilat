@@ -156,26 +156,26 @@ def _build_kilat_preset(
     recall_pattern: str = "uniform",
     **kwargs: Any,
 ) -> KilatTransformer:
-    head_dim = d_model // n_heads
-    cfg = KilatConfig(
-        vocab_size=vocab_size,
-        n_embd=d_model,
-        n_layer=n_layers,
-        n_head=n_heads,
+    preset_name = (
+        "kilat-macro-synergy"
+        if recall_pattern == "macro_synergy"
+        else (
+            "kilat-pure-attention"
+            if recall_ratio == 1.0
+            else ("kilat-pure-decay" if recall_ratio == 0.0 else "custom")
+        )
+    )
+    return KilatTransformer.from_preset(
+        preset_name,
         recall_ratio=recall_ratio,
+        vocab_size=vocab_size,
+        d_model=d_model,
+        n_layers=n_layers,
+        n_heads=n_heads,
+        max_seq_len=max_seq_len,
         recall_pattern=recall_pattern,
-        latent_dim=kwargs.pop("latent_dim", max(32, d_model)),
-        q_lora_rank=kwargs.pop("q_lora_rank", None),
-        use_fusion_gate=kwargs.pop("use_fusion_gate", False),
-        use_rope=True,
-        rope_head_dim=kwargs.pop("rope_head_dim", max(8, head_dim if head_dim % 2 == 0 else head_dim - 1)),
-        ffn_mode="swiglu",
-        max_position_embeddings=max_seq_len,
-        tie_word_embeddings=kwargs.pop("tie_word_embeddings", False),
-        initializer_range=kwargs.pop("initializer_range", None),
         **kwargs,
     )
-    return KilatTransformer(cfg)
 
 
 @register_model("kilat")
@@ -189,14 +189,13 @@ def _build_kilat_macro_synergy(
     **kwargs: Any,
 ) -> KilatTransformer:
     """Kilat Macro Synergy Flagship (Interleaved Stacking: L0 Global Decay -> L1 Latent MLA)."""
-    return _build_kilat_preset(
-        recall_ratio=0.5,
+    return KilatTransformer.from_preset(
+        "kilat-macro-synergy",
         vocab_size=vocab_size,
         d_model=d_model,
         n_layers=n_layers,
         n_heads=n_heads,
         max_seq_len=max_seq_len,
-        recall_pattern="macro_synergy",
         **kwargs,
     )
 
@@ -211,8 +210,8 @@ def _build_kilat_decay(
     **kwargs: Any,
 ) -> KilatTransformer:
     """Kilat Pure Sub-Quadratic Global Decay (recall_ratio=0.0)."""
-    return _build_kilat_preset(
-        recall_ratio=0.0,
+    return KilatTransformer.from_preset(
+        "kilat-pure-decay",
         vocab_size=vocab_size,
         d_model=d_model,
         n_layers=n_layers,
@@ -232,8 +231,8 @@ def _build_kilat_attention(
     **kwargs: Any,
 ) -> KilatTransformer:
     """Kilat Pure Latent MLA Attention (recall_ratio=1.0)."""
-    return _build_kilat_preset(
-        recall_ratio=1.0,
+    return KilatTransformer.from_preset(
+        "kilat-pure-attention",
         vocab_size=vocab_size,
         d_model=d_model,
         n_layers=n_layers,

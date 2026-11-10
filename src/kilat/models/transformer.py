@@ -3,7 +3,7 @@ import json
 import logging
 import warnings
 from pathlib import Path
-from typing import Tuple, Optional, Union
+from typing import Tuple, Optional, Union, Any
 
 import torch
 import torch.nn as nn
@@ -678,3 +678,34 @@ class KilatTransformer(KilatPreTrainedModel, GenerationMixin):
         out_obj.ce_loss = ce_loss_val.detach() if ce_loss_val is not None else None  # type: ignore[attr-defined]
         out_obj.aux_loss = total_aux_loss.detach() if has_moe else None  # type: ignore[attr-defined]
         return out_obj
+
+    @classmethod
+    def from_preset(
+        cls,
+        preset_name: str,
+        **override_kwargs: Any,
+    ) -> "KilatTransformer":
+        """
+        Instantiate a KilatTransformer from a canonical preset name, YAML preset, or file path.
+
+        Canonical Presets:
+            - 'kilat' / 'kilat-macro-synergy': Flagship interleaved L0 Decay -> L1 Latent MLA
+            - 'kilat-pure-attention': Pure Latent MLA Attention (recall_ratio=1.0)
+            - 'kilat-pure-decay': Pure Sub-Quadratic Global Decay (recall_ratio=0.0)
+            - 'kilat-micro': Minimal 2-layer test model (d_model=64, n_heads=4)
+            - 'kilat-mini': Compact 4-layer model (d_model=256, n_heads=4)
+            - 'small_dense', 'small_moe', 'standard_moe', 'debug_cpu': Standard repository YAML presets
+            - 'custom': Custom base configuration accepting arbitrary overrides
+            - Direct file path to .yaml or .json configuration
+
+        Args:
+            preset_name: Canonical preset name or path to configuration file.
+            **override_kwargs: Hyperparameter overrides passed to KilatConfig or model transfer (.to()).
+        """
+        device = override_kwargs.pop("device", None)
+        dtype = override_kwargs.pop("dtype", override_kwargs.pop("torch_dtype", None))
+        cfg = KilatConfig.from_preset(preset_name, **override_kwargs)
+        model = cls(cfg)
+        if device is not None or dtype is not None:
+            model = model.to(device=device, dtype=dtype)
+        return model
