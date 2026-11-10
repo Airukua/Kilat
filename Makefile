@@ -45,10 +45,13 @@ test: ## Run test suite if tests directory exists
 	fi
 
 verify: ## Run 6-Gate Pre-Training Assurance verification on debug_cpu config
-	$(PYTHON) -m kilat.cli verify --config configs/debug_cpu.yaml --output-dir ./artifacts/verify
+	$(PYTHON) -m kilat.cli verify --config configs/debug_cpu.yaml --output-dir verify_signoff
 
 chaos: ## Run Active ML Chaos Engineering Saboteur suite (C-01..C-08)
 	$(PYTHON) -m kilat.cli chaos --scenarios all
+
+certify: ## Run Kilat Model Architecture Certification Pipeline (KMCP)
+	$(PYTHON) -m kilat.cli certify --models kilat-macro-synergy --pillar all --output-dir verify_signoff
 
 pre-commit: ## Run pre-commit hooks on all files
 	$(PRE_COMMIT) run --all-files

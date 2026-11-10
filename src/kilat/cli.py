@@ -4,6 +4,7 @@ Unified Command-Line Interface (`kilat`) for Kilat LLM Pre-Training Framework.
 Subcommands:
     - `kilat verify`: Run the 6-Gate Pre-Training Assurance Pipeline (+ Stage 7-8 with `--full`)
     - `kilat chaos`: Run the Active ML Chaos Engineering `Saboteur` suite (`C-01`..`C-08`)
+    - `kilat certify`: Run Kilat Model Architecture Certification Pipeline across Pillars 1-5
     - `kilat train`: Launch deterministic pre-training from YAML + `--set` dot-overrides
     - `kilat prepare-data`: Convert Parquet/JSONL/TXT corpora to zero-copy `np.memmap` + `.meta.json`
     - `kilat generate`: Run incremental `HybridCache` text generation from a checkpoint
@@ -101,6 +102,65 @@ def _cmd_chaos(args: argparse.Namespace) -> int:
             )
 
     return 0 if suite.passed else 1
+
+
+def _cmd_certify(args: argparse.Namespace) -> int:
+    from kilat.benchmarking.harness import (
+        CertificationHarness,
+        load_certification_config,
+    )
+    from kilat.benchmarking.registry import list_models
+
+    print_kilat_banner(version=CLI_VERSION, quiet=bool(args.quiet or args.json))
+
+    if getattr(args, "list_models", False):
+        models = list_models()
+        if args.json:
+            print(json.dumps({"registered_models": models}, indent=2))
+        else:
+            print(f"Registered Models: {', '.join(models)}")
+        return 0
+
+    cfg_dict = {}
+    if args.config and Path(args.config).is_file():
+        cfg_dict = load_certification_config(args.config)
+
+    if args.device:
+        for p in ["pillar1", "pillar2", "pillar3", "pillar4", "pillar5"]:
+            if p not in cfg_dict:
+                cfg_dict[p] = {}
+            cfg_dict[p]["device"] = args.device
+
+    harness = CertificationHarness(cfg_dict)
+
+    pillar_arg = (getattr(args, "pillar", None) or "all").lower()
+    pillar_map = {
+        "all": ["p1", "p2", "p3", "p4", "p5"],
+        "p1": ["p1"],
+        "p1-correctness": ["p1"],
+        "p2": ["p2"],
+        "p2-capability": ["p2"],
+        "p3": ["p3"],
+        "p3-scaling": ["p3"],
+        "p4": ["p4"],
+        "p4-efficiency": ["p4"],
+        "p5": ["p5"],
+        "p5-diagnostics": ["p5"],
+    }
+    target_pillars = pillar_map.get(pillar_arg, ["p1", "p2", "p3", "p4", "p5"])
+
+    all_passed = True
+    models = args.models or ["kilat-macro-synergy"]
+    for model_name in models:
+        results = harness.certify_model(
+            model_name=model_name,
+            output_dir=args.output_dir,
+            pillars=target_pillars,
+        )
+        if any(not res.get("passed", True) for res in results.values()):
+            all_passed = False
+
+    return 0 if all_passed else 1
 
 
 def _enrich_checkpoint_metadata(ckpt_dir: Path, cfg: MainConfig) -> None:
@@ -330,7 +390,7 @@ def build_parser() -> argparse.ArgumentParser:
         "-o",
         "--output-dir",
         type=str,
-        default="./artifacts/verify",
+        default="verify_signoff",
         help="Directory to write assurance_report.json and assurance_report.md",
     )
     p_verify.add_argument(
@@ -388,6 +448,65 @@ def build_parser() -> argparse.ArgumentParser:
     p_chaos.add_argument("-q", "--quiet", action="store_true", help="Suppress banner and progress")
     p_chaos.add_argument("--json", action="store_true", help="Emit JSON summary to stdout")
     p_chaos.set_defaults(handler=_cmd_chaos)
+
+    # 3. kilat certify
+    p_certify = subparsers.add_parser(
+        "certify",
+        help="Run Kilat Model Architecture Certification Pipeline (KMCP) across Pillars 1-5",
+    )
+    p_certify.add_argument(
+        "--models",
+        nargs="+",
+        default=["kilat-macro-synergy"],
+        help="One or more registered model names to certify (default: kilat-macro-synergy)",
+    )
+    p_certify.add_argument(
+        "--pillar",
+        type=str,
+        default="all",
+        choices=[
+            "all",
+            "p1",
+            "p2",
+            "p3",
+            "p4",
+            "p5",
+            "p1-correctness",
+            "p2-capability",
+            "p3-scaling",
+            "p4-efficiency",
+            "p5-diagnostics",
+        ],
+        help="Certification pillar to evaluate (default: all)",
+    )
+    p_certify.add_argument(
+        "-c",
+        "--config",
+        type=str,
+        default="configs/certification/smoke_test.yaml",
+        help="Path to certification YAML config (default: configs/certification/smoke_test.yaml)",
+    )
+    p_certify.add_argument(
+        "-o",
+        "--output-dir",
+        type=str,
+        default="verify_signoff",
+        help="Directory to write certification reports and dossiers (default: verify_signoff)",
+    )
+    p_certify.add_argument(
+        "--device",
+        type=str,
+        default=None,
+        help="Override execution device ('cuda' or 'cpu')",
+    )
+    p_certify.add_argument(
+        "--list-models",
+        action="store_true",
+        help="List all registered models in benchmark registry and exit",
+    )
+    p_certify.add_argument("-q", "--quiet", action="store_true", help="Suppress banner and logs")
+    p_certify.add_argument("--json", action="store_true", help="Emit JSON summary to stdout")
+    p_certify.set_defaults(handler=_cmd_certify)
 
     # 3. kilat train
     p_train = subparsers.add_parser(
