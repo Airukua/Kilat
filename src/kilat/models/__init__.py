@@ -2,6 +2,8 @@
 
 from kilat.models.base import BaseConfig, BasePreTrainedModel
 from kilat.models.attention import KilatAttention, KilatAttentionRoPE, LayerHybridCache
+from kilat.models.decay import GlobalDecayLayer, run_global_decay_recurrence
+from kilat.models.mla import LatentAttentionLayer, apply_rope_to_tokens
 from kilat.models.blocks import Block, RMSNorm
 from kilat.models.ffn import DeepSeekMoE, FeedForward, SwiGLU
 from kilat.models.kernels.flash_decay import (
@@ -28,6 +30,10 @@ __all__ = [
     "BasePreTrainedModel",
     "KilatAttention",
     "KilatAttentionRoPE",
+    "GlobalDecayLayer",
+    "run_global_decay_recurrence",
+    "LatentAttentionLayer",
+    "apply_rope_to_tokens",
     "LayerHybridCache",
     "RMSNorm",
     "Block",

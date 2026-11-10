@@ -7,9 +7,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .kernels.flash_decay import compute_decay_normalizer_from_logit, triton_global_decay
+from .decay import run_global_decay_recurrence
+from .mla import apply_rope_to_tokens
 from .norm import RMSNorm
-from .rope import apply_rotary_pos_emb, build_rope_cache, build_yarn_rope_cache
+from .rope import apply_rotary_pos_emb, build_rope_cache
 
 
 class LayerHybridCache(tuple):
@@ -166,53 +167,25 @@ class KilatAttention(nn.Module):
         has_cache: bool,
         use_cache: bool,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        B, N, _ = x.shape
-        Dh = self.head_dim
-
         if self.n_global_heads == 0 or self.log_lambda is None or self.v_proj_global is None:
+            B, N, _ = x.shape
+            Dh = self.head_dim
             out_global = torch.zeros(B, N, 0, device=x.device, dtype=x.dtype)
             new_state = torch.zeros(B, 0, Dh, device=x.device, dtype=torch.float32) if use_cache else None
             return out_global, new_state
 
-        compute_dtype = torch.float64 if x.dtype == torch.float64 else torch.float32
-        lam = torch.sigmoid(self.log_lambda.to(compute_dtype))  # (H_g,)
         V_global_flat = self.v_proj_global(x)
-        V_global = V_global_flat.view(B, N, self.n_global_heads, Dh).transpose(1, 2).contiguous()
-
-        if has_cache and past_global_state is not None:
-            lam_bc = lam.view(1, self.n_global_heads, 1)
-            acc_state = past_global_state.to(compute_dtype)
-            V_up = V_global.to(compute_dtype)
-            step_outputs = []
-            for j in range(N):
-                acc_state = lam_bc * acc_state + V_up[:, :, j, :]
-                z_j = compute_decay_normalizer_from_logit(
-                    self.log_lambda.to(compute_dtype),
-                    past_seq_len + j,
-                ).view(1, self.n_global_heads, 1)
-                step_outputs.append((acc_state / z_j).to(x.dtype))
-
-            out_global = (
-                torch.stack(step_outputs, dim=2)
-                .transpose(1, 2)
-                .reshape(B, N, self.n_global_heads * Dh)
-            )
-            new_state = acc_state if use_cache else None
-            return out_global, new_state
-
-        out_decay = triton_global_decay(lam.to(V_global.dtype) if V_global.dtype == torch.float64 else lam, V_global)
-        out_global = out_decay.transpose(1, 2).reshape(B, N, self.n_global_heads * Dh)
-
-        new_state = None
-        if use_cache:
-            lam_bc = lam.view(1, self.n_global_heads, 1)
-            V_up = V_global.to(compute_dtype)
-            acc_state = torch.zeros(B, self.n_global_heads, Dh, device=x.device, dtype=compute_dtype)
-            for t in range(N):
-                acc_state = lam_bc * acc_state + V_up[:, :, t, :]
-            new_state = acc_state
-
-        return out_global, new_state
+        return run_global_decay_recurrence(
+            v_global_flat=V_global_flat,
+            log_lambda=self.log_lambda,
+            n_global_heads=self.n_global_heads,
+            head_dim=self.head_dim,
+            past_global_state=past_global_state,
+            past_seq_len=past_seq_len,
+            has_cache=has_cache,
+            use_cache=use_cache,
+            out_dtype=x.dtype,
+        )
 
     def forward(
         self,
@@ -398,21 +371,14 @@ class KilatAttentionRoPE(KilatAttention):
         seq_offset: int,
         rope_dim: int,
     ) -> torch.Tensor:
-        _, _, N, Rd = t.shape
-        if Rd != rope_dim:
-            raise ValueError(f"Expected rope_dim={rope_dim}, got {Rd}")
-
-        cos, sin = build_rope_cache(
-            seq_len=N,
+        return apply_rope_to_tokens(
+            t=t,
+            seq_offset=seq_offset,
             rope_dim=rope_dim,
-            device=t.device,
-            dtype=t.dtype,
-            base=self.rope_base,
-            offset=seq_offset,
-            scale=self.yarn_scale if self.yarn_scale is not None else 1.0,
-            original_max_position_embeddings=self.yarn_base_seq_len,
+            rope_base=self.rope_base,
+            yarn_scale=self.yarn_scale,
+            yarn_base_seq_len=self.yarn_base_seq_len,
         )
-        return apply_rotary_pos_emb(t, cos, sin)
 
     def forward(  # type: ignore[override]
         self,
