@@ -253,6 +253,40 @@ class FlightRecorderCallback(TrainerCallback):
         if logs is None:
             return None
 
+        # Guard: Differentiate evaluation logs from training logs
+        is_eval = ("eval_loss" in logs) or any(
+            k.startswith("eval_") or k.startswith("eval/") for k in logs.keys()
+        )
+        if is_eval and ("loss" not in logs and "ce_loss" not in logs):
+            eval_loss = float(logs.get("eval_loss", 0.0))
+            eval_ppl = float(
+                logs.get("eval_ppl", logs.get("eval_perplexity", compute_perplexity(eval_loss)))
+            )
+            eval_telemetry: dict[str, float] = {
+                "step": float(state.global_step),
+                "eval/loss": eval_loss,
+                "eval/ppl": eval_ppl,
+            }
+            if "eval_aux_loss" in logs:
+                eval_telemetry["eval/aux_loss"] = float(logs["eval_aux_loss"])
+
+            for k, v in logs.items():
+                if isinstance(v, (int, float)) and k not in (
+                    "eval_loss", "eval_ppl", "eval_perplexity", "eval_aux_loss", "step"
+                ):
+                    metric_key = k if "/" in k else f"eval/{k[5:] if k.startswith('eval_') else k}"
+                    eval_telemetry[metric_key] = float(v)
+
+            self.telemetry_history.append(eval_telemetry)
+            target_dir = self.output_dir or getattr(args, "output_dir", None)
+            if target_dir and getattr(state, "is_world_process_zero", True):
+                import json
+
+                os.makedirs(str(target_dir), exist_ok=True)
+                with open(os.path.join(str(target_dir), "telemetry.jsonl"), "a", encoding="utf-8") as tf:
+                    tf.write(json.dumps(eval_telemetry) + "\n")
+            return None
+
         trainer = kwargs.get("trainer")
         kw_model = kwargs.get("model")
         m_in = kw_model if kw_model is not None else self._model_ref
