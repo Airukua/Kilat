@@ -41,7 +41,9 @@ All legacy directories (`arc/`, `training/`, `pipeline/`, `distiliation/`, `samp
 | `src/kilat/engine/integrations.py` | `ConsoleCallback`, `WandbCallback`, `TensorBoardCallback`, `MLflowCallback`, `CometCallback`, `get_reporting_integration_callbacks` | External experiment tracking integrations. |
 | `src/kilat/inference/` | `generator.py` (`TextGenerator`), `generation_mixin.py` (`GenerationMixin`), `generation_config.py` (`GenerationConfig`), `beam_search.py`, `logit_processor.py`, `sampler.py`, `stopping_criteria.py`, `export_hf.py` (`convert_checkpoint_to_hf`) | Complete inference, sampling, stopping criteria, and Hugging Face export suite. |
 | `src/kilat/distillation/` | `losses.py` (`VanillaKDLoss`, `ReverseKDLoss`, `AdaptiveKDLoss`, `DistillLossOutput`), `student.py` (`BaseStudent`), `teacher.py` (`BaseTeacher`) | Knowledge distillation module. |
-| `src/kilat/assurance/` | `runner.py`, `scaling.py`, `flight_recorder.py`, `types.py`, `gates/gate1..6_*.py`, `chaos/{saboteur,scenarios,runner}.py` | 8-stage Pre-Training Assurance Gates, Active Chaos `Saboteur`, and runtime `FlightRecorderCallback`. |
+| `src/kilat/utils/security.py` | `assert_trusted_module`, `is_trusted_module`, `safe_join`, `is_pinned_revision`, `UntrustedModuleError`, `UnsafePathError`, `UnpinnedRevisionError` | Layer-0 stdlib-only security primitives (OWASP LLM03 / A01). `kilat.utils` re-exports of `models.base` symbols are **lazy** (PEP 562). |
+| `src/kilat/models/loading.py` | `load_model` | Canonical location (formerly `kilat.utils.report.load_model`, now a deprecated shim). |
+| `src/kilat/assurance/` | `runner.py`, `scaling.py`, `flight_recorder.py`, `types.py`, `gates/gate0_security.py`, `gates/gate1..6_*.py`, `chaos/{saboteur,scenarios,runner}.py` | Gate 0 security + 8-stage Pre-Training Assurance Gates, Active Chaos `Saboteur`, and runtime `FlightRecorderCallback`. |
 
 ---
 

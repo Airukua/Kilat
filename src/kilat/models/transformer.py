@@ -23,11 +23,13 @@ from .base import (
     WEIGHTS_INDEX_NAME,
     _SAFETENSORS_AVAILABLE,
     _st_load,
+    enforce_revision_policy,
 )
 from kilat.utils.validators import (
     validate_finite_tensor,
     validate_tensor_rank,
 )
+from kilat.utils.security import safe_join
 
 logger = logging.getLogger(__name__)
 
@@ -45,8 +47,8 @@ try:
                 setattr(self, k, v)
 
     AutoConfig.register("kilat_transformer", KilatHFConfig)
-except Exception:
-    pass
+except Exception as _register_exc:  # already registered or transformers too old: non-fatal
+    logger.debug("Skipping AutoConfig registration for kilat_transformer: %s", _register_exc)
 
 KilatModelOutput = CausalLMOutputWithPast
 
@@ -332,8 +334,9 @@ class KilatTransformer(KilatPreTrainedModel, GenerationMixin):
                 for key in weights.keys():
                     if 'q_rope_proj' in key or 'k_rope_proj' in key:
                         return True
-            except Exception:
-                pass
+            except Exception as exc:
+                # Never swallow silently: a corrupt weight file would otherwise mis-detect RoPE.
+                logger.warning("RoPE detection could not read %s: %s", weights_path, exc)
 
         # Try pickle format
         weights_path = pretrained_path / WEIGHTS_NAME
@@ -343,8 +346,9 @@ class KilatTransformer(KilatPreTrainedModel, GenerationMixin):
                 for key in weights.keys():
                     if 'q_rope_proj' in key or 'k_rope_proj' in key:
                         return True
-            except Exception:
-                pass
+            except Exception as exc:
+                # Never swallow silently: a corrupt weight file would otherwise mis-detect RoPE.
+                logger.warning("RoPE detection could not read %s: %s", weights_path, exc)
 
         # Try sharded formats
         for index_name in [SAFE_WEIGHTS_INDEX, WEIGHTS_INDEX_NAME]:
@@ -356,8 +360,8 @@ class KilatTransformer(KilatPreTrainedModel, GenerationMixin):
                     for key in index.get('weight_map', {}).keys():
                         if 'q_rope_proj' in key or 'k_rope_proj' in key:
                             return True
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("RoPE detection could not read %s: %s", index_path, exc)
 
         return False
 
@@ -384,7 +388,7 @@ class KilatTransformer(KilatPreTrainedModel, GenerationMixin):
             shard_files = sorted(set(index["weight_map"].values()))
             state_dict = {}
             for shard_name in shard_files:
-                shard_path = pretrained_path / shard_name
+                shard_path = safe_join(pretrained_path, shard_name)
                 shard_dict = _st_load(str(shard_path))
                 state_dict.update(shard_dict)
             return state_dict
@@ -397,7 +401,7 @@ class KilatTransformer(KilatPreTrainedModel, GenerationMixin):
             shard_files = sorted(set(index["weight_map"].values()))
             state_dict = {}
             for shard_name in shard_files:
-                shard_path = pretrained_path / shard_name
+                shard_path = safe_join(pretrained_path, shard_name)
                 shard_dict = torch.load(shard_path, map_location='cpu', weights_only=True)
                 state_dict.update(shard_dict)
             return state_dict
@@ -433,10 +437,13 @@ class KilatTransformer(KilatPreTrainedModel, GenerationMixin):
         if not pretrained_path.exists():
             try:
                 from huggingface_hub import snapshot_download
+                revision = kwargs.get('revision')
+                enforce_revision_policy(str(pretrained_model_name_or_path), revision)
                 logger.info(f"Downloading from Hugging Face Hub: {pretrained_model_name_or_path}")
                 pretrained_path = Path(
                     snapshot_download(
                         str(pretrained_model_name_or_path),
+                        revision=revision,
                         local_files_only=kwargs.get('local_files_only', False),
                     )
                 )

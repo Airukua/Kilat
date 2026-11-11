@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import platform
+import shutil
 import subprocess
 import time
 from typing import Any, Callable, Iterable, Optional
@@ -12,6 +14,7 @@ import torch
 from kilat.models.kernels.flash_decay import HAS_TRITON
 from kilat.models.transformer import KilatTransformer
 from kilat.assurance.gates import (
+    run_gate0_security,
     run_gate1_theory,
     run_gate2_numerical,
     run_gate3_equivalence,
@@ -35,20 +38,20 @@ from kilat.data.dataloader import build_dataloaders_from_config
 from kilat.data.dataset import SyntheticTokenDataset
 from torch.utils.data import DataLoader
 
+logger = logging.getLogger(__name__)
+
 
 def _detect_git_commit() -> str:
+    git_exe = shutil.which("git")  # resolve absolute path: avoids PATH-hijack of a partial name
+    if git_exe is None:
+        return "unknown"
     try:
-        res = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],
-            capture_output=True,
-            text=True,
-            timeout=2.0,
-            check=False,
-        )
+        argv = [git_exe, "rev-parse", "--short", "HEAD"]  # fixed argv, no shell, no user input
+        res = subprocess.run(argv, capture_output=True, text=True, timeout=2.0, check=False)  # noqa: S603
         if res.returncode == 0 and res.stdout.strip():
             return res.stdout.strip()
-    except Exception:
-        pass
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.debug("git commit detection failed: %s", exc)
     return "unknown"
 
 
@@ -119,7 +122,7 @@ def run_verification_pipeline(
     """
     Execute Kilat's Layer-1 Pre-Flight Validation Pipeline (`kilat verify`).
 
-    Runs Gates 1..6 sequentially (plus Stage 7..8 when `full=True`) and optionally writes
+    Runs Gate 0 (security & supply chain) then Gates 1..6 sequentially (plus Stage 7..8 when `full=True`) and optionally writes
     `assurance_report.json` and `assurance_report.md` to `output_dir`.
     """
     main_cfg: Optional[MainConfig] = None
@@ -183,6 +186,7 @@ def run_verification_pipeline(
     )
 
     pipeline_steps: list[tuple[str, Callable[[], GateResult]]] = [
+        ("G0_SECURITY_SUPPLY_CHAIN", lambda: run_gate0_security(main_cfg)),
         ("G1_THEORY_INIT", lambda: run_gate1_theory(model_cfg, model=target_model, weight_decay=wd)),
         ("G2_NUMERICAL_CAUSAL", lambda: run_gate2_numerical(model_cfg, model=target_model)),
         ("G3_EQUIVALENCE", lambda: run_gate3_equivalence(model_cfg, model=target_model)),

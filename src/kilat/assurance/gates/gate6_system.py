@@ -248,13 +248,15 @@ def run_gate6_system(
         # Single global batch (B=4, grad_acc=1) vs 2 micro-batches (B=2 x 2, grad_acc=2)
         model_full.zero_grad(set_to_none=True)
         loss_full = model_full(x_global, labels=x_global, return_dict=True).loss
-        assert loss_full is not None
+        if not (loss_full is not None):
+            raise RuntimeError("Assurance invariant violated (survives python -O): loss_full is not None")
         loss_full.backward()
 
         model_accum.zero_grad(set_to_none=True)
         for shard in (x_global[:2], x_global[2:]):
             loss_micro = model_accum(shard, labels=shard, return_dict=True).loss
-            assert loss_micro is not None
+            if not (loss_micro is not None):
+                raise RuntimeError("Assurance invariant violated (survives python -O): loss_micro is not None")
             (loss_micro / 2.0).backward()
 
         max_accum_grad_diff = 0.0
@@ -281,14 +283,16 @@ def run_gate6_system(
         m_1proc.zero_grad(set_to_none=True)
         for shard in (x_global[:2], x_global[2:]):
             l_1p = m_1proc(shard, labels=shard, return_dict=True).loss
-            assert l_1p is not None
+            if not (l_1p is not None):
+                raise RuntimeError("Assurance invariant violated (survives python -O): l_1p is not None")
             (l_1p / 2.0).backward()
 
         m_rank0.zero_grad(set_to_none=True)
         m_rank1.zero_grad(set_to_none=True)
         l_r0 = m_rank0(x_global[:2], labels=x_global[:2], return_dict=True).loss
         l_r1 = m_rank1(x_global[2:], labels=x_global[2:], return_dict=True).loss
-        assert l_r0 is not None and l_r1 is not None
+        if not (l_r0 is not None and l_r1 is not None):
+            raise RuntimeError("Assurance invariant violated (survives python -O): l_r0 is not None and l_r1 is not None")
         l_r0.backward()
         l_r1.backward()
 

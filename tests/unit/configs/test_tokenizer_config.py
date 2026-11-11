@@ -82,7 +82,8 @@ def test_tokenizer_config_vocab_mismatch_warning():
                         assert len(recorded_warnings) >= 0  # Gracefully handled without crash
 
 
-def test_tokenizer_config_build_and_save():
+def test_tokenizer_config_build_and_save(monkeypatch):
+    monkeypatch.setenv("KILAT_TRUSTED_MODULES", "tests.unit.configs")
     with Scenario("Unit: TokenizerConfig Custom Builder and save_tokenizer"):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)

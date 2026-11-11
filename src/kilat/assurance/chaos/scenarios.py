@@ -370,8 +370,8 @@ def run_chaos_suite(scenarios: str | Sequence[str] = "all") -> ChaosSuiteReport:
                     atomic=True,
                 )
                 ckpt_path = os.path.join(tmp_ckpt_root, "checkpoint-latest")
-                assert os.path.isdir(ckpt_path)
-
+                if not (os.path.isdir(ckpt_path)):
+                    raise RuntimeError("Assurance invariant violated (survives python -O): os.path.isdir(ckpt_path)")
                 # Sub-test A: Mid-save crash inside write_checkpoint_manifest leaves healthy checkpoint intact
                 # and cleans up temporary `.tmp_checkpoint_*` directory!
                 with patch(

@@ -122,7 +122,9 @@ def test_autotokenizer_detection_methods():
                         assert use_local_spm is False
 
 
-def test_autotokenizer_from_pretrained_priorities():
+def test_autotokenizer_from_pretrained_priorities(monkeypatch):
+    # Test-only builders live in the tests package; trust must be granted explicitly (OWASP LLM03).
+    monkeypatch.setenv("KILAT_TRUSTED_MODULES", "tests.unit.configs")
     with Scenario("Unit: AutoTokenizer.from_pretrained Priority Escalation"):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)

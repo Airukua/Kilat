@@ -75,10 +75,11 @@ def test_full_assurance_pipeline_dense_and_scaling_readiness(tmp_path: Path) -> 
                 full=True,
             )
 
-        with Then("all 8 stages pass with overall_status == 'PASS'"):
+        with Then("all 9 stages (G0 security + 8 numerical) pass with overall_status == 'PASS'"):
             assert report.passed, f"Assurance failed: {[g.to_dict() for g in report.gates if g.status != 'PASS']}"
             gate_ids = [g.gate_id for g in report.gates]
             assert gate_ids == [
+                "G0_SECURITY_SUPPLY_CHAIN",
                 "G1_THEORY_INIT",
                 "G2_NUMERICAL_CAUSAL",
                 "G3_EQUIVALENCE",
@@ -96,7 +97,7 @@ def test_full_assurance_pipeline_dense_and_scaling_readiness(tmp_path: Path) -> 
             assert md_file.is_file()
             parsed = json.loads(json_file.read_text(encoding="utf-8"))
             assert parsed["overall_status"] == "PASS"
-            assert len(parsed["gates"]) == 8
+            assert len(parsed["gates"]) == 9
             assert "Kilat Pre-Training Assurance Certificate" in md_file.read_text(encoding="utf-8")
 
 

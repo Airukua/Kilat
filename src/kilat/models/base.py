@@ -10,6 +10,13 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 import torch
 import torch.nn as nn
 
+from kilat.utils.security import (
+    UnpinnedRevisionError,
+    is_pinned_revision,
+    pinned_revision_required,
+    safe_join,
+)
+
 logger = logging.getLogger(__name__)
 
 # Third-party dependencies with graceful degradation pattern
@@ -38,6 +45,24 @@ WEIGHTS_NAME = "pytorch_model.bin"
 SAFE_WEIGHTS_NAME = "model.safetensors"
 WEIGHTS_INDEX_NAME = "pytorch_model.bin.index.json"
 SAFE_WEIGHTS_INDEX = "model.safetensors.index.json"
+
+
+def enforce_revision_policy(model_id: str, revision: Optional[str]) -> None:
+    """Warn on (or, with ``KILAT_REQUIRE_PINNED_REVISION=1``, reject) unpinned Hub downloads.
+
+    Branch and tag names are mutable: whoever controls the upstream repo can swap weights or
+    tokenizer files under the same name. Only a 40-char commit SHA is immutable (OWASP LLM03,
+    NCSC secure-deployment guidance on protecting models from tampering).
+    """
+    if is_pinned_revision(revision):
+        return
+    msg = (
+        f"Hub download of '{model_id}' uses unpinned revision {revision!r}; "
+        "pass revision=<40-char commit SHA> to prevent supply-chain tampering."
+    )
+    if pinned_revision_required():
+        raise UnpinnedRevisionError(msg)
+    logger.warning(msg)
 
 
 def _shard_state_dict(
@@ -507,6 +532,7 @@ class BasePreTrainedModel(nn.Module):
         force_download: bool = False,  # <-- ADDED: Control cache behavior
         local_files_only: bool = False,  # <-- ADDED: Skip download if True
         resume_download: bool = True,  # <-- ADDED: Resume interrupted downloads
+        revision: Optional[str] = None,
         **kwargs,
     ) -> BasePreTrainedModel:
         """
@@ -539,6 +565,9 @@ class BasePreTrainedModel(nn.Module):
             force_download: If True, download even if already cached.
             local_files_only: If True, only use local files, don't download.
             resume_download: If True, resume interrupted downloads.
+            revision: Hub revision to download. Pass an immutable 40-char commit SHA to defend
+                against upstream tampering (OWASP LLM03). Branch/tag names are mutable; they are
+                warned about, or rejected when ``KILAT_REQUIRE_PINNED_REVISION=1``.
             **kwargs: Additional arguments passed to the model constructor.
             
         Returns:
@@ -559,12 +588,14 @@ class BasePreTrainedModel(nn.Module):
                     "and huggingface_hub not installed. "
                     "Install with: pip install huggingface_hub"
                 )
+            enforce_revision_policy(str(pretrained_model_name_or_path), revision)
             logger.info(f"Downloading '{pretrained_model_name_or_path}' from HuggingFace Hub...")
             # snapshot_download handles caching and incremental downloads
             # Added cache control parameters for better performance
             pretrained_path = Path(
                 _hf_hub.snapshot_download(
                     str(pretrained_model_name_or_path),
+                    revision=revision,
                     force_download=force_download,
                     local_files_only=local_files_only,
                 )
@@ -762,7 +793,8 @@ class BasePreTrainedModel(nn.Module):
                 shard_files = sorted(set(index["weight_map"].values()))
                 merged: Dict[str, torch.Tensor] = {}
                 for shard_name in shard_files:
-                    shard_path = pretrained_path / shard_name
+                    # Shard names come from an untrusted index file: block path traversal (OWASP A01).
+                    shard_path = safe_join(pretrained_path, shard_name)
                     if not shard_path.exists():
                         raise FileNotFoundError(f"Shard file not found: {shard_path}")
                     if fmt == "safetensors":

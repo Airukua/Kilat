@@ -36,6 +36,13 @@ flowchart LR
 
 Setiap gerbang menghasilkan status `PASS` / `FAIL`, durasi milidetik, metrik terukur, dan kode kegagalan terstruktur (`AssuranceFailureCode`). Gerbang dieksekusi berurutan; kegagalan pada gerbang awal menghentikan pemborosan komputasi pada gerbang berikutnya (kecuali diberi flag `--keep-going`).
 
+### Gate 0: Security & Supply-Chain Posture (`gate0_security.py`) — `G0_SECURITY_SUPPLY_CHAIN`
+Dijalankan **paling awal** (murah, CPU, < 1 detik). Model yang benar secara matematis tetapi memuat kode penyerang dari checkpoint tidak layak dilatih.
+- **Static AST scan** seluruh paket `kilat`: `torch.load` tanpa `weights_only=True`, keluarga `pickle`, `yaml.load` tidak aman, `numpy.load(allow_pickle=True)` → `ERR_INSECURE_DESERIALIZATION`; `trust_remote_code=True`, `eval`/`exec` → `ERR_REMOTE_CODE_EXECUTION`; `shell=True`/`os.system`/`os.popen` → `ERR_SHELL_INJECTION_RISK`.
+- **Config audit**: `tokenizer.custom_builder` / `custom_module` harus berada di allowlist (`kilat.*` + `KILAT_TRUSTED_MODULES`) → `ERR_UNTRUSTED_DYNAMIC_IMPORT`.
+- **Anti-vacuous**: scan 0 file = FAIL.
+- Pemetaan: OWASP LLM03/LLM04, OWASP ML06/ML10, OWASP A01/A03/A08, NCSC/CISA *Guidelines for Secure AI System Development*. Detail: `.agents/skills/core/ml-security-assurance/SKILL.md`.
+
 ### Gate 1: Theoretical & Initialization Sanity (`gate1_theory.py`)
 Memverifikasi kesesuaian persamaan teoretis dan distribusi inisialisasi pada langkah ke-0 sebelum satu pun langkah optimisasi dijalankan:
 1. **Entropi Awal Tak-Bias ($\mathcal{L}_0 \approx \ln V$)**:

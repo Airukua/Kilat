@@ -2,9 +2,11 @@ from __future__ import annotations
 from collections import defaultdict
 import torch.nn as nn
 from pathlib import Path
-from kilat.models.transformer import KilatTransformer
-from kilat.configs.model_config import KilatConfig
-import sys
+import warnings
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from kilat.models.transformer import KilatTransformer
 
 def count_parameters(model: nn.Module, trainable_only: bool = False) -> int:
     """
@@ -93,83 +95,17 @@ def parameter_breakdown(model: nn.Module):
     return rows, shared_groups
 
 
-def load_model(
-    checkpoint: str | None = None,
-    config_path: str | None = None,
-    device: str = "cpu"
-) -> 'KilatTransformer':
+def load_model(*args: Any, **kwargs: Any) -> "KilatTransformer":
+    """Deprecated shim: use :func:`kilat.models.loading.load_model`.
+
+    Kept for backward compatibility. ``kilat.utils`` is Layer 0 and must not depend on
+    ``kilat.models`` at import time, so the canonical implementation is imported lazily.
     """
-    Load KilatTransformer model from checkpoint or config.
-    
-    WHY: Provides flexible model loading for different use cases:
-        - From trained checkpoint (with weights) → inference or continued training
-        - From config only (random init) → training from scratch
-        - With neither → default config (quick testing)
-    
-    Loading logic:
-        1. If checkpoint provided → load pretrained model with weights
-        2. Else if config_path provided → create model from config (random weights)
-        3. Else → create model with default config (minimal for testing)
-    
-    Args:
-        checkpoint: Path to directory containing model.safetensors/pytorch_model.bin
-        config_path: Path to config.yaml or config.json
-        device: Target device ('cpu', 'cuda', 'cuda:0', etc.)
-    
-    Returns:
-        Loaded KilatTransformer model (already moved to device)
-    
-    Raises:
-        ValueError: If both checkpoint and config_path are provided (ambiguous)
-        FileNotFoundError: If checkpoint or config file doesn't exist
-    
-    Example:
-        >>> # Load trained model
-        >>> model = load_model(checkpoint="./checkpoints/best")
-        >>> 
-        >>> # Create new model from config
-        >>> model = load_model(config_path="./configs/small.yaml")
-        >>> 
-        >>> # Default model for testing
-        >>> model = load_model()
-    """
-    from kilat.models.transformer import KilatTransformer
-    from kilat.configs.model_config import KilatConfig
-    
-    if checkpoint and config_path:
-        raise ValueError(
-            "Cannot specify both --checkpoint and --config. "
-            "Use --checkpoint to load a pretrained model with weights, "
-            "or --config to create a new model from configuration."
-        )
+    warnings.warn(
+        "kilat.utils.report.load_model is deprecated; import from kilat.models.loading instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    from kilat.models.loading import load_model as _load_model
 
-    if checkpoint:
-        # Load pretrained model (weights + config from checkpoint directory)
-        checkpoint_path = Path(checkpoint).resolve()
-        if not checkpoint_path.exists():
-            raise FileNotFoundError(f"Checkpoint directory not found: {checkpoint_path}")
-        model = KilatTransformer.from_pretrained(str(checkpoint_path))
-
-    elif config_path:
-        # Create model from config only (random weights, for training from scratch)
-        config_file = Path(config_path).resolve()
-        if not config_file.exists():
-            raise FileNotFoundError(f"Config file not found: {config_file}")
-        
-        # Load config in the appropriate format
-        if config_file.suffix in {".yaml", ".yml"}:
-            cfg = KilatConfig.from_yaml(str(config_file))
-        else:
-            # Assume JSON format (from save_pretrained)
-            cfg = KilatConfig.from_pretrained(str(config_file))
-        model = KilatTransformer(cfg)
-
-    else:
-        # Default model with standard config (useful for quick testing)
-        print("Warning: No checkpoint or config specified. Using default KilatConfig.", file=sys.stderr)
-        cfg = KilatConfig()
-        model = KilatTransformer(cfg)
-
-    # Move model to target device
-    model = model.to(device)
-    return model
+    return _load_model(*args, **kwargs)

@@ -36,6 +36,7 @@ import os
 from pathlib import Path
 from typing import Any, Optional, Union
 from kilat.configs.tokenizer_config import TokenizerConfig
+from kilat.utils.security import UntrustedModuleError
 
 logger = logging.getLogger(__name__)
 
@@ -176,6 +177,9 @@ class AutoTokenizer:
 
                 # Build tokenizer using TokenizerConfig.build()
                 return tokenizer_config.build()
+            except UntrustedModuleError:
+                # Security rejections must surface, never silently fall back to another tokenizer.
+                raise
             except Exception as e:
                 logger.debug("Failed to load tokenizer_config.json: %s", e)
 
@@ -226,6 +230,9 @@ class AutoTokenizer:
                             local_files_only=auto_local_only,
                         )
                         return tokenizer_config.build()
+            except UntrustedModuleError:
+                # Security rejections must surface, never silently fall back to another tokenizer.
+                raise
             except Exception as e:
                 logger.debug("Failed to load config.yaml: %s", e)
 
@@ -263,6 +270,9 @@ class AutoTokenizer:
                         **kwargs,
                     )
                     return tokenizer_config.build()
+            except UntrustedModuleError:
+                # Security rejections must surface, never silently fall back to another tokenizer.
+                raise
             except Exception as e:
                 logger.debug("Failed to load config.json: %s", e)
 
@@ -582,9 +592,9 @@ class ByteLevelDebugTokenizer:
         self.pad_token_id = pad_token_id
         self.bos_token_id = bos_token_id
         self.eos_token_id = eos_token_id
-        self.pad_token = "<pad>"
-        self.bos_token = "<bos>"
-        self.eos_token = "<eos>"
+        self.pad_token = "<pad>"  # noqa: S105 - special-token text, not a credential
+        self.bos_token = "<bos>"  # noqa: S105 - special-token text, not a credential
+        self.eos_token = "<eos>"  # noqa: S105 - special-token text, not a credential
 
     def __len__(self) -> int:
         return self.vocab_size

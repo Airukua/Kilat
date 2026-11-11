@@ -63,7 +63,8 @@ def run_stage7_scaling_harness() -> GateResult:
                 for _ in range(5):
                     opt_w.zero_grad(set_to_none=True)
                     loss_w = model_w(probe_tokens, labels=probe_tokens, return_dict=True).loss
-                    assert loss_w is not None
+                    if not (loss_w is not None):
+                        raise RuntimeError("Assurance invariant violated (survives python -O): loss_w is not None")
                     loss_w.backward()
                     opt_w.step()
             finally:
@@ -132,7 +133,8 @@ def run_stage7_scaling_harness() -> GateResult:
             for _ in range(steps):
                 opt_s.zero_grad(set_to_none=True)
                 loss_s = model_s(pattern_batch, labels=pattern_batch, return_dict=True).loss
-                assert loss_s is not None
+                if not (loss_s is not None):
+                    raise RuntimeError("Assurance invariant violated (survives python -O): loss_s is not None")
                 loss_s.backward()
                 torch.nn.utils.clip_grad_norm_(model_s.parameters(), 1.0)
                 opt_s.step()
@@ -141,7 +143,8 @@ def run_stage7_scaling_harness() -> GateResult:
             model_s.eval()
             with torch.no_grad():
                 eval_loss_t = model_s(pattern_batch, labels=pattern_batch, return_dict=True).loss
-                assert eval_loss_t is not None
+                if not (eval_loss_t is not None):
+                    raise RuntimeError("Assurance invariant violated (survives python -O): eval_loss_t is not None")
                 breakdown = getattr(model_s, "_last_loss_breakdown", {})
                 ce_eval = float(breakdown["ce_loss"].item()) if "ce_loss" in breakdown else float(eval_loss_t.item())
             scale_losses[label] = round(ce_eval, 6)

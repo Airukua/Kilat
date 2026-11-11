@@ -304,6 +304,11 @@ class TokenizerConfig:
 
         module_path, func_name = parts
         import importlib
+
+        from kilat.utils.security import assert_trusted_module
+
+        # OWASP LLM03 / ML06: configs may come from untrusted checkpoints; never import arbitrary modules.
+        assert_trusted_module(module_path)
         try:
             module = importlib.import_module(module_path)
         except ImportError as e:
@@ -330,6 +335,10 @@ class TokenizerConfig:
             raise ValueError("custom_module and custom_class are required.")
 
         import importlib
+
+        from kilat.utils.security import assert_trusted_module
+
+        assert_trusted_module(self.custom_module)
         try:
             module = importlib.import_module(self.custom_module)
         except ImportError as e:

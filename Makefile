@@ -1,4 +1,4 @@
-.PHONY: help install install-dev lint lint-fix format format-check type-check check test verify chaos clean build pre-commit pre-commit-install
+.PHONY: help install install-dev lint lint-fix format format-check type-check check test security verify chaos clean build pre-commit pre-commit-install
 
 PYTHON ?= $(if $(wildcard .venv/bin/python),.venv/bin/python,python3)
 PIP ?= $(PYTHON) -m pip
@@ -44,7 +44,11 @@ test: ## Run test suite if tests directory exists
 		echo "No tests/ directory found. Skipping unit tests."; \
 	fi
 
-verify: ## Run 6-Gate Pre-Training Assurance verification on debug_cpu config
+security: ## Run SAST (ruff S) + Gate 0 security & supply-chain scan (OWASP LLM/ML Top 10, NCSC)
+	$(RUFF) check --select S src
+	$(PYTHON) -c "from kilat.assurance.gates import run_gate0_security as g; r = g(); print(r.gate_id, r.status, r.metrics['files_scanned'], 'files')"
+
+verify: ## Run Gate 0 (security) + Gates 1-6 Pre-Training Assurance verification on debug_cpu config
 	$(PYTHON) -m kilat.cli verify --config configs/debug_cpu.yaml --output-dir verify_signoff
 
 chaos: ## Run Active ML Chaos Engineering Saboteur suite (C-01..C-08)

@@ -7,7 +7,8 @@ import pytest
 import torch
 import torch.nn as nn
 
-from kilat.utils.report import count_parameters, parameter_breakdown, load_model
+from kilat.utils.report import count_parameters, parameter_breakdown
+from kilat.models.loading import load_model
 from kilat.configs.model_config import KilatConfig
 from tests.shared.bdd import Scenario, Given, When, Then, And
 
@@ -106,3 +107,15 @@ def test_parameter_breakdown_with_shared_weights_and_loader_branches():
                     loaded_ckpt_model = load_model(checkpoint=str(ckpt_dir))
                     with And("model is loaded from checkpoint weights"):
                         assert loaded_ckpt_model is not None
+
+
+def test_load_model_legacy_shim_warns_and_delegates():
+    import kilat.utils.report as legacy_report
+
+    with Scenario("Unit: Legacy utils.report.load_model Shim"):
+        with Given("code still importing load_model from kilat.utils.report"):
+            with When("the shim is called"):
+                with pytest.warns(DeprecationWarning, match="kilat.models.loading"):
+                    model = legacy_report.load_model()
+                with Then("it delegates to the canonical models.loading implementation"):
+                    assert model.__class__.__name__ == "KilatTransformer"
