@@ -12,8 +12,9 @@ Every code or configuration change in Kilat must pass all 5 gates sequentially b
 | :---: | :--- | :--- |
 | **1. Static Lint & Type Safety** | `make check` | `ruff check src` $\to$ `0` errors · `mypy src` $\to$ `0` errors across all canonical modules. |
 | **2. Numerical & BDD Test Suite** | `make test` | 100% pass across all 387 unit, seam, pipeline, assurance, and chaos BDD scenarios, **`0` warnings**, total coverage $\ge 80\%$. |
-| **3. 8-Stage Pre-Training Assurance** | `kilat verify --config configs/debug_cpu.yaml --full` | Overall status **`PASS`** across `G1_THEORY_INIT`, `G2_NUMERICAL_CAUSAL`, `G3_EQUIVALENCE`, `G4_DATA_FORENSICS`, `G5_MICRO_DYNAMICS`, `G6_SYSTEM_PARITY`, `S7_SCALING_LAWS`, and `S8_READINESS_SIGNOFF`. |
+| **3. 9-Stage Pre-Training Assurance** | `kilat verify --config configs/debug_cpu.yaml --full` | Overall status **`PASS`** across `G0_SECURITY_SUPPLY_CHAIN`, `G1_THEORY_INIT`, `G2_NUMERICAL_CAUSAL`, `G3_EQUIVALENCE`, `G4_DATA_FORENSICS`, `G5_MICRO_DYNAMICS`, `G6_SYSTEM_PARITY`, `S7_SCALING_LAWS`, and `S8_READINESS_SIGNOFF`. |
 | **4. Active ML Chaos Saboteur** | `kilat chaos --scenarios all` | Baseline clean pass (`True`), **8/8 (100%)** silent ML faults (`C-01`..`C-08`) caught with exact `AssuranceFailureCode`, post-chaos restore pass (`True`). |
+| **4b. Security & Supply Chain** | `make security` | ruff `S` SAST `0` findings · Gate 0 `G0_SECURITY_SUPPLY_CHAIN` **`PASS`** · CI `pip-audit` clean. |
 | **5. Repository & Hook Hygiene** | `make pre-commit` | 100% pass on `trailing-whitespace`, `end-of-file-fixer`, `check-yaml`, `check-toml`, `check-added-large-files`, `ruff`, and `mypy`. |
 
 ---

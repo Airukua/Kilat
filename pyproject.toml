@@ -44,6 +44,7 @@ dev = [
     "pre-commit>=3.5.0",
     "types-PyYAML>=6.0",
     "types-tqdm>=4.66",
+    "pip-audit>=2.7",
 ]
 
 [project.scripts]
@@ -69,6 +70,7 @@ exclude = [
 select = [
     "E",   # pycodestyle errors
     "F",   # pyflakes
+    "S",   # flake8-bandit SAST (OWASP A03/A08, NCSC secure development)
 ]
 ignore = [
     "E501",  # line length (handled by formatter or relaxed for ML/math docstrings)
@@ -82,6 +84,10 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401", "F403"]
+# Tensor-shape invariants in numerical code; NOT security controls. assurance/ may not use assert
+# (stripped under `python -O`), so it is deliberately excluded from this list.
+"src/kilat/{models,data,distillation,benchmarking}/**" = ["S101"]
+"tests/**" = ["S101", "S105", "S106", "S108", "S311", "S603", "S607"]
 "src/kilat/inference/export_hf.py" = ["E402"]
 
 [tool.ruff.lint.isort]

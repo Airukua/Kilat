@@ -17,9 +17,8 @@ logger = logging.getLogger(__name__)
 
 def is_distributed() -> bool:
     """Return True if torch.distributed is available and initialised."""
-    from kilat.engine.distributed import is_distributed_initialized
-
-    return is_distributed_initialized()
+    # Layer 2 (data) must not import Layer 3 (engine): query torch.distributed directly.
+    return dist.is_available() and dist.is_initialized()
 
 
 def get_world_size() -> int:
@@ -29,9 +28,7 @@ def get_world_size() -> int:
     WHY: Used to configure DistributedSampler and to scale batch sizes etc.
     In DDP, world_size is the number of GPUs.
     """
-    from kilat.engine.distributed import get_world_size as _engine_get_world_size
-
-    return _engine_get_world_size()
+    return dist.get_world_size() if is_distributed() else 1
 
 
 def get_rank() -> int:
@@ -41,9 +38,7 @@ def get_rank() -> int:
     WHY: Rank 0 is typically used for logging, saving checkpoints, and acting
     as the master process in distributed training.
     """
-    from kilat.engine.distributed import get_global_rank
-
-    return get_global_rank()
+    return dist.get_rank() if is_distributed() else 0
 
 
 # ---------------------------------------------------------------------------

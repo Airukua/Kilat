@@ -568,9 +568,10 @@ def convert_checkpoint_to_hf(
         # Step 7: Verify saved model
         logger.info("Verifying saved model...")
         try:
-            from transformers import AutoModel
-            loaded = AutoModel.from_pretrained(str(output_dir), trust_remote_code=True)
-            logger.info("Model can be loaded with AutoModel!")
+            # Reload through the first-party class instead of AutoModel(trust_remote_code=True):
+            # remote-code loading executes any *.py present in output_dir (OWASP LLM03 / ML06).
+            KilatTransformer.from_pretrained(str(output_dir))
+            logger.info("Exported model reloads cleanly with KilatTransformer.from_pretrained")
             results["auto_model_verification"] = True
         except Exception as e:
             logger.warning(f"AutoModel verification failed: {e}")

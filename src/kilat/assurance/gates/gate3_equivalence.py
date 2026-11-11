@@ -51,8 +51,8 @@ def run_gate3_equivalence(
         out_ref = _reference_global_decay_fp64(lam_ref, V_ref)
         grad_out_ref = torch.randn_like(out_ref)
         out_ref.backward(grad_out_ref)
-        assert V_ref.grad is not None and lam_ref.grad is not None
-
+        if not (V_ref.grad is not None and lam_ref.grad is not None):
+            raise RuntimeError("Assurance invariant violated (survives python -O): V_ref.grad is not None and lam_ref.grad is not None")
         dtype_specs = [
             ("fp32", torch.float32, 1e-5, 5e-5),
             ("fp16", torch.float16, 5e-3, 1e-2),
@@ -75,8 +75,8 @@ def run_gate3_equivalence(
                         f"Non-finite Global Decay forward output in {dev_tag}_{label}.",
                     )
                 out_dt.backward(grad_out_ref.to(device=dev, dtype=dt))
-                assert V_dt.grad is not None and lam_dt.grad is not None
-
+                if not (V_dt.grad is not None and lam_dt.grad is not None):
+                    raise RuntimeError("Assurance invariant violated (survives python -O): V_dt.grad is not None and lam_dt.grad is not None")
                 err_fwd = _relative_linf_error(out_dt.cpu(), out_ref)
                 err_dv = _relative_linf_error(V_dt.grad.cpu(), V_ref.grad)
                 err_dlam = _relative_linf_error(lam_dt.grad.cpu(), lam_ref.grad)

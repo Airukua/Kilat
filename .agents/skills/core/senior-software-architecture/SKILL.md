@@ -43,6 +43,9 @@ Dependencies must flow strictly downward. Violating this creates hidden coupling
 - **`engine/`** handles lifecycle execution (training loops, optimization, checkpointing). It imports `models/`, `data/`, and `configs/`, but must **NEVER** import `cli.py` or `benchmarking/`.
 - **`assurance/` and `benchmarking/`** are evaluators that observe models and engines. They must **NEVER** be imported by `models/` or `engine/`.
 - **`cli.py`** is the top-level composition root. It wires configs, models, and engines together.
+- **Decoding primitives** (`inference/{generation_mixin,generation_config,logit_processor,sampler,beam_search,stopping_criteria}.py`) sit *below* `models/` (KilatTransformer mixes in `GenerationMixin`) and must never import `models/`, `engine/` or `data/`. The rest of `inference/` (`generator.py`, `export_hf.py`) sits above `models/`.
+- **Enforcement**: `tests/integration/architecture/test_architecture_layering.py` AST-scans every `kilat.*` import (including function-local ones) against the allowed-layer matrix. Pre-existing violations live in `KNOWN_LAYERING_DEBT`, a ratchet: new entries fail the build, and fixed entries must be removed.
+- **Utils re-export shims must be lazy** (PEP 562 `__getattr__`). An eager `from kilat.models...` in `kilat/utils/__init__.py` creates a circular import the moment `models/` uses any `utils/` leaf module.
 
 ### Pillar 2: Leaf Utilities Only in `utils/` (Zero Core Abstractions in `utils/`)
 - **Anti-Pattern**: Placing core neural network abstractions (e.g. `BasePreTrainedModel`) or core loaders inside `src/kilat/utils/`.

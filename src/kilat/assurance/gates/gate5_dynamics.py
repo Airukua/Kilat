@@ -68,7 +68,8 @@ def _check_grad_scaler_skipped_step_scheduler_guard() -> bool:
     x = torch.randn(2, 4)
     loss = toy(x).sum()
     loss.backward()
-    assert toy.weight.grad is not None
+    if not (toy.weight.grad is not None):
+        raise RuntimeError("Assurance invariant violated (survives python -O): toy.weight.grad is not None")
     toy.weight.grad[0, 0] = float("inf")
 
     has_non_finite_grad = any(
