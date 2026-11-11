@@ -132,7 +132,7 @@ def test_autotokenizer_from_pretrained_priorities():
                 p1_dir.mkdir()
                 cfg_dict = {
                     "tokenizer_type": "custom",
-                    "custom_builder": "tests.unit.features.configs.test_tokenizer_config:build_dummy_tok",
+                    "custom_builder": "tests.unit.configs.test_tokenizer_config:build_dummy_tok",
                 }
                 (p1_dir / "tokenizer_config.json").write_text(json.dumps(cfg_dict))
 
@@ -147,7 +147,7 @@ def test_autotokenizer_from_pretrained_priorities():
                 yaml_data = {
                     "tokenizer": {
                         "tokenizer_type": "custom",
-                        "custom_builder": "tests.unit.features.configs.test_tokenizer_config:build_dummy_tok",
+                        "custom_builder": "tests.unit.configs.test_tokenizer_config:build_dummy_tok",
                     }
                 }
                 (p2_dir / "config.yaml").write_text(yaml.dump(yaml_data))
@@ -160,7 +160,7 @@ def test_autotokenizer_from_pretrained_priorities():
             with Given("environment variable KILAT_TOKENIZER_BUILDER (Priority 5)"):
                 p5_dir = tmp_path / "p5"
                 p5_dir.mkdir()
-                os.environ["KILAT_TOKENIZER_BUILDER"] = "tests.unit.features.configs.test_tokenizer_config:build_dummy_tok"
+                os.environ["KILAT_TOKENIZER_BUILDER"] = "tests.unit.configs.test_tokenizer_config:build_dummy_tok"
 
                 with When("AutoTokenizer loads with env var configured"):
                     try:
