@@ -26,9 +26,52 @@ class ScalingConfig:
     token_budgets: List[int] = field(default_factory=lambda: [50_000])
     eval_every_tokens: int = 10_000
     lr: float = 5e-4
+    # Default synthetic data: Markov chain where context matters (see markov_entropies).
+    markov_branching: int = 4
+    markov_chain_seed: int = 1234
+    # Pass iff the model closes at least this fraction of the gap between the context-free floor
+    # (unigram entropy) and the Bayes-optimal floor (true conditional entropy).
+    min_gap_closed: float = 0.5
     vocab_size: int = 256
     batch_size: int = 16
     device: str = "cpu"
+
+
+def _markov_transition(vocab_size: int, branching: int, chain_seed: int) -> torch.Tensor:
+    """Sparse first-order Markov chain: each token has `branching` successors with Dirichlet(1) weights.
+
+    Unlike i.i.d. tokens, next-token prediction here *requires* context, so architectures can be separated.
+    """
+    gen = torch.Generator().manual_seed(chain_seed)
+    trans = torch.zeros(vocab_size, vocab_size)
+    k = max(1, min(branching, vocab_size))
+    for i in range(vocab_size):
+        succ = torch.randperm(vocab_size, generator=gen)[:k]
+        w = -torch.log(torch.rand(k, generator=gen).clamp_min(1e-12))  # Exp(1) => normalized = Dirichlet(1)
+        trans[i, succ] = w / w.sum()
+    return trans
+
+
+def _stationary(trans: torch.Tensor, iters: int = 500) -> torch.Tensor:
+    pi = torch.full((trans.size(0),), 1.0 / trans.size(0), dtype=torch.float64)
+    t64 = trans.to(torch.float64)
+    for _ in range(iters):
+        pi = pi @ t64
+    return pi / pi.sum()
+
+
+def markov_entropies(vocab_size: int, branching: int = 4, chain_seed: int = 1234) -> Tuple[float, float]:
+    """Return (unigram entropy, true conditional entropy) in nats for the default synthetic chain.
+
+    unigram entropy  = best loss achievable WITHOUT using context
+    conditional H    = Bayes-optimal loss WITH context (irreducible floor)
+    """
+    trans = _markov_transition(vocab_size, branching, chain_seed).to(torch.float64)
+    pi = _stationary(trans)
+    h_uni = float(-(pi[pi > 0] * pi[pi > 0].log()).sum())
+    row_h = -(torch.where(trans > 0, trans * trans.clamp_min(1e-300).log(), torch.zeros_like(trans))).sum(dim=1)
+    h_cond = float((pi * row_h).sum())
+    return h_uni, h_cond
 
 
 def _default_synthetic_stream(
@@ -37,21 +80,28 @@ def _default_synthetic_stream(
     batch_size: int,
     device: str,
     seed: int = 42,
+    chain_seed: int = 1234,
+    branching: int = 4,
 ) -> Iterable[Tuple[torch.Tensor, torch.Tensor]]:
-    """Infinite synthetic language generator with Zipfian token distribution and 2-gram correlation."""
-    gen = torch.Generator().manual_seed(seed)
-    # Zipfian probabilities
-    ranks = torch.arange(1, vocab_size + 1, dtype=torch.float32)
-    probs = 1.0 / ranks
-    probs /= probs.sum()
+    """Infinite stream of TWO independent realisations of a fixed Markov chain, interleaved: a1 b1 a2 b2 ...
 
+    The next token depends on the token two positions back and is independent of the current token, so:
+    - a model that only sees the current token (no sequence mixing) is floored at the unigram entropy;
+    - only genuine context use reaches the conditional-entropy floor.
+    `chain_seed` fixes the chain (shared by train/val); `seed` drives sampling. y[:, t] = x_{t+1}, no wrap-around.
+    """
+    trans = _markov_transition(vocab_size, branching, chain_seed)
+    pi = _stationary(trans).to(torch.float32)
+    gen = torch.Generator().manual_seed(seed)
+    half = (seq_len + 1) // 2 + 1
     while True:
-        # Sample base tokens
-        x = torch.multinomial(probs, batch_size * seq_len, replacement=True, generator=gen)
-        x = x.view(batch_size, seq_len)
-        # Shifted targets for causal next-token prediction
-        y = torch.roll(x, shifts=-1, dims=1)
-        yield x.to(device), y.to(device)
+        chains = torch.empty(2, batch_size, half, dtype=torch.long)
+        for c in range(2):
+            chains[c, :, 0] = torch.multinomial(pi, batch_size, replacement=True, generator=gen)
+            for t in range(1, half):
+                chains[c, :, t] = torch.multinomial(trans[chains[c, :, t - 1]], 1, generator=gen).squeeze(1)
+        seq = torch.stack([chains[0], chains[1]], dim=-1).reshape(batch_size, 2 * half)[:, : seq_len + 1]
+        yield seq[:, :-1].to(device), seq[:, 1:].to(device)
 
 
 def train_with_token_budget(
@@ -155,37 +205,65 @@ def run_pillar3(
     train_data_fn: Optional[Callable[[int], Iterable[Tuple[torch.Tensor, torch.Tensor]]]] = None,
     val_data_fn: Optional[Callable[[int], Iterable[Tuple[torch.Tensor, torch.Tensor]]]] = None,
 ) -> Dict[str, Any]:
-    """Execute Pillar 3 scaling laws evaluation."""
+    """Execute Pillar 3 scaling evaluation.
+
+    Pass criterion (never vacuous):
+    - default Markov data: eval NLL must close >= `min_gap_closed` of the gap between unigram entropy
+      (no context) and the true conditional entropy (perfect context use);
+    - custom data: eval NLL must improve on the untrained model's NLL by >= 10%.
+    """
     runs = []
     max_len = max(cfg.seq_lens)
+    use_default = train_data_fn is None
+    h_uni, h_cond = markov_entropies(cfg.vocab_size, cfg.markov_branching, cfg.markov_chain_seed)
+
+    def _stream(seq_len: int, seed: int) -> Iterable[Tuple[torch.Tensor, torch.Tensor]]:
+        return _default_synthetic_stream(
+            cfg.vocab_size, seq_len, cfg.batch_size, cfg.device, seed=seed,
+            chain_seed=cfg.markov_chain_seed, branching=cfg.markov_branching,
+        )
+
     for seq_len in cfg.seq_lens:
         for budget in cfg.token_budgets:
             model = model_builder(vocab_size=cfg.vocab_size, max_seq_len=max_len).to(cfg.device)
 
-            train_iter = train_data_fn(seq_len) if train_data_fn else _default_synthetic_stream(
-                cfg.vocab_size, seq_len, cfg.batch_size, cfg.device, seed=123
-            )
-            val_iter = val_data_fn(seq_len) if val_data_fn else _default_synthetic_stream(
-                cfg.vocab_size, seq_len, cfg.batch_size, cfg.device, seed=999
-            )
+            def _val() -> Iterable[Tuple[torch.Tensor, torch.Tensor]]:
+                return val_data_fn(seq_len) if val_data_fn else _stream(seq_len, seed=999)
 
+            init_eval = evaluate_perplexity(model, _val(), cfg)
+            train_iter = train_data_fn(seq_len) if train_data_fn else _stream(seq_len, seed=123)
             train_report = train_with_token_budget(model, train_iter, cfg, budget)
-            eval_report = evaluate_perplexity(model, val_iter, cfg)
+            eval_report = evaluate_perplexity(model, _val(), cfg)
             alpha = compute_power_law_alpha(train_report["eval_points"])
+
+            nll = float(eval_report["nll"])
+            if use_default and val_data_fn is None:
+                gap = max(1e-9, h_uni - h_cond)
+                gap_closed = (h_uni - nll) / gap
+                run_passed = math.isfinite(nll) and gap_closed >= cfg.min_gap_closed
+            else:
+                gap_closed = float("nan")
+                run_passed = math.isfinite(nll) and nll <= 0.9 * float(init_eval["nll"])
 
             runs.append({
                 "seq_len": seq_len,
                 "token_budget": budget,
                 "train": train_report,
+                "init_eval": init_eval,
                 "eval": eval_report,
                 "scaling_alpha": alpha,
+                "gap_closed": gap_closed,
+                "passed": run_passed,
             })
-
-    # Overall pass: validation perplexity finite and scaling exponent positive
-    passed = all(r["eval"]["perplexity"] < 1000.0 for r in runs)
 
     return {
         "pillar": "P3_EMPIRICAL_SCALING_LAWS",
-        "passed": passed,
+        "passed": bool(runs) and all(r["passed"] for r in runs),
+        "data": {
+            "source": "markov" if use_default else "custom",
+            "unigram_entropy_nats": h_uni,
+            "conditional_entropy_nats": h_cond,
+            "min_gap_closed": cfg.min_gap_closed,
+        },
         "runs": runs,
     }
