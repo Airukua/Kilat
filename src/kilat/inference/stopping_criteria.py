@@ -838,15 +838,13 @@ def get_stopping_criteria(
     """
     criteria = StoppingCriteriaList()
 
-    # Max length criteria
-    if generation_config.max_length is not None:
-        criteria.add_criterion(MaxLengthCriteria(generation_config.max_length))
-
-    # Max new tokens criteria (if specified)
+    # Length stopping criteria: max_new_tokens takes precedence over max_length
     if generation_config.max_new_tokens is not None:
         criteria.add_criterion(
             MaxNewTokensCriteria(generation_config.max_new_tokens, input_ids.shape[1])
         )
+    elif generation_config.max_length is not None:
+        criteria.add_criterion(MaxLengthCriteria(generation_config.max_length))
 
     # EOS token criteria
     if generation_config.eos_token_id is not None:

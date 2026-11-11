@@ -157,3 +157,42 @@ def test_stopping_criteria_builders_and_convenience():
                         MinLengthCriteria(min_length=-1)
                     with pytest.raises(ValueError):
                         IterationLimitCriteria(max_iterations=0)
+
+
+def test_max_new_tokens_precedence_over_max_length_regression():
+    from kilat.inference.generation_config import GenerationConfig
+    from kilat.inference.stopping_criteria import (
+        MaxLengthCriteria,
+        MaxNewTokensCriteria,
+        get_stopping_criteria,
+    )
+
+    with Scenario("Regression: max_new_tokens takes strict precedence over default max_length"):
+        with Given("an input sequence with 80 prompt tokens and config with max_length=100, max_new_tokens=120"):
+            prompt_len = 80
+            max_new = 120
+            input_ids = torch.zeros((1, prompt_len), dtype=torch.long)
+            cfg = GenerationConfig(max_length=100, max_new_tokens=max_new)
+
+        with When("building stopping criteria via get_stopping_criteria"):
+            criteria = get_stopping_criteria(cfg, input_ids)
+
+        with Then("MaxNewTokensCriteria is installed and MaxLengthCriteria is omitted"):
+            has_new_tokens_crit = any(isinstance(c, MaxNewTokensCriteria) for c in criteria)
+            has_max_length_crit = any(isinstance(c, MaxLengthCriteria) for c in criteria)
+            assert has_new_tokens_crit is True
+            assert has_max_length_crit is False
+
+        with When("generation reaches 101 tokens (21 new tokens, exceeding default max_length=100)"):
+            partial_seq = torch.zeros((1, 101), dtype=torch.long)
+            should_stop = criteria(partial_seq)
+
+        with Then("generation is NOT prematurely terminated"):
+            assert bool(should_stop.item()) is False
+
+        with When("generation reaches full 200 tokens (80 + 120 new tokens)"):
+            full_seq = torch.zeros((1, prompt_len + max_new), dtype=torch.long)
+            should_stop_full = criteria(full_seq)
+
+        with Then("generation terminates exactly upon completing max_new_tokens"):
+            assert bool(should_stop_full.item()) is True
