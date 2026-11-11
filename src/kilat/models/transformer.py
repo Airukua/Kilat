@@ -127,6 +127,39 @@ class KilatPreTrainedModel(BasePreTrainedModel):
             ):
                 torch.nn.init.normal_(module.weight, mean=0.0, std=res_std)
 
+    def _apply_width_scaled_init(self) -> None:
+        """
+        muP-style width-scaled initialisation (``init_scheme="width_scaled"``):
+
+        - hidden ``nn.Linear``:            std = 1 / sqrt(fan_in)
+        - residual output projections:     std = 1 / sqrt(fan_in) / sqrt(2 * n_layer)
+        - input embedding ``wte``:         std = 1          (token identity O(1) in the residual stream)
+        - untied output head ``lm_head``:  std = 1 / n_embd (logit std ~ 1/sqrt(n_embd) => L(0) ~ ln V)
+
+        WHY: a fixed N(0, 0.02) is GPT-2's value for n_embd=768. At n_embd=64 it makes the embedding ~50x
+        smaller than an O(1) residual stream, so after the first attention layer the current token's identity is
+        swamped and pure-attention stacks plateau at 1/num_kv accuracy on MQAR (diagnosed via bidirectional
+        transplant ablations; see docs/06).
+        """
+        n_layer = max(1, int(getattr(self.config, "n_layer", 1)))
+        depth = float(2 * n_layer) ** 0.5
+        for name, module in self.named_modules():
+            if not isinstance(module, nn.Linear) or module is self.lm_head:
+                continue
+            std = module.in_features ** -0.5
+            if (
+                name.endswith("attn.c_proj")
+                or name.endswith("attn.o_proj_recall")
+                or name.endswith("attn.o_proj_global")
+                or name.endswith(".down")
+            ):
+                std = std / depth
+            torch.nn.init.normal_(module.weight, mean=0.0, std=std)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        torch.nn.init.normal_(self.wte.weight, mean=0.0, std=1.0)
+        torch.nn.init.normal_(self.lm_head.weight, mean=0.0, std=1.0 / float(self.config.n_embd))
+
 
 class KilatTransformer(KilatPreTrainedModel, GenerationMixin):
     """
@@ -298,6 +331,8 @@ class KilatTransformer(KilatPreTrainedModel, GenerationMixin):
         # Initialise weights + residual depth scaling
         self.post_init()
         self._apply_residual_depth_scaling()
+        if getattr(config, "init_scheme", "gpt2") == "width_scaled":
+            self._apply_width_scaled_init()
         self._last_loss_breakdown: Optional[dict[str, torch.Tensor]] = None
 
     def __len__(self) -> int:

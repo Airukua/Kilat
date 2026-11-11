@@ -15,6 +15,7 @@ pillar2:
   seeds: [0, 1, 2]
   train_steps: 1200
   lr: 0.002
+  lrs: [0.001, 0.003, 0.01]  # Zoology protocol: best LR per (context length, seed)
   vocab_size: 256
   batch_size: 32
   pass_threshold: 0.80
@@ -24,6 +25,7 @@ pillar3:
   seq_lens: [256, 512, 1024]
   token_budgets: [500000]
   eval_every_tokens: 100000
+  min_gap_closed: 0.5
   lr: 0.0003
   vocab_size: 256
   batch_size: 16

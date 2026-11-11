@@ -31,6 +31,10 @@ class CapabilityConfig:
     d_model: Optional[int] = None
     device: str = "cpu"
     pass_threshold: float = 0.80
+    # Zoology protocol: report the best learning rate per (context length, seed). None => [lr].
+    lrs: Optional[List[float]] = None
+    # Size of the fixed MQAR training pool (Zoology uses ~100k; small pools under-train recall).
+    mqar_train_examples: int = 20_000
 
 
 def _train_and_eval_single(
@@ -38,6 +42,7 @@ def _train_and_eval_single(
     cfg: CapabilityConfig,
     seq_len: int,
     seed: int,
+    lr: Optional[float] = None,
 ) -> Dict[str, Any]:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
@@ -52,7 +57,8 @@ def _train_and_eval_single(
         builder_kwargs["d_model"] = cfg.d_model
 
     model = model_builder(**builder_kwargs).to(cfg.device)
-    opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, betas=(0.9, 0.98), weight_decay=0.01)
+    run_lr = cfg.lr if lr is None else lr
+    opt = torch.optim.AdamW(model.parameters(), lr=run_lr, betas=(0.9, 0.98), weight_decay=0.01)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(1, cfg.train_steps))
 
     # Resolve task generator and loss functions
@@ -65,7 +71,7 @@ def _train_and_eval_single(
             batch_size=cfg.batch_size,
         )
 
-        n_train_examples = max(cfg.batch_size * 4, min(cfg.train_steps * cfg.batch_size, 3000))
+        n_train_examples = max(cfg.batch_size * 4, min(cfg.train_steps * cfg.batch_size, cfg.mqar_train_examples))
         n_eval_examples = max(cfg.batch_size, 300)
 
         x_train, y_train = mqar.generate_dataset(
@@ -171,31 +177,52 @@ def _train_and_eval_single(
     }
 
 
+def _best_over_lrs(
+    model_builder: Callable[..., nn.Module],
+    cfg: CapabilityConfig,
+    seq_len: int,
+    seed: int,
+) -> Dict[str, Any]:
+    lrs = cfg.lrs if cfg.lrs else [cfg.lr]
+    trials = [dict(_train_and_eval_single(model_builder, cfg, seq_len, seed, lr=lr), lr=lr) for lr in lrs]
+    best = max(trials, key=lambda r: r["accuracy"])
+    return {"accuracy": best["accuracy"], "loss": best["loss"], "best_lr": best["lr"]}
+
+
 def run_pillar2(
     model_builder: Callable[..., nn.Module],
     cfg: CapabilityConfig,
     arch_name: str = "model",
 ) -> Dict[str, Any]:
-    """Execute Pillar 2 sweep across context lengths and seeds."""
+    """Execute Pillar 2 sweep across context lengths and seeds (best-of-LR per cell, Zoology protocol).
+
+    Pass criterion: mean accuracy >= `pass_threshold` at EVERY context length. Recall that only holds at the
+    shortest context says nothing about scaling, which is exactly where fixed-state models break down.
+    """
     grid_results: Dict[int, Dict[str, Any]] = {}
 
     for seq_len in cfg.context_lengths:
         seed_results = run_with_seeds(
-            lambda s, sl=seq_len: _train_and_eval_single(model_builder, cfg, sl, s),
+            lambda s, sl=seq_len: _best_over_lrs(model_builder, cfg, sl, s),
             seeds=cfg.seeds,
         )
         grid_results[seq_len] = summarize(seed_results)
 
-    # Overall pass criterion: average accuracy at shortest context >= pass_threshold
-    base_acc = grid_results[cfg.context_lengths[0]].get("accuracy", {}).get("mean", 0.0)
-    passed = base_acc >= cfg.pass_threshold
+    per_length = {
+        str(k): grid_results[k].get("accuracy", {}).get("mean", 0.0) >= cfg.pass_threshold
+        for k in cfg.context_lengths
+    }
+    passed = bool(per_length) and all(per_length.values())
 
     return {
         "pillar": "P2_MECHANISTIC_CAPABILITY",
         "task": cfg.task,
         "arch_name": arch_name,
         "passed": passed,
+        "per_length_passed": per_length,
+        "pass_threshold": cfg.pass_threshold,
         "grid": {str(k): v for k, v in grid_results.items()},
         "context_lengths": cfg.context_lengths,
         "train_steps": cfg.train_steps,
+        "lrs": cfg.lrs if cfg.lrs else [cfg.lr],
     }

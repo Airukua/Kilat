@@ -124,6 +124,7 @@ class KilatConfig(BaseConfig):
         tie_word_embeddings: bool = True,
         use_cache: bool = False,
         initializer_range: float = 0.02,
+        init_scheme: Literal["gpt2", "width_scaled"] = "gpt2",
         **kwargs,
     ):
         # Set internal flags expected by HuggingFace (prevents AttributeError)
@@ -189,6 +190,11 @@ class KilatConfig(BaseConfig):
         # Other
         self.use_cache = use_cache
         self.initializer_range = initializer_range
+        # "gpt2": every Linear/Embedding ~ N(0, initializer_range) (legacy default, keeps old checkpoints identical).
+        # "width_scaled": muP-style — Linear std 1/sqrt(fan_in), embedding N(0, 1), untied lm_head std 1/n_embd.
+        # Required for narrow models: with N(0, 0.02) embeddings at n_embd=64 the token identity is drowned in the
+        # pre-norm residual stream after layer 0, and pure-attention stacks stall on MQAR (~1/num_kv accuracy).
+        self.init_scheme = init_scheme
         self.return_dict = return_dict 
 
         # Run validation after all attributes are set
@@ -259,6 +265,14 @@ class KilatConfig(BaseConfig):
             )
         if self.z_loss_coef < 0.0:
             raise ValueError(f"z_loss_coef must be >= 0.0, got {self.z_loss_coef}.")
+
+        if self.init_scheme not in ("gpt2", "width_scaled"):
+            raise ValueError(f"init_scheme must be 'gpt2' or 'width_scaled', got {self.init_scheme!r}.")
+        if self.init_scheme == "width_scaled" and self.tie_word_embeddings:
+            raise ValueError(
+                "init_scheme='width_scaled' requires tie_word_embeddings=False: the input embedding must be O(1) "
+                "while the output head must start small, which a single shared matrix cannot satisfy."
+            )
 
         # Recall ratio and pattern validation
         if not 0 <= self.recall_ratio <= 1:
@@ -460,6 +474,8 @@ class KilatConfig(BaseConfig):
                 "use_rope": True,
                 "ffn_mode": "swiglu",
                 "max_position_embeddings": 4096,
+                "init_scheme": "width_scaled",
+                "tie_word_embeddings": False,
             },
             "kilat-macro-synergy": {
                 "vocab_size": 64,
@@ -471,6 +487,8 @@ class KilatConfig(BaseConfig):
                 "use_rope": True,
                 "ffn_mode": "swiglu",
                 "max_position_embeddings": 4096,
+                "init_scheme": "width_scaled",
+                "tie_word_embeddings": False,
             },
             "kilat-pure-attention": {
                 "vocab_size": 64,
@@ -482,6 +500,8 @@ class KilatConfig(BaseConfig):
                 "use_rope": True,
                 "ffn_mode": "swiglu",
                 "max_position_embeddings": 4096,
+                "init_scheme": "width_scaled",
+                "tie_word_embeddings": False,
             },
             "kilat-pure-decay": {
                 "vocab_size": 64,
@@ -493,6 +513,8 @@ class KilatConfig(BaseConfig):
                 "use_rope": True,
                 "ffn_mode": "swiglu",
                 "max_position_embeddings": 4096,
+                "init_scheme": "width_scaled",
+                "tie_word_embeddings": False,
             },
             "kilat-micro": {
                 "vocab_size": 64,
@@ -506,6 +528,8 @@ class KilatConfig(BaseConfig):
                 "use_rope": True,
                 "ffn_mode": "swiglu",
                 "max_position_embeddings": 4096,
+                "init_scheme": "width_scaled",
+                "tie_word_embeddings": False,
             },
             "kilat-mini": {
                 "vocab_size": 1024,
@@ -519,6 +543,8 @@ class KilatConfig(BaseConfig):
                 "use_rope": True,
                 "ffn_mode": "swiglu",
                 "max_position_embeddings": 4096,
+                "init_scheme": "width_scaled",
+                "tie_word_embeddings": False,
             },
             "custom": {
                 "vocab_size": 64,
@@ -530,6 +556,8 @@ class KilatConfig(BaseConfig):
                 "use_rope": True,
                 "ffn_mode": "swiglu",
                 "max_position_embeddings": 4096,
+                "init_scheme": "width_scaled",
+                "tie_word_embeddings": False,
             },
         }
 

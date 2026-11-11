@@ -10,23 +10,28 @@ pillar1:
   device: "cpu"
 
 pillar2:
+  # Smallest configuration that genuinely separates recall-capable from recall-incapable architectures
+  # on CPU (~1 min/model). Transformer, kilat-pure-attention and kilat-macro-synergy reach >= 0.98 here;
+  # kilat-pure-decay (fixed-size state) stays < 0.2. Threshold 0.05 was below chance and certified nothing.
   task: "mqar"
-  context_lengths: [64, 128]
+  context_lengths: [64]
   seeds: [0]
-  train_steps: 150
-  lr: 0.002
-  vocab_size: 128
-  batch_size: 16
-  pass_threshold: 0.05
+  train_steps: 1500
+  lr: 0.003
+  vocab_size: 512
+  batch_size: 64
+  pass_threshold: 0.90
   device: "cpu"
 
 pillar3:
-  seq_lens: [64, 128]
-  token_budgets: [5000]
-  eval_every_tokens: 2500
-  lr: 0.0005
-  vocab_size: 128
-  batch_size: 8
+  # Interleaved Markov data: a no-mixing model scores gap_closed ~0.0 (FAIL), kilat-macro-synergy ~0.9 (PASS).
+  seq_lens: [64]
+  token_budgets: [150000]
+  eval_every_tokens: 50000
+  lr: 0.003
+  vocab_size: 64
+  batch_size: 16
+  min_gap_closed: 0.5
   device: "cpu"
 
 pillar4:
