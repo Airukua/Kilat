@@ -90,7 +90,7 @@ def test_tokenizer_config_build_and_save():
             with Given("a TokenizerConfig pointing to a custom builder function"):
                 cfg = TokenizerConfig(
                     tokenizer_type="custom",
-                    custom_builder="tests.unit.features.configs.test_tokenizer_config:build_dummy_tok",
+                    custom_builder="tests.unit.configs.test_tokenizer_config:build_dummy_tok",
                 )
 
                 with When("building tokenizer via build()"):

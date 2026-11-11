@@ -124,7 +124,8 @@ def test_canonical_public_imports_and_clean_layout_contract() -> None:
                 assert canon_utils.print_kilat_banner is not None
 
             with And("verifying obsolete legacy folders have been completely removed"):
-                src_root = Path(__file__).resolve().parents[4] / "src" / "kilat"
+                repo_root = next(p for p in Path(__file__).resolve().parents if (p / "pyproject.toml").is_file())
+                src_root = repo_root / "src" / "kilat"
                 for obsolete_dir in ("arc", "training", "pipeline", "distiliation"):
                     assert not (src_root / obsolete_dir).exists(), f"Obsolete folder still exists: {obsolete_dir}"
                     with pytest.raises(ModuleNotFoundError):
@@ -134,7 +135,8 @@ def test_canonical_public_imports_and_clean_layout_contract() -> None:
 def test_zero_empty_stub_files_and_prepare_memmap_jsonl(tmp_path: Path) -> None:
     with Scenario("Unit: Zero 0-Byte Stub Files and JSONL Memmap Preprocessing"):
         with Given("the src/kilat source tree"):
-            src_root = Path(__file__).resolve().parents[4] / "src" / "kilat"
+            repo_root = next(p for p in Path(__file__).resolve().parents if (p / "pyproject.toml").is_file())
+            src_root = repo_root / "src" / "kilat"
             with When("scanning all Python files for 0-byte stubs"):
                 empty_files = [
                     str(p.relative_to(src_root))
