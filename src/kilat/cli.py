@@ -9,6 +9,7 @@ Subcommands:
     - `kilat prepare-data`: Convert Parquet/JSONL/TXT corpora to zero-copy `np.memmap` + `.meta.json`
     - `kilat generate`: Run incremental `HybridCache` text generation from a checkpoint
     - `kilat export-hf`: Export a Kilat checkpoint to Hugging Face / safetensors format
+    - `kilat sft`: Run Supervised Fine-Tuning (SFT / Instruction Tuning) on a Kilat model
 """
 
 from __future__ import annotations
@@ -29,7 +30,9 @@ from kilat.assurance.runner import run_verification_pipeline
 from kilat.configs.main_config import MainConfig
 from kilat.data.dataloader import build_dataloaders_from_config
 from kilat.data.preprocess import prepare_memmap_dataset
+from kilat.data.sft import SFTDataset
 from kilat.data.tokenizer import AutoTokenizer, ByteLevelDebugTokenizer
+from kilat.engine.args import TrainingArguments
 from kilat.engine.checkpoint import set_seed, write_checkpoint_manifest
 from kilat.engine.distributed import (
     cleanup_distributed,
@@ -38,6 +41,7 @@ from kilat.engine.distributed import (
     is_main_process,
     setup_distributed,
 )
+from kilat.engine.sft_trainer import KilatSFTTrainer
 from kilat.engine.trainer import KilatTrainer
 from kilat.inference.export_hf import convert_checkpoint_to_hf
 from kilat.inference.generator import TextGenerator
@@ -360,6 +364,92 @@ def _cmd_export_hf(args: argparse.Namespace) -> int:
     return 0 if results.get("success") else 1
 
 
+def _cmd_sft(args: argparse.Namespace) -> int:
+    print_kilat_banner(version=CLI_VERSION, quiet=bool(args.quiet or args.json))
+    ckpt_dir = Path(args.model)
+    if not ckpt_dir.is_dir():
+        sys.stderr.write(f"Model checkpoint directory not found: {ckpt_dir}\n")
+        return 1
+
+    data_path = Path(args.data)
+    if not data_path.is_file():
+        sys.stderr.write(f"Instruction dataset file not found: {data_path}\n")
+        return 1
+
+    device_str = "cuda" if (torch.cuda.is_available() and args.device != "cpu") else "cpu"
+    device = torch.device(device_str)
+
+    set_seed(int(args.seed))
+
+    # 1. Load model
+    model = KilatTransformer.from_pretrained(str(ckpt_dir))
+    model = model.to(device)
+
+    # 2. Load tokenizer
+    try:
+        tokenizer: Any = AutoTokenizer.from_pretrained(str(ckpt_dir), local_files_only=True)
+    except Exception:
+        tokenizer = AutoTokenizer.from_pretrained("gpt2")
+
+    if getattr(tokenizer, "pad_token", None) is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    # 3. Setup SFT Dataset
+    dataset = SFTDataset(data_path)
+
+    # 4. Training Arguments
+    precision = args.precision
+    if precision == "auto":
+        precision = (
+            "bf16"
+            if (torch.cuda.is_available() and torch.cuda.is_bf16_supported())
+            else ("fp16" if torch.cuda.is_available() else "fp32")
+        )
+
+    train_args = TrainingArguments(
+        output_dir=args.output_dir,
+        training_mode="steps" if args.max_steps > 0 else "epochs",
+        max_steps=args.max_steps if args.max_steps > 0 else 1000,
+        num_train_epochs=args.epochs,
+        per_device_train_batch_size=args.batch_size,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
+        learning_rate=args.lr,
+        weight_decay=args.weight_decay,
+        warmup_steps=args.warmup_steps,
+        scheduler_type="cosine",
+        precision=precision,
+        logging_steps=args.logging_steps,
+        save_steps=args.save_steps,
+        save_checkpoints=True,
+        save_total_limit=args.save_total_limit,
+        seed=args.seed,
+    )
+
+    trainer = KilatSFTTrainer(
+        model=model,
+        args=train_args,
+        train_dataset=dataset,
+        tokenizer=tokenizer,
+        max_seq_length=args.max_seq_length,
+    )
+
+    state = trainer.train()
+    if not args.quiet and not args.json:
+        print(f"SFT finished at step {state.global_step} (saved in '{args.output_dir}').")
+    elif args.json:
+        print(
+            json.dumps(
+                {
+                    "status": "success",
+                    "global_step": state.global_step,
+                    "output_dir": str(args.output_dir),
+                },
+                indent=2,
+            )
+        )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Construct the top-level ``kilat`` argument parser and subcommands."""
     parser = argparse.ArgumentParser(
@@ -617,6 +707,43 @@ def build_parser() -> argparse.ArgumentParser:
     p_export.add_argument("-q", "--quiet", action="store_true", help="Suppress banner and logs")
     p_export.add_argument("--json", action="store_true", help="Emit JSON summary to stdout")
     p_export.set_defaults(handler=_cmd_export_hf)
+
+    # 7. kilat sft
+    p_sft = subparsers.add_parser(
+        "sft",
+        help="Run Supervised Fine-Tuning (SFT / Instruction Tuning) on a Kilat model",
+    )
+    p_sft.add_argument("-m", "--model", type=str, required=True, help="Base model checkpoint directory")
+    p_sft.add_argument("-d", "--data", type=str, required=True, help="Instruction dataset file (.jsonl / .json)")
+    p_sft.add_argument(
+        "-o", "--output-dir", type=str, default="./checkpoints_sft", help="Output directory for checkpoints"
+    )
+    p_sft.add_argument("--lr", type=float, default=3e-5, help="Learning rate (default: 3e-5)")
+    p_sft.add_argument("--epochs", type=int, default=3, help="Number of training epochs (default: 3)")
+    p_sft.add_argument("--max-steps", type=int, default=0, help="Max steps (0 = epoch mode)")
+    p_sft.add_argument("--batch-size", type=int, default=4, help="Per-device batch size (default: 4)")
+    p_sft.add_argument(
+        "--gradient-accumulation-steps",
+        type=int,
+        default=4,
+        help="Gradient accumulation steps (default: 4)",
+    )
+    p_sft.add_argument("--max-seq-length", type=int, default=512, help="Max sequence length (default: 512)")
+    p_sft.add_argument("--warmup-steps", type=int, default=20, help="Warmup steps (default: 20)")
+    p_sft.add_argument("--weight-decay", type=float, default=0.01, help="Weight decay (default: 0.01)")
+    p_sft.add_argument(
+        "--precision", type=str, default="auto", choices=["auto", "bf16", "fp16", "fp32"]
+    )
+    p_sft.add_argument("--logging-steps", type=int, default=10, help="Logging steps (default: 10)")
+    p_sft.add_argument("--save-steps", type=int, default=100, help="Save steps (default: 100)")
+    p_sft.add_argument(
+        "--save-total-limit", type=int, default=2, help="Max checkpoints to keep (default: 2)"
+    )
+    p_sft.add_argument("--seed", type=int, default=42, help="RNG seed")
+    p_sft.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "cuda"])
+    p_sft.add_argument("-q", "--quiet", action="store_true", help="Suppress banner and logs")
+    p_sft.add_argument("--json", action="store_true", help="Emit JSON output")
+    p_sft.set_defaults(handler=_cmd_sft)
 
     return parser
 
