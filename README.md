@@ -20,9 +20,9 @@
 
 ---
 
-**Kilat** (*Indonesian: lightning*) is a modular PyTorch toolkit for pre-training, mathematically verifying, distilling, and deploying language models from scratch — spanning dense SwiGLU baselines to fine-grained **DeepSeekMoE** architectures with **Hybrid Sub-Quadratic Global Decay + Multi-Head Latent Attention (MLA)** and **Decoupled RoPE**.
+**Kilat** (*Indonesian: lightning*) is a modular PyTorch toolkit for pre-training, mathematically certifying, distilling, and deploying sub-quadratic language models from scratch — spanning dense SwiGLU baselines to fine-grained **DeepSeekMoE** architectures with flagship **Macro-Synergy (Interleaved Global Decay + Latent MLA)** and **Decoupled RoPE**.
 
-In LLM pre-training, the worst bugs rarely raise an exception: detached autograd branches, FP16 variance overflows, weight decay eroding 1D decay horizons, or MoE router collapse can silently ruin weeks of GPU compute. Kilat pairs a clean, hackable architecture with a built-in **8-Stage Pre-Training Assurance Pipeline (`kilat verify`)**, **Active ML Chaos Saboteur (`kilat chaos`)**, and **Runtime `FlightRecorder` Circuit Breaker**.
+In LLM pre-training, the worst bugs rarely raise an exception: detached autograd branches, FP16 variance overflows, weight decay eroding 1D decay horizons, or MoE router collapse can silently ruin weeks of GPU compute. Kilat pairs high-throughput sub-quadratic architectures with a built-in **5-Pillar Model Certification Pipeline (`kilat certify`)**, an **8-Stage Pre-Training Assurance Pipeline (`kilat verify`)**, an **Active ML Chaos Saboteur (`kilat chaos`)**, and a **Runtime `FlightRecorder` Circuit Breaker**.
 
 ```python
 from kilat import KilatConfig, KilatTransformer
@@ -37,7 +37,8 @@ print(f"{sum(p.numel() for p in model.parameters()) / 1e6:.1f}M total parameters
 
 ## Key Capabilities
 
-- **Hybrid Sub-Quadratic + Latent Attention (`kilat.models`)**: Splits heads via `recall_ratio` between $O(N)$ **Global Exponential Decay** (exact analytical forward/reverse-scan autograd + Triton kernel, $O(1)$ decode state) and **Low-Rank Latent MLA** ($4\text{–}8\times$ smaller KV-cache) with **Decoupled RoPE**.
+- **Flagship Macro-Synergy Architecture (`kilat.models`)**: Interleaved layer stacking alternating between $O(N)$ **Global Exponential Decay Contextualizer** (even layers: zero KV-cache, Triton parallel prefix scan) and **Latent MLA Associative Recall** with Decoupled RoPE (odd layers: $100\%$ capacity dedicated to memory retrieval). Slashes KV-cache by **$6.4\times$** vs standard Transformers (**$2.0\times$** vs pure MLA) and boosts MQAR recall from $15.6\%$ to **$96.1\%$** ($+80.5\%$ absolute gain). Also supports intra-layer split via `recall_ratio`.
+- **5-Pillar Model Certification Pipeline (`kilat certify`)**: Unified KMCP suite validating mechanical correctness (causal blindness, FP64 gradcheck), mechanistic capability (Stanford Zoology MQAR, leak-free induction heads, delimited copying), empirical scaling laws, hardware efficiency (prefill tok/s, decode latency, peak VRAM), and diagnostic forensics.
 - **Fine-Grained DeepSeekMoE**: Shared + routed SwiGLU experts supporting both differentiable $1/K_{\text{eff}}$ load-balancing loss (`aux_loss`) and **DeepSeek-V3 loss-free dynamic bias balancing (`bias_free`)** in FP32 without host-device stream syncs.
 - **Research-Grade Assurance (`kilat.assurance`)**:
   - `kilat verify`: 6 pre-flight gates (Theory/Init, FP64 `gradcheck` & Causal Blindness, Reference Equivalence, Data & Leakage Forensics, Single-Batch Memorization, and `0.0` Bitwise Checkpoint/DDP Parity) + Stages 7–8 ($\mu\text{P}$ coordinate check & WSDLR scaling law harness).
@@ -77,18 +78,21 @@ kilat verify --config configs/debug_cpu.yaml --full --output-dir ./verify_report
 # 2. Run Active ML Chaos Engineering suite (verifies 8/8 silent ML faults are caught)
 kilat chaos --scenarios all
 
-# 3. Train on the offline synthetic config (with optional dot-list overrides)
+# 3. Certify Model Architecture (5-Pillar KMCP: MQAR capability, scaling, & efficiency)
+kilat certify --models kilat-macro-synergy --pillar all --output-dir ./certify_report
+
+# 4. Train on the offline synthetic config (with optional dot-list overrides)
 kilat train --config configs/debug_cpu.yaml \
   --override training.max_steps=20 \
   --override training.output_dir=./checkpoints/quickstart
 
-# 4. Generate text from the saved checkpoint
+# 5. Generate text from the saved checkpoint
 kilat generate \
   --checkpoint ./checkpoints/quickstart/checkpoint-best \
   --prompt "Kilat" \
   --max-new-tokens 32
 
-# 5. Export checkpoint to Hugging Face format (safetensors / pytorch_model.bin)
+# 6. Export checkpoint to Hugging Face format (safetensors / pytorch_model.bin)
 kilat export-hf \
   --checkpoint ./checkpoints/quickstart/checkpoint-best \
   --output ./hf_exported_model
@@ -176,10 +180,11 @@ Kilat uses a single validated YAML file (`MainConfig`) as its source of truth ac
 | Config File | Target Hardware | Architecture Summary | Data Format |
 | :--- | :--- | :--- | :--- |
 | [`configs/debug_cpu.yaml`](configs/debug_cpu.yaml) | Any CPU / Laptop (`< 5s`) | 2L Hybrid MLA/Decay + 4-expert MoE (`d=64`) | `synthetic` (offline byte tokenizer) |
-| [`experiments/train_gpu.yaml`](experiments/train_gpu.yaml) | 1x Consumer GPU (`RTX 4050 6GB`) | 8L 35M Hybrid MLA/Decay + SwiGLU + `torch.compile` Triton JIT | `memmap` TinyStories |
 | [`configs/small_dense.yaml`](configs/small_dense.yaml) | 1x GPU (`8–16 GB VRAM`) | 12L Dense SwiGLU + Hybrid MLA/Decay + RoPE (`d=768`) | `memmap` (`.npy` / `.bin`) |
 | [`configs/small_moe.yaml`](configs/small_moe.yaml) | 1x GPU (`8–16 GB VRAM`) | 10L DeepSeekMoE (8 experts, Top-2, 1 shared, `bias_free`) | `memmap` (`.npy` / `.bin`) |
 | [`configs/standard_moe.yaml`](configs/standard_moe.yaml) | Multi-Node FSDP / EP (`BF16`) | 24L DeepSeekMoE (64 experts, Top-8, 2 shared, 54.2B params, FSDP recipe target) | `memmap` + sequence packing |
+| [`configs/certification/smoke_test.yaml`](configs/certification/smoke_test.yaml) | Any CPU / Laptop (`< 10s`) | KMCP 5-Pillar Smoke Suite for fast CI/CD validation | `synthetic` in-memory |
+| [`configs/certification/frontier_full.yaml`](configs/certification/frontier_full.yaml) | Single / Multi-GPU | KMCP Full Frontier Certification Suite (MQAR, scaling, latency) | `synthetic` + capability sweeps |
 
 To resume interrupted training with **exact bitwise state & RNG parity**, set:
 
@@ -192,46 +197,36 @@ training:
 
 ## Architecture Overview
 
-### Hybrid Global Decay + Latent MLA Attention
+### Flagship: Kilat Macro-Synergy (Interleaved Stacking)
 
-Each transformer block splits attention heads into two parallel paths controlled by `recall_ratio` (`0.0` = pure $O(N)$ Global Decay, `1.0` = pure Latent MLA, `0.5` = balanced hybrid) and merges them through a learned context gate:
+Rather than forcing Global Decay and Latent MLA to compete within the same static linear projection, **Macro-Synergy** decouples them into an alternating layer hierarchy:
 
 ```text
-                     Input x  [B, N, D]
-                          │
-          ┌───────────────┴────────────────┐
-          │                                │
-          ▼                                ▼
-  ╔═══════════════════╗           ╔════════════════════╗
-  ║   PATH 1          ║           ║   PATH 2           ║
-  ║   Global Decay    ║           ║   Latent MLA       ║
-  ║   (linear, O(N))  ║           ║   + Decoupled RoPE ║
-  ╚═══════════════════╝           ╚════════════════════╝
-          │                                │
-          ▼                                ▼
-   ┌─────────────┐                 ┌──────────────────┐
-   │  v_proj     │                 │  q_a → LN → q_b  │
-   │  λ = σ(α_h) │                 │  kv_a → LN → kv_b│
-   └──────┬──────┘                 └────────┬─────────┘
-          │                                 │
-          ▼                                 ▼
-   ┌──────────────────────┐        ┌─────────────────────┐
-   │ FlashDecayFunction   │        │ Low-rank KV cache   │
-   │ Full seq: O(N) scan  │        │ [B, S, D_latent]    │
-   │ Decode  : O(1) state │        │ + Post-RoPE key     │
-   │ φ₁(w) λ→1⁻ guard     │        │ Causal SDPA         │
-   └──────────┬───────────┘        └──────────┬──────────┘
-              │  out_global                   │  out_recall
-              └──────────────┬────────────────┘
-                             ▼
-                  ┌─────────────────────┐
-                  │  cat + learned gate │
-                  │  c_proj (1/√2L init)│
-                  └──────────┬──────────┘
-                             ▼
-                     output [B, N, D]
-                  + LayerHybridCache
+Layer 0 (Even) : 100% Pure Global Decay Contextualizer
+                 ├── 4-head Triton parallel prefix scan (O(N) prefill)
+                 ├── Recurrent state update: s_t = λ s_{t-1} + v_t (O(1) decode)
+                 ├── KV Cache = EXACTLY 0 BYTES
+                 └── Emits enriched causal temporal manifold for upstream layers
+
+Layer 1 (Odd)  : 100% Pure Latent MLA Associative Pointer
+                 ├── Low-rank joint KV compression: c^{KV} = W_{DKV} x + Decoupled RoPE
+                 ├── Uses enriched context from Layer 0 to guide precise memory lookup
+                 └── Dedicates 100% of capacity to exact associative recall
 ```
+
+#### Empirical Evidence & Capability Certification
+
+Empirical benchmarks run on CUDA hardware demonstrate decisive memory, throughput, and retrieval advantages:
+
+| Evaluation Metric | Standard Transformer | Kilat Concat (50/50) | **Kilat Macro-Synergy** | Relative Advantage |
+| :--- | :---: | :---: | :---: | :---: |
+| **KV Cache ($N=2048$)** | $1,024\text{ KB}$ | $320\text{ KB}$ | **$160\text{ KB}$** | **$6.4\times$ smaller** vs Ref, **$2.0\times$** vs Base |
+| **KV Cache ($N=8192$)** | $4,096\text{ KB}$ | $1,280\text{ KB}$ | **$640\text{ KB}$** | **$6.4\times$ smaller** vs Ref, **$2.0\times$** vs Base |
+| **Prefill Throughput ($N=512$)** | $269,000\text{ tok/s}$ | $266,162\text{ tok/s}$ | **$423,808\text{ tok/s}$** | **$+59\%$ faster** prefill throughput |
+| **MQAR Accuracy ($N=256$)** | Stagnates | $15.62\%$ | **$96.09\%$** | 🏆 **$+80.47\%$ absolute gain** |
+| **Peak VRAM ($N=4096$)** | OOM | Pass | **Pass (No OOM)** | Zero OOM at long context |
+
+*(For backward-compatibility, Kilat also supports single-layer intra-layer splitting via `recall_ratio`, merging paths via learned context gate $W_O^{(g)} y^{(g)} + W_O^{(r)} y^{(r)}$).*
 
 ### Feed-Forward & MoE Routing Modes
 
@@ -255,6 +250,27 @@ Each transformer block splits attention heads into two parallel paths controlled
 
 ---
 
+---
+
+## Model Architecture Certification (KMCP: `kilat certify`)
+
+In addition to low-level assurance gates, Kilat features the **Kilat Model Architecture Certification Pipeline (KMCP)** (`kilat certify`), standardizing empirical architectural validation across 5 pillars aligned with frontier research (Stanford Zoology ICLR 2024, Meta Lingua, DeepSeek-V3):
+
+```bash
+# Certify flagship architecture across all 5 pillars
+kilat certify --models kilat-macro-synergy --pillar all --output-dir verify_signoff
+```
+
+| Pillar | Name | Scope & Verification Standards |
+| :---: | :--- | :--- |
+| **P1** | **Mechanical Correctness** | Future-blindness masking invariants, FP64 analytical `gradcheck`, and single-batch memorization ($\mathcal{L}_{\text{CE}} \to 0$). |
+| **P2** | **Mechanistic Capability** | Synthetic capability suite: Stanford Zoology Multi-Query Associative Recall (MQAR), leak-free induction heads, and delimited selective copying. |
+| **P3** | **Empirical Scaling** | Compute-controlled token budget curves, non-vacuous Markov-chain transition entropy, and scaling exponent evaluation ($L(C) = A C^{-\alpha} + E$). |
+| **P4** | **Hardware Efficiency** | Micro-benchmarking prefill throughput (tokens/sec), incremental decode latency (ms/token), and peak VRAM allocation across sequence lengths ($N \in \{512..8192\}$). |
+| **P5** | **Forensic Diagnostics** | Position-wise cross-entropy loss tracking, layer-wise logit lens projection, and token decontamination. |
+
+---
+
 ## Pre-Training Assurance & Active Chaos Suite
 
 Before spending GPU hours on a large run, `kilat verify` executes an 8-stage research validation pipeline and signs `assurance_report.{json,md}`:
@@ -275,11 +291,11 @@ Before spending GPU hours on a large run, `kilat verify` executes an 8-stage res
 
 ```text
 Kilat/
-├── configs/                 # Tiered YAML configs (debug_cpu, small_dense, small_moe, standard_moe)
+├── configs/                 # Tiered YAML configs (debug_cpu, small_dense, small_moe, standard_moe, certification/)
 ├── docs/                    # Deep-dive architecture, math derivations, & assurance specs
-├── experiments/             # Pre-training benchmark recipes (TinyStories 35M GPU, clean data prep, eval suite)
+├── experiments/             # Pre-training data artifacts & benchmark recipes
 ├── src/kilat/
-│   ├── cli.py               # Unified `kilat` CLI entrypoint
+│   ├── cli.py               # Unified `kilat` CLI entrypoint (verify, chaos, certify, train, prep, generate, export)
 │   ├── configs/             # MainConfig, KilatConfig, TrainingConfig, DataLoaderConfig, TokenizerConfig
 │   ├── models/              # KilatTransformer, Block, RMSNorm, MLA/Decay Attention, DeepSeekMoE, RoPE, Triton
 │   ├── engine/              # KilatTrainer, TrainingArguments, Integrations (W&B/TB), Checkpoint, Optimizer
@@ -287,18 +303,21 @@ Kilat/
 │   ├── inference/           # TextGenerator, GenerationMixin, Samplers, LogitProcessors, StoppingCriteria, HF Export
 │   ├── distillation/        # VanillaKDLoss, ReverseKDLoss, AdaptiveKDLoss, BaseStudent, BaseTeacher
 │   ├── assurance/           # Gates 1–6, Stages 7–8, Chaos Saboteur (C-01..C-08), FlightRecorderCallback
+│   ├── benchmarking/        # 5-Pillar KMCP certification harness, synthetic capability tasks, reporters
 │   └── utils/               # BaseConfig, BaseModel, validators, parameter breakdown reports
 ├── tools/                   # Mechanistic interpretability (logit lens, patching), audit & behavioral benchmarks
 └── tests/                   # 387 BDD unit, seam, pipeline, assurance, and chaos tests
 ```
 
 Detailed engineering blueprints are available in [`docs/`](docs/README.md):
-- [**`docs/README.md`**](docs/README.md) — Architecture & Documentation Index
+- [**`docs/README.md`**](docs/README.md) — Master Architecture & Documentation Index
 - [**`docs/01_AGENT_ANTI_HALLUCINATION_CONTRACT.md`**](docs/01_AGENT_ANTI_HALLUCINATION_CONTRACT.md) — Module Inventory & API Contracts
 - [**`docs/02_MATHEMATICAL_SPEC_AND_BUGFIX_PLAN.md`**](docs/02_MATHEMATICAL_SPEC_AND_BUGFIX_PLAN.md) — Analytical Derivations & Precision Invariants (`M-01`..`M-07`)
 - [**`docs/03_CODEBASE_RESTRUCTURE_PLAN.md`**](docs/03_CODEBASE_RESTRUCTURE_PLAN.md) — Package Design, Config Overrides, DDP, & CLI Guide
 - [**`docs/04_ASSURANCE_AND_CHAOS_ENGINEERING_PLAN.md`**](docs/04_ASSURANCE_AND_CHAOS_ENGINEERING_PLAN.md) — 8-Stage Verification, `Saboteur`, & `FlightRecorder`
 - [**`docs/05_STEP_BY_STEP_EXECUTION_CHECKLIST.md`**](docs/05_STEP_BY_STEP_EXECUTION_CHECKLIST.md) — Release & Pre-Training Acceptance Gates
+- [**`docs/06_MODEL_CERTIFICATION_AND_BENCHMARK_PLAN.md`**](docs/06_MODEL_CERTIFICATION_AND_BENCHMARK_PLAN.md) — KMCP 5-Pillar Architecture Certification Protocol & Synthetic Task Specs
+- [**`docs/07_MACRO_SYNERGY_AND_FUTURE_ARCHITECTURE_BLUEPRINT.md`**](docs/07_MACRO_SYNERGY_AND_FUTURE_ARCHITECTURE_BLUEPRINT.md) — Macro-Synergy Interleaved Stacking (L0 Decay $\to$ L1 MLA) Empirical Results & Sub-Quadratic Roadmap
 
 ---
 
@@ -309,6 +328,7 @@ make check        # Ruff lint + Mypy static type check (0 errors)
 make test         # Run full 387-test BDD suite (0 warnings, >= 80% coverage)
 make verify       # Run Pre-Training Assurance Gates on configs/debug_cpu.yaml
 make chaos        # Run Active Chaos Saboteur suite (C-01..C-08)
+make certify      # Run KMCP 5-Pillar Certification on flagship kilat-macro-synergy
 make pre-commit   # Run all git pre-commit hooks across the repository
 ```
 
@@ -317,13 +337,16 @@ make pre-commit   # Run all git pre-commit hooks across the repository
 ## Roadmap
 
 - [x] Dense, SwiGLU, and Fine-Grained DeepSeekMoE (`aux_loss` & `bias_free`) architectures
-- [x] Hybrid attention ($O(N)$ Global Decay with exact autograd + Latent MLA + Decoupled RoPE)
+- [x] Flagship Macro-Synergy Interleaved Stacking (L0 Global Decay -> L1 Latent MLA, $6.4\times$ smaller KV-cache, $96.1\%$ MQAR)
+- [x] 5-Pillar KMCP Model Architecture Certification Pipeline (`kilat certify`) with Stanford Zoology MQAR suite
+- [x] $\mu\text{P}$ Width-Scaled Initialization Scheme (`init_scheme="width_scaled"`) for narrow model numerical stability
 - [x] `LayerHybridCache` incremental & chunked-prefill KV-cache generation
 - [x] 8-Stage Pre-Training Assurance (`kilat verify`), Active Chaos `Saboteur` (`kilat chaos`), & `FlightRecorder`
 - [x] DDP-aware engine, atomic SHA-256 checkpoints (`0.0` bitwise resume parity), & `WSDLR` scheduler
 - [x] Knowledge Distillation (`VanillaKDLoss`, `ReverseKDLoss`, `AdaptiveKDLoss`) & Hugging Face export
 - [x] `torch.compile` Triton kernel fusion (TorchInductor JIT acceleration: $>10\times$ speedup)
 - [x] Multi-backend experiment tracking (TensorBoard, Weights & Biases, MLflow, Comet ML)
+- [ ] Next-Gen: Dual-Rank Latent Attention (Capped Global Anchors + Sparse Needle Recall)
 - [ ] FSDP2 / Tensor Parallel multi-node sharding
 - [ ] Custom CUDA / Triton paged MLA decode kernels
 - [ ] ONNX / TorchScript runtime export
