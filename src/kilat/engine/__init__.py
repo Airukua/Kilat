@@ -81,9 +81,11 @@ from kilat.engine.scheduler import (
     register_scheduler,
 )
 from kilat.engine.trainer import KilatTrainer
+from kilat.engine.sft_trainer import KilatSFTTrainer
 
 __all__ = [
     "KilatTrainer",
+    "KilatSFTTrainer",
     "TrainingArguments",
     "DistributedContext",
     "is_distributed_initialized",

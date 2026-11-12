@@ -1,4 +1,5 @@
 from kilat.data.collator import KilatDataCollator
+from kilat.data.sft import SFTDataCollator, SFTDataset, format_instruction_pair
 from kilat.data.dataloader import (
     build_dataloader,
     build_dataloaders_from_config,
@@ -37,6 +38,9 @@ __all__ = [
     "SyntheticTokenDataset",
     "KilatDataset",
     "KilatDataCollator",
+    "SFTDataCollator",
+    "SFTDataset",
+    "format_instruction_pair",
     "parquet_to_memmap",
     "parquet_to_memmap_sharded",
     "prepare_memmap_dataset",

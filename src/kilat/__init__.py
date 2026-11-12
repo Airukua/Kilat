@@ -4,6 +4,7 @@ from kilat.models.transformer import KilatTransformer
 from kilat.configs.main_config import MainConfig
 from kilat.configs.model_config import KilatConfig
 from kilat.engine.trainer import KilatTrainer
+from kilat.engine.sft_trainer import KilatSFTTrainer
 from kilat.engine.args import TrainingArguments
 from kilat.engine.distributed import DistributedContext
 from kilat.data.dataset import PretrainingDataset
@@ -13,6 +14,7 @@ from kilat.data.dataloader import (
     build_train_dataloader,
 )
 from kilat.data.collator import KilatDataCollator
+from kilat.data.sft import SFTDataCollator, SFTDataset
 from kilat.inference.generation_config import GenerationConfig
 from kilat.inference.generator import TextGenerator
 
@@ -22,6 +24,7 @@ __all__ = [
     "MainConfig",
     "KilatConfig",
     "KilatTrainer",
+    "KilatSFTTrainer",
     "TrainingArguments",
     "DistributedContext",
     "PretrainingDataset",
@@ -29,6 +32,8 @@ __all__ = [
     "build_eval_dataloader",
     "build_dataloaders_from_config",
     "KilatDataCollator",
+    "SFTDataCollator",
+    "SFTDataset",
     "GenerationConfig",
     "TextGenerator",
 ]
