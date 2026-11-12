@@ -5,3 +5,4 @@ pre-commit>=3.5.0
 types-PyYAML>=6.0
 types-tqdm>=4.66
 pip-audit>=2.7
+setuptools>=84.1.0
