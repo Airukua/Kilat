@@ -68,6 +68,13 @@ class KilatSFTTrainer(KilatTrainer):
         if tokenizer is None:
             raise ValueError("A valid tokenizer is required for KilatSFTTrainer.")
 
+        # Auto-place model on hardware accelerator if available and currently on CPU
+        if torch.cuda.is_available():
+            current_device = next(model.parameters()).device if list(model.parameters()) else torch.device("cpu")
+            if current_device.type != "cuda":
+                target_device = torch.device(f"cuda:{torch.cuda.current_device()}")
+                model = model.to(target_device)
+
         # 1. Resolve Data Collator
         if data_collator is None:
             data_collator = SFTDataCollator(
