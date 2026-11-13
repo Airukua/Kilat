@@ -15,6 +15,8 @@ from kilat.assurance.flight_recorder import FlightRecorderCallback
 from kilat.engine.callbacks import TrainerControl, TrainerState
 from tests.shared.bdd import And, Given, Scenario, Then, When
 
+_METRIC_TRAIN_CE_LOSS = "train/ce_loss"
+
 
 def test_flight_recorder_eval_log_isolation_regression(tmp_path: Path) -> None:
     with Scenario("Regression: FlightRecorderCallback isolates evaluation metrics from training telemetry"):
@@ -33,7 +35,7 @@ def test_flight_recorder_eval_log_isolation_regression(tmp_path: Path) -> None:
             recorder.on_log(None, state, control, logs=eval_payload)
 
         with Then("the evaluation logs dictionary is not polluted with fake train metrics"):
-            assert "train/ce_loss" not in eval_payload
+            assert _METRIC_TRAIN_CE_LOSS not in eval_payload
             assert "train/ppl" not in eval_payload
             assert "train/aux_loss" not in eval_payload
             assert eval_payload["eval_loss"] == 1.60
@@ -45,7 +47,7 @@ def test_flight_recorder_eval_log_isolation_regression(tmp_path: Path) -> None:
             assert entry["eval/loss"] == 1.60
             assert entry["eval/ppl"] == 4.95
             assert entry["eval/aux_loss"] == 0.02
-            assert "train/ce_loss" not in entry
+            assert _METRIC_TRAIN_CE_LOSS not in entry
             assert "train/ppl" not in entry
 
         with And("accumulated training tokens are preserved for the subsequent training step"):
@@ -58,7 +60,7 @@ def test_flight_recorder_eval_log_isolation_regression(tmp_path: Path) -> None:
             assert len(lines) == 1
             assert lines[0]["eval/loss"] == 1.60
             assert lines[0]["eval/ppl"] == 4.95
-            assert "train/ce_loss" not in lines[0]
+            assert _METRIC_TRAIN_CE_LOSS not in lines[0]
 
         with When("subsequent training log is dispatched with training loss"):
             train_payload = {
@@ -73,5 +75,5 @@ def test_flight_recorder_eval_log_isolation_regression(tmp_path: Path) -> None:
             assert len(recorder.telemetry_history) == 2
             train_entry = recorder.telemetry_history[1]
             assert train_entry["step"] == 1001.0
-            assert train_entry["train/ce_loss"] == 2.15
+            assert train_entry[_METRIC_TRAIN_CE_LOSS] == 2.15
             assert recorder._tokens_since_log == 0

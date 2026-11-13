@@ -52,6 +52,9 @@ def _sanitize_key(key: str) -> str:
     return key.strip("_")
 
 
+_METRIC_PERPLEXITY = "perplexity"
+
+
 def _is_package_available(package_name: str) -> bool:
     """
     Return True if ``package_name`` can be imported.
@@ -824,12 +827,12 @@ class ConsoleCallback(IntegrationCallback):
                 value = logs[key]
                 parts.append(f"{key}={value:.4g}" if isinstance(value, float) else f"{key}={value}")
                 seen.add(key)
-        if "ppl" in seen and "perplexity" in logs:
-            seen.add("perplexity")
-        if "ppl" not in seen and "perplexity" in logs and isinstance(logs["perplexity"], (int, float)):
-            value = logs["perplexity"]
+        if "ppl" in seen and _METRIC_PERPLEXITY in logs:
+            seen.add(_METRIC_PERPLEXITY)
+        if "ppl" not in seen and _METRIC_PERPLEXITY in logs and isinstance(logs[_METRIC_PERPLEXITY], (int, float)):
+            value = logs[_METRIC_PERPLEXITY]
             parts.append(f"ppl={value:.4g}" if isinstance(value, float) else f"ppl={value}")
-            seen.add("perplexity")
+            seen.add(_METRIC_PERPLEXITY)
         for key, value in logs.items():
             if key in seen:
                 continue
@@ -864,12 +867,12 @@ class ConsoleCallback(IntegrationCallback):
                 value = metrics[key]
                 parts.append(f"{key}={value:.4g}" if isinstance(value, float) else f"{key}={value}")
                 seen.add(key)
-        if "ppl" in seen and "perplexity" in metrics:
-            seen.add("perplexity")
-        if "ppl" not in seen and "perplexity" in metrics and isinstance(metrics["perplexity"], (int, float)):
-            value = metrics["perplexity"]
+        if "ppl" in seen and _METRIC_PERPLEXITY in metrics:
+            seen.add(_METRIC_PERPLEXITY)
+        if "ppl" not in seen and _METRIC_PERPLEXITY in metrics and isinstance(metrics[_METRIC_PERPLEXITY], (int, float)):
+            value = metrics[_METRIC_PERPLEXITY]
             parts.append(f"ppl={value:.4g}" if isinstance(value, float) else f"ppl={value}")
-            seen.add("perplexity")
+            seen.add(_METRIC_PERPLEXITY)
         for key, value in metrics.items():
             if key in seen:
                 continue

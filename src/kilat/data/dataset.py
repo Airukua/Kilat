@@ -43,6 +43,11 @@ def _discover_parquet_files(path: str) -> List[str]:
     return files
 
 
+def _check_index_bounds(idx: int, length: int) -> None:
+    if idx < 0 or idx >= length:
+        raise IndexError(f"Index {idx} out of range [0, {length - 1}].")
+
+
 def _discover_memmap_files(path: str) -> List[str]:
     """
     Return a sorted list of all .npy / .bin files under ``path`` or from a pattern.
@@ -442,8 +447,7 @@ class PretrainingDataset(Dataset):
         return self._length
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
-        if idx < 0 or idx >= self._length:
-            raise IndexError(f"Index {idx} out of range [0, {self._length - 1}].")
+        _check_index_bounds(idx, self._length)
 
         if self._backend == "multifile_memmap":
             start = idx * self.memmap_stride
@@ -903,8 +907,7 @@ class PackedDataset(Dataset):
         - labels    : List[int] where pad positions are -100 (ignored by loss)
         - block_seqlens : List[int] of individual sequence lengths inside the block
         """
-        if idx < 0 or idx >= len(self._blocks):
-            raise IndexError(f"Index {idx} out of range [0, {len(self._blocks) - 1}].")
+        _check_index_bounds(idx, len(self._blocks))
 
         block = self._blocks[idx]
         labels = [
@@ -1063,8 +1066,7 @@ class ConcatDataset(Dataset):
         return self._length
 
     def __getitem__(self, idx: int) -> Any:
-        if idx < 0 or idx >= self._length:
-            raise IndexError(f"Index {idx} out of range [0, {self._length - 1}].")
+        _check_index_bounds(idx, self._length)
 
         if self._weighted:
             ds_idx, local_idx = self._index_map[idx]
@@ -1176,6 +1178,5 @@ class SyntheticTokenDataset(Dataset):
         return self.num_samples
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        if idx < 0 or idx >= self.num_samples:
-            raise IndexError(f"Index {idx} out of range [0, {self.num_samples - 1}].")
+        _check_index_bounds(idx, self.num_samples)
         return {self.key_name: self._data[idx]}

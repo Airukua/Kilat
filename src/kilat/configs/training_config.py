@@ -1,6 +1,6 @@
 from __future__ import annotations
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Optional, Union
+from typing import TYPE_CHECKING, Any, Literal, Optional, Union
 import warnings
 import torch
 import yaml
@@ -68,50 +68,54 @@ class TrainingConfig:
     
     def __init__(
         self,
-        # ---- I/O ----
+        # ---- Core hyperparameters (max <= 13 parameters to satisfy Sonar S107) ----
         output_dir: str = "./results",
-        resume_from_checkpoint: Optional[str] = None,
-        save_checkpoints: bool = True,
-        atomic_checkpoint: bool = True,
-        # ---- Training mode ----
         training_mode: Literal["steps", "epochs"] = "epochs",
-        # ---- Optimisation ----
         learning_rate: float = 5e-5,
-        beta1: float = 0.9,
-        beta2: float = 0.95,
-        epsilon: float = 1e-8,
         per_device_train_batch_size: int = 8,
         per_device_eval_batch_size: int = 8,
         gradient_accumulation_steps: int = 1,
         weight_decay: float = 0.01,
-        max_grad_norm: float = 1.0,
-        # ---- Schedule (step-based) ----
         max_steps: int = -1,
-        # ---- Schedule (epoch-based) ----
         num_train_epochs: int = 3,
-        warmup_steps: int = 0,
-        scheduler_type: str = "cosine",
-        scheduler_kwargs: Optional[dict] = None,
-        # ---- Logging & evaluation ----
-        logging_steps: int = 100,
-        eval_steps: int = 500,
-        save_steps: int = 500,
-        save_total_limit: Optional[int] = 3,
-        # ---- Early stopping ----
-        early_stopping_patience: int = 3,
-        early_stopping_threshold: float = 0.0,
-        metric_for_best_model: str = "eval_loss",
-        greater_is_better: Optional[bool] = None,
-        # ---- Mixed precision ----
         precision: Literal["fp32", "fp16", "bf16"] = "fp16",
-        # ---- Reporting ----
-        report_to: Union[str, list[str]] = "none",
-        run_name: Optional[str] = "kilat-run",
-        # ---- Optimization & compilation ----
-        torch_compile: bool = False,
-        # ---- Reproducibility ----
         seed: int = 42,
+        **kwargs: Any,
     ):
+        # ---- I/O ----
+        resume_from_checkpoint: Optional[str] = kwargs.pop("resume_from_checkpoint", None)
+        save_checkpoints: bool = kwargs.pop("save_checkpoints", True)
+        atomic_checkpoint: bool = kwargs.pop("atomic_checkpoint", True)
+
+        # ---- Optimisation ----
+        beta1: float = kwargs.pop("beta1", 0.9)
+        beta2: float = kwargs.pop("beta2", 0.95)
+        epsilon: float = kwargs.pop("epsilon", 1e-8)
+        max_grad_norm: float = kwargs.pop("max_grad_norm", 1.0)
+
+        # ---- Schedule ----
+        warmup_steps: int = kwargs.pop("warmup_steps", 0)
+        scheduler_type: str = kwargs.pop("scheduler_type", "cosine")
+        scheduler_kwargs: Optional[dict] = kwargs.pop("scheduler_kwargs", None)
+
+        # ---- Logging & evaluation ----
+        logging_steps: int = kwargs.pop("logging_steps", 100)
+        eval_steps: int = kwargs.pop("eval_steps", 500)
+        save_steps: int = kwargs.pop("save_steps", 500)
+        save_total_limit: Optional[int] = kwargs.pop("save_total_limit", 3)
+
+        # ---- Early stopping ----
+        early_stopping_patience: int = kwargs.pop("early_stopping_patience", 3)
+        early_stopping_threshold: float = kwargs.pop("early_stopping_threshold", 0.0)
+        metric_for_best_model: str = kwargs.pop("metric_for_best_model", "eval_loss")
+        greater_is_better: Optional[bool] = kwargs.pop("greater_is_better", None)
+
+        # ---- Reporting ----
+        report_to: Union[str, list[str]] = kwargs.pop("report_to", "none")
+        run_name: Optional[str] = kwargs.pop("run_name", "kilat-run")
+
+        # ---- Optimization & compilation ----
+        torch_compile: bool = kwargs.pop("torch_compile", False)
         """
         Initialize training configuration with validation.
 

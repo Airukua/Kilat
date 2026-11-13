@@ -152,4 +152,5 @@ filterwarnings = [
     "ignore:.*Tokenizer vocabulary could not be resolved.*:UserWarning",
     "ignore:.*KilatDataset is deprecated.*:DeprecationWarning",
     "ignore:.*utcfromtimestamp\\(\\) is deprecated.*:DeprecationWarning",
+    "ignore:.*TRITON_DEFAULT_FP_FUSION is unset.*:UserWarning",
 ]

@@ -40,6 +40,10 @@ from kilat.utils.security import UntrustedModuleError
 
 logger = logging.getLogger(__name__)
 
+_TOKENIZER_CONFIG_NAME = "tokenizer_config.json"
+_KEY_TOKENIZER_NAME_OR_PATH = "tokenizer_name_or_path"
+_ATTR_VOCAB_SIZE = "vocab_size"
+
 
 class AutoTokenizer:
     """
@@ -136,7 +140,7 @@ class AutoTokenizer:
         # ================================================================
         # PRIORITY 1: tokenizer_config.json (saved by Trainer or Converter)
         # ================================================================
-        tokenizer_config_path = checkpoint_path / "tokenizer_config.json"
+        tokenizer_config_path = checkpoint_path / _TOKENIZER_CONFIG_NAME
         if tokenizer_config_path.exists():
             logger.debug("Loading tokenizer config from: %s", tokenizer_config_path)
             try:
@@ -146,10 +150,10 @@ class AutoTokenizer:
 
                 # If this is a HuggingFace tokenizer config (lacks tokenizer_type)
                 # and checkpoint contains local vocab/merges/tokenizer files, default tokenizer_name_or_path to checkpoint
-                if "tokenizer_type" not in config_dict and "tokenizer_name_or_path" not in config_dict:
+                if "tokenizer_type" not in config_dict and _KEY_TOKENIZER_NAME_OR_PATH not in config_dict:
                     hf_files = ["tokenizer.json", "vocab.json", "merges.txt"]
                     if any((checkpoint_path / f).exists() for f in hf_files):
-                        config_dict["tokenizer_name_or_path"] = str(checkpoint_path)
+                        config_dict[_KEY_TOKENIZER_NAME_OR_PATH] = str(checkpoint_path)
                     config_dict["tokenizer_type"] = "auto"
 
                 # Create TokenizerConfig from dict
@@ -213,10 +217,10 @@ class AutoTokenizer:
                     return tokenizer_config.build()
                 elif (
                     "model" in config_dict
-                    and "tokenizer_name_or_path" in config_dict["model"]
+                    and _KEY_TOKENIZER_NAME_OR_PATH in config_dict["model"]
                 ):
                     # Some configs store tokenizer info in model section
-                    tokenizer_name = config_dict["model"].get("tokenizer_name_or_path")
+                    tokenizer_name = config_dict["model"].get(_KEY_TOKENIZER_NAME_OR_PATH)
                     if tokenizer_name:
                         # Auto-detect: check if this is a local path
                         tokenizer_path = Path(tokenizer_name)
@@ -248,8 +252,8 @@ class AutoTokenizer:
 
                 # Look for tokenizer info in config.json
                 tokenizer_name = None
-                if "tokenizer_name_or_path" in config_dict:
-                    tokenizer_name = config_dict["tokenizer_name_or_path"]
+                if _KEY_TOKENIZER_NAME_OR_PATH in config_dict:
+                    tokenizer_name = config_dict[_KEY_TOKENIZER_NAME_OR_PATH]
                 elif "_name_or_path" in config_dict:
                     # Sometimes tokenizer info is in _name_or_path
                     tokenizer_name = config_dict["_name_or_path"]
@@ -398,7 +402,7 @@ class AutoTokenizer:
         """Check if directory contains tokenizer files."""
         tokenizer_files = [
             "tokenizer.json", "vocab.json", "merges.txt",
-            "spm.model", "tokenizer_config.json", "tokenizer.model"
+            "spm.model", _TOKENIZER_CONFIG_NAME, "tokenizer.model"
         ]
         return any((path / f).exists() for f in tokenizer_files)
     
@@ -479,8 +483,8 @@ def save_tokenizer(
         tokenizer_config = _create_tokenizer_config_from_tokenizer(tokenizer)
 
     # Save tokenizer config as JSON (for easy loading)
-    tokenizer_config.to_json(save_path / "tokenizer_config.json")
-    logger.debug("Saved tokenizer config to %s", save_path / "tokenizer_config.json")
+    tokenizer_config.to_json(save_path / _TOKENIZER_CONFIG_NAME)
+    logger.debug("Saved tokenizer config to %s", save_path / _TOKENIZER_CONFIG_NAME)
 
     # For custom tokenizers, we only save the config
     if tokenizer_config.tokenizer_type == "custom":
@@ -531,7 +535,7 @@ def _create_tokenizer_config_from_tokenizer(tokenizer: Any) -> TokenizerConfig:
             tokenizer_type = "auto"
     
     # Detect if it's a custom tokenizer with vocab_size attribute
-    elif hasattr(tokenizer, "vocab_size") and not hasattr(tokenizer, "name_or_path"):
+    elif hasattr(tokenizer, _ATTR_VOCAB_SIZE) and not hasattr(tokenizer, "name_or_path"):
         tokenizer_type = "custom"
     
     return TokenizerConfig(
@@ -557,7 +561,7 @@ def get_vocab_size(tokenizer: Any) -> int:
         >>> from generation.auto_tokenizer import get_vocab_size
         >>> vocab_size = get_vocab_size(tokenizer)
     """
-    if hasattr(tokenizer, "vocab_size"):
+    if hasattr(tokenizer, _ATTR_VOCAB_SIZE):
         return tokenizer.vocab_size
     elif hasattr(tokenizer, "get_vocab_size"):
         return tokenizer.get_vocab_size()

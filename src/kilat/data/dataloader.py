@@ -89,10 +89,10 @@ def build_dataloader(
     persistent_workers: bool = False,
     seed: int = 42,
     use_distributed_sampler: bool = True,
-    distributed_shuffle: bool = True,
-    distributed_seed: Optional[int] = None,
-    **kwargs,
+    **kwargs: Any,
 ) -> DataLoader:
+    distributed_shuffle: bool = kwargs.pop("distributed_shuffle", True)
+    distributed_seed: Optional[int] = kwargs.pop("distributed_seed", None)
     """
     Factory to create a DataLoader with optimal configuration (including DDP).
 
@@ -215,9 +215,9 @@ def build_train_dataloader(
     drop_last: bool = True,
     persistent_workers: bool = False,
     seed: int = 42,
-    use_distributed_sampler: bool = True,
-    **kwargs,
+    **kwargs: Any,
 ) -> DataLoader:
+    use_distributed_sampler: bool = kwargs.pop("use_distributed_sampler", True)
     """
     Build a DataLoader specifically for training with sensible defaults.
 

@@ -101,6 +101,7 @@ class Block(nn.Module):
 
     def __init__(
         self,
+        config: Optional[Any] = None,
         n_embd: Optional[int] = None,
         n_head: Optional[int] = None,
         # ---------- Attention parameters ----------
@@ -109,32 +110,30 @@ class Block(nn.Module):
         q_lora_rank: Optional[int] = None,
         use_fusion_gate: bool = False,
         attn_drop: float = 0.0,
-        # ---------- RoPE parameters (optional) ----------
         use_rope: bool = False,
-        rope_head_dim: Optional[int] = None,
-        rope_base: float = 10000.0,
-        # ---------- Feed‑forward parameters ----------
         ffn_mode: Literal["dense", "moe"] = "dense",
-        ff_mult: float = 8 / 3,
-        ffn_dropout: float = 0.0,
-        num_experts: int = 8,
-        active_experts: int = 2,
-        num_shared_experts: int = 2,
-        fine_grained_factor: int = 1,
-        aux_loss_coef: float = 0.01,
-        device_balance_coef: float = 0.0,
-        router_balance_mode: Literal["aux_loss", "bias_free"] = "aux_loss",
-        # ---------- Residual dropout & diagnostics ----------
-        resid_drop: float = 0.0,
-        debug_nan_checks: bool = False,
         layer_recall_ratio: Optional[float] = None,
-        config: Optional[Any] = None,
+        **kwargs: Any,
     ):
         """
         Initialise Pre-Norm Transformer Block from either a full ``KilatConfig``
         (single-source-of-truth) or legacy keyword arguments.
         """
         super().__init__()
+
+        rope_head_dim: Optional[int] = kwargs.pop("rope_head_dim", None)
+        rope_base: float = kwargs.pop("rope_base", 10000.0)
+        ff_mult: float = kwargs.pop("ff_mult", 8 / 3)
+        ffn_dropout: float = kwargs.pop("ffn_dropout", 0.0)
+        num_experts: int = kwargs.pop("num_experts", 8)
+        active_experts: int = kwargs.pop("active_experts", 2)
+        num_shared_experts: int = kwargs.pop("num_shared_experts", 2)
+        fine_grained_factor: int = kwargs.pop("fine_grained_factor", 1)
+        aux_loss_coef: float = kwargs.pop("aux_loss_coef", 0.01)
+        device_balance_coef: float = kwargs.pop("device_balance_coef", 0.0)
+        router_balance_mode: Literal["aux_loss", "bias_free"] = kwargs.pop("router_balance_mode", "aux_loss")
+        resid_drop: float = kwargs.pop("resid_drop", 0.0)
+        debug_nan_checks: bool = kwargs.pop("debug_nan_checks", False)
 
         yarn_scale = None
         yarn_base_seq_len = 4096

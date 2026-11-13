@@ -8,6 +8,13 @@ from .model_config import KilatConfig
 from .tokenizer_config import TokenizerConfig
 from .training_config import TrainingConfig
 
+SECTION_EXPERIMENT = "experiment"
+SECTION_MODEL = "model"
+SECTION_TOKENIZER = "tokenizer"
+SECTION_DATALOADER = "dataloader"
+SECTION_TRAINING = "training"
+FIELD_DESCRIPTION = "description"
+
 
 class MainConfig:
     """
@@ -572,35 +579,35 @@ class MainConfig:
     def to_dict(self) -> dict[str, Any]:
         """Serialize complete experiment configuration into a plain dictionary."""
         config_dict: dict[str, Any] = {
-            "experiment": {
+            SECTION_EXPERIMENT: {
                 "name": self.experiment_name,
-                "description": self.description,
+                FIELD_DESCRIPTION: self.description,
                 "tags": list(self.tags),
             },
-            "model": self.model.to_dict(),
-            "tokenizer": self.tokenizer.to_dict(),
-            "dataloader": self.dataloader.to_dict(),
-            "training": self.training.to_dict(),
+            SECTION_MODEL: self.model.to_dict(),
+            SECTION_TOKENIZER: self.tokenizer.to_dict(),
+            SECTION_DATALOADER: self.dataloader.to_dict(),
+            SECTION_TRAINING: self.training.to_dict(),
         }
-        config_dict["model"].pop("transformers_version", None)
-        config_dict["model"].pop("model_type", None)
+        config_dict[SECTION_MODEL].pop("transformers_version", None)
+        config_dict[SECTION_MODEL].pop("model_type", None)
         return config_dict
 
     @classmethod
-    def from_dict(cls, config_dict: dict[str, Any]) -> "MainConfig":
+    def from_dict(cls, config_dict: dict[str, Any]) -> MainConfig:
         """Reconstruct a ``MainConfig`` from a dictionary produced by :meth:`to_dict`."""
-        experiment = config_dict.get("experiment", {})
-        model_config = KilatConfig.from_dict(config_dict.get("model", {}))
-        tokenizer_config = TokenizerConfig.from_dict(config_dict.get("tokenizer", {}))
-        dataloader_config = DataLoaderConfig.from_dict(config_dict.get("dataloader", {}))
-        training_config = TrainingConfig.from_dict(config_dict.get("training", {}))
+        experiment = config_dict.get(SECTION_EXPERIMENT, {})
+        model_config = KilatConfig.from_dict(config_dict.get(SECTION_MODEL, {}))
+        tokenizer_config = TokenizerConfig.from_dict(config_dict.get(SECTION_TOKENIZER, {}))
+        dataloader_config = DataLoaderConfig.from_dict(config_dict.get(SECTION_DATALOADER, {}))
+        training_config = TrainingConfig.from_dict(config_dict.get(SECTION_TRAINING, {}))
         return cls(
             model=model_config,
             tokenizer=tokenizer_config,
             training=training_config,
             dataloader=dataloader_config,
             experiment_name=experiment.get("name", "kilat-experiment"),
-            description=experiment.get("description", ""),
+            description=experiment.get(FIELD_DESCRIPTION, ""),
             tags=experiment.get("tags", []),
         )
 
@@ -624,7 +631,7 @@ class MainConfig:
         )
 
         with open(path, "w", encoding="utf-8") as f:
-            f.write(f"# KilatTransformer Full Configuration\n")
+            f.write("# KilatTransformer Full Configuration\n")
             f.write(f"# Experiment: {self.experiment_name}\n")
             if self.description:
                 f.write(f"# Description: {self.description}\n")
@@ -636,7 +643,7 @@ class MainConfig:
         return yaml_str
 
     @classmethod
-    def from_yaml(cls, yaml_path: str | Path) -> "MainConfig":
+    def from_yaml(cls, yaml_path: str | Path) -> MainConfig:
         """
         Load complete experiment configuration from YAML.
 
@@ -645,21 +652,21 @@ class MainConfig:
         """
         config_dict = load_yaml_file(yaml_path)
 
-        if "tokenizer" not in config_dict:
+        if SECTION_TOKENIZER not in config_dict:
             raise ValueError("MainConfig YAML must include a 'tokenizer' section.")
-        if "dataloader" not in config_dict:
+        if SECTION_DATALOADER not in config_dict:
             raise ValueError("MainConfig YAML must include a 'dataloader' section.")
-        if "training" not in config_dict:
+        if SECTION_TRAINING not in config_dict:
             raise ValueError("MainConfig YAML must include a 'training' section.")
 
-        experiment = config_dict.get("experiment", {})
+        experiment = config_dict.get(SECTION_EXPERIMENT, {})
 
-        model_config = KilatConfig(**config_dict["model"])
-        tokenizer_config = TokenizerConfig(**config_dict["tokenizer"])
-        dataloader_config = DataLoaderConfig(**config_dict["dataloader"])
+        model_config = KilatConfig(**config_dict[SECTION_MODEL])
+        tokenizer_config = TokenizerConfig(**config_dict[SECTION_TOKENIZER])
+        dataloader_config = DataLoaderConfig(**config_dict[SECTION_DATALOADER])
         if dataloader_config.dataset_format != "synthetic":
             tokenizer_config.warn_if_vocab_mismatch(model_config.vocab_size)
-        training_config = TrainingConfig(**config_dict["training"])
+        training_config = TrainingConfig(**config_dict[SECTION_TRAINING])
 
         return cls(
             model=model_config,
@@ -704,7 +711,7 @@ class MainConfig:
         """Convert training section into runtime TrainingArguments."""
         return self.training.to_training_arguments()
 
-    def apply_overrides(self, overrides: Sequence[str]) -> "MainConfig":
+    def apply_overrides(self, overrides: Sequence[str]) -> MainConfig:
         """
         Apply validated dot-notation CLI overrides (e.g. ``training.learning_rate=3e-4``)
         and re-validate affected configuration sections in-place.
@@ -720,18 +727,18 @@ class MainConfig:
             return self
 
         sections: dict[str, dict[str, Any]] = {
-            "experiment": {
+            SECTION_EXPERIMENT: {
                 "name": self.experiment_name,
-                "description": self.description,
+                FIELD_DESCRIPTION: self.description,
                 "tags": list(self.tags),
             },
-            "model": self.model.to_dict(),
-            "tokenizer": self.tokenizer.to_dict(),
-            "dataloader": self.dataloader.to_dict(),
-            "training": self.training.to_dict(),
+            SECTION_MODEL: self.model.to_dict(),
+            SECTION_TOKENIZER: self.tokenizer.to_dict(),
+            SECTION_DATALOADER: self.dataloader.to_dict(),
+            SECTION_TRAINING: self.training.to_dict(),
         }
-        sections["model"].pop("transformers_version", None)
-        sections["model"].pop("model_type", None)
+        sections[SECTION_MODEL].pop("transformers_version", None)
+        sections[SECTION_MODEL].pop("model_type", None)
 
         # Allow optional fields on TokenizerConfig
         valid_tokenizer_keys = {
@@ -770,13 +777,13 @@ class MainConfig:
             parsed_val = yaml.safe_load(raw_val)
             sec_dict[key] = parsed_val
 
-        self.model = KilatConfig(**sections["model"])
-        self.tokenizer = TokenizerConfig(**sections["tokenizer"])
-        self.dataloader = DataLoaderConfig(**sections["dataloader"])
-        self.training = TrainingConfig(**sections["training"])
-        self.experiment_name = str(sections["experiment"]["name"])
-        self.description = str(sections["experiment"]["description"])
-        self.tags = list(sections["experiment"]["tags"] or [])
+        self.model = KilatConfig(**sections[SECTION_MODEL])
+        self.tokenizer = TokenizerConfig(**sections[SECTION_TOKENIZER])
+        self.dataloader = DataLoaderConfig(**sections[SECTION_DATALOADER])
+        self.training = TrainingConfig(**sections[SECTION_TRAINING])
+        self.experiment_name = str(sections[SECTION_EXPERIMENT]["name"])
+        self.description = str(sections[SECTION_EXPERIMENT][FIELD_DESCRIPTION])
+        self.tags = list(sections[SECTION_EXPERIMENT]["tags"] or [])
         return self
 
     @classmethod
@@ -816,7 +823,7 @@ class MainConfig:
             f"training={self.training.training_mode}{rope_status})"
         )
     @classmethod
-    def from_yaml_string(cls, yaml_string: str) -> "MainConfig":
+    def from_yaml_string(cls, yaml_string: str) -> MainConfig:
         """Load MainConfig from a YAML string instead of a file."""
         import tempfile, os
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:

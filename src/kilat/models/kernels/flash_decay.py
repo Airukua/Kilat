@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import os
 from typing import Tuple, Union
 
 import torch
 import torch.nn.functional as F
 
 try:
+    os.environ.setdefault("TRITON_DEFAULT_FP_FUSION", "1")
     import triton
     import triton.language as tl
 

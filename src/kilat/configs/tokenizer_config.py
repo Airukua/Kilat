@@ -6,6 +6,10 @@ import yaml
 import json
 from .base import dump_yaml_file, load_yaml_file
 
+TOKENIZER_TYPE_SENTENCEPIECE = "sentencepiece"
+FIELD_TOKENIZER_TYPE = "tokenizer_type"
+FIELD_TOKENIZER_NAME_OR_PATH = "tokenizer_name_or_path"
+
 class TokenizerConfig:
     """
     Tokenizer configuration for preprocessing and decode-time inspection.
@@ -150,7 +154,7 @@ class TokenizerConfig:
             If tokenizer_type="custom" but neither custom_builder nor (custom_module + custom_class) provided.
         """
         # Validate tokenizer_type
-        if tokenizer_type not in ("gpt2", "sentencepiece", "auto", "custom"):
+        if tokenizer_type not in ("gpt2", TOKENIZER_TYPE_SENTENCEPIECE, "auto", "custom"):
             raise ValueError(
                 "tokenizer_type must be one of ('gpt2', 'sentencepiece', 'auto', 'custom'), "
                 f"got '{tokenizer_type}'."
@@ -161,7 +165,7 @@ class TokenizerConfig:
             raise ValueError("tokenizer_name_or_path must not be empty for non-custom tokenizers.")
 
         # SentencePiece requires model path
-        if tokenizer_type == "sentencepiece" and not tokenizer_model_path:
+        if tokenizer_type == TOKENIZER_TYPE_SENTENCEPIECE and not tokenizer_model_path:
             raise ValueError(
                 "tokenizer_model_path is required when tokenizer_type='sentencepiece'."
             )
@@ -212,7 +216,7 @@ class TokenizerConfig:
         ValueError
             If tokenizer_type is unknown or custom builder fails.
         """
-        if self.tokenizer_type == "sentencepiece":
+        if self.tokenizer_type == TOKENIZER_TYPE_SENTENCEPIECE:
             return self._build_sentencepiece()
         elif self.tokenizer_type in ("gpt2", "auto"):
             return self._build_huggingface()
@@ -399,7 +403,7 @@ class TokenizerConfig:
         # Also save as YAML for human readability
         self.to_yaml(save_dir / "tokenizer_config.yaml")
 
-        if self.tokenizer_type == "sentencepiece":
+        if self.tokenizer_type == TOKENIZER_TYPE_SENTENCEPIECE:
             # Save the .model file
             model_path = self.tokenizer_model_path or self.tokenizer_name_or_path
             if model_path and Path(model_path).exists():
@@ -433,8 +437,8 @@ class TokenizerConfig:
             JSON/YAML serialisation.
         """
         result = {
-            "tokenizer_type": self.tokenizer_type,
-            "tokenizer_name_or_path": self.tokenizer_name_or_path,
+            FIELD_TOKENIZER_TYPE: self.tokenizer_type,
+            FIELD_TOKENIZER_NAME_OR_PATH: self.tokenizer_name_or_path,
             "tokenizer_model_path": self.tokenizer_model_path,
             "use_fast": self.use_fast,
             "local_files_only": self.local_files_only,
@@ -483,17 +487,17 @@ class TokenizerConfig:
         tokenizer_config.json dictionaries seamlessly.
         """
         data_copy = dict(data)
-        if "tokenizer_type" not in data_copy:
-            data_copy["tokenizer_type"] = "auto"
-            if "tokenizer_name_or_path" not in data_copy:
+        if FIELD_TOKENIZER_TYPE not in data_copy:
+            data_copy[FIELD_TOKENIZER_TYPE] = "auto"
+            if FIELD_TOKENIZER_NAME_OR_PATH not in data_copy:
                 if default_path is not None:
-                    data_copy["tokenizer_name_or_path"] = str(default_path)
+                    data_copy[FIELD_TOKENIZER_NAME_OR_PATH] = str(default_path)
                 elif "tokenizer_class" in data_copy and "gpt2" in str(data_copy["tokenizer_class"]).lower():
-                    data_copy["tokenizer_name_or_path"] = "gpt2"
+                    data_copy[FIELD_TOKENIZER_NAME_OR_PATH] = "gpt2"
 
         known_keys = {
-            "tokenizer_type",
-            "tokenizer_name_or_path",
+            FIELD_TOKENIZER_TYPE,
+            FIELD_TOKENIZER_NAME_OR_PATH,
             "tokenizer_model_path",
             "use_fast",
             "local_files_only",
@@ -666,7 +670,7 @@ class TokenizerConfig:
         Exceptions are caught and logged as None (graceful failure).
         """
         try:
-            if self.tokenizer_type == "sentencepiece":
+            if self.tokenizer_type == TOKENIZER_TYPE_SENTENCEPIECE:
                 from sentencepiece import SentencePieceProcessor
 
                 model_path = self.tokenizer_model_path or self.tokenizer_name_or_path

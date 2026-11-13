@@ -20,13 +20,15 @@ from kilat.data.tokenizer import (
 from kilat.configs.tokenizer_config import TokenizerConfig
 from tests.shared.bdd import Scenario, Given, When, Then, And
 
+END_OF_TEXT_TOKEN = "<|endoftext|>"
+
 
 class DummyCustomTokenizer:
     def __init__(self, vocab_size: int = 500):
         self.vocab_size = vocab_size
         self.name_or_path = "gpt2"
         self.pad_token = None
-        self.eos_token = "<|endoftext|>"
+        self.eos_token = END_OF_TEXT_TOKEN
 
     def __len__(self):
         return self.vocab_size
@@ -225,15 +227,15 @@ def test_autotokenizer_hf_format_compatibility():
                 hf_config = {
                     "add_prefix_space": False,
                     "backend": "tokenizers",
-                    "bos_token": "<|endoftext|>",
-                    "eos_token": "<|endoftext|>",
+                    "bos_token": END_OF_TEXT_TOKEN,
+                    "eos_token": END_OF_TEXT_TOKEN,
                     "errors": "replace",
                     "is_local": False,
                     "local_files_only": True,
                     "model_max_length": 1024,
-                    "pad_token": "<|endoftext|>",
+                    "pad_token": END_OF_TEXT_TOKEN,
                     "tokenizer_class": "GPT2Tokenizer",
-                    "unk_token": "<|endoftext|>",
+                    "unk_token": END_OF_TEXT_TOKEN,
                 }
                 (tmp_path / "tokenizer_config.json").write_text(json.dumps(hf_config))
                 (tmp_path / "vocab.json").write_text("{}")

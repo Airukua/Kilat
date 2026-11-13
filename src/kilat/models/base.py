@@ -45,6 +45,7 @@ WEIGHTS_NAME = "pytorch_model.bin"
 SAFE_WEIGHTS_NAME = "model.safetensors"
 WEIGHTS_INDEX_NAME = "pytorch_model.bin.index.json"
 SAFE_WEIGHTS_INDEX = "model.safetensors.index.json"
+FORMAT_SAFETENSORS = "safetensors"
 
 
 def enforce_revision_policy(model_id: str, revision: Optional[str]) -> None:
@@ -723,7 +724,7 @@ class BasePreTrainedModel(nn.Module):
             try:
                 from accelerate import dispatch_model
                 model = dispatch_model(model, device_map=device_map)
-                logger.info(f"Auto device map applied")
+                logger.info("Auto device map applied")
             except ImportError:
                 logger.warning("accelerate not installed, device_map='auto' ignored")
         elif isinstance(device_map, dict):
@@ -765,10 +766,10 @@ class BasePreTrainedModel(nn.Module):
             ImportError: If safetensors is required but not installed.
         """
         candidates = [
-            (pretrained_path / SAFE_WEIGHTS_NAME,   "safetensors", False),
-            (pretrained_path / WEIGHTS_NAME,         "bin",         False),
-            (pretrained_path / SAFE_WEIGHTS_INDEX,   "safetensors", True),
-            (pretrained_path / WEIGHTS_INDEX_NAME,   "bin",         True),
+            (pretrained_path / SAFE_WEIGHTS_NAME,   FORMAT_SAFETENSORS, False),
+            (pretrained_path / WEIGHTS_NAME,         "bin",              False),
+            (pretrained_path / SAFE_WEIGHTS_INDEX,   FORMAT_SAFETENSORS, True),
+            (pretrained_path / WEIGHTS_INDEX_NAME,   "bin",              True),
         ]
 
         for weights_file, fmt, is_index in candidates:
@@ -777,7 +778,7 @@ class BasePreTrainedModel(nn.Module):
 
             if not is_index:
                 # Single file - load directly
-                if fmt == "safetensors":
+                if fmt == FORMAT_SAFETENSORS:
                     if not _SAFETENSORS_AVAILABLE:
                         continue
                     return _st_load(str(weights_file), device=str(map_location))
@@ -797,7 +798,7 @@ class BasePreTrainedModel(nn.Module):
                     shard_path = safe_join(pretrained_path, shard_name)
                     if not shard_path.exists():
                         raise FileNotFoundError(f"Shard file not found: {shard_path}")
-                    if fmt == "safetensors":
+                    if fmt == FORMAT_SAFETENSORS:
                         if not _SAFETENSORS_AVAILABLE:
                             raise ImportError("safetensors required to load this file.")
                         shard_dict = _st_load(str(shard_path), device=str(map_location))

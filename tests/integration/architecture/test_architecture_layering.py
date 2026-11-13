@@ -38,6 +38,7 @@ ALLOWED: dict[str, frozenset[str]] = {
     "inference": frozenset({"utils", "configs", "models", "data", "decoding"}),
     "assurance": frozenset({"utils", "configs", "models", "data", "decoding", "engine", "inference"}),
     "benchmarking": frozenset({"utils", "configs", "models", "data", "decoding", "engine", "inference"}),
+    "integrations": frozenset({"utils", "configs", "models", "decoding", "inference"}),
     "cli": frozenset({"*"}),
     "__init__": frozenset({"*"}),
     "__main__": frozenset({"*"}),

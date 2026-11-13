@@ -2,9 +2,13 @@
 Pytest configuration and global hooks for KILAT test suite.
 """
 
+import os
 import sys
 from pathlib import Path
 import pytest
+
+# Ensure Triton FP fusion is explicitly enabled to maintain numerical performance and silence warnings
+os.environ.setdefault("TRITON_DEFAULT_FP_FUSION", "1")
 
 # Ensure project root and src are discoverable
 PROJECT_ROOT = Path(__file__).resolve().parent.parent

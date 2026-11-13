@@ -37,7 +37,7 @@ def test_positive_int_validation():
                         validate_positive_int("test_param", 0)
 
             with When("validate_positive_int is executed on a negative number"):
-                with And("a ValueError is raised"):
+                with And("a ValueError is raised for negative input"):
                     with pytest.raises(ValueError):
                         validate_positive_int("neg_param", -5)
 
@@ -51,12 +51,12 @@ def test_probability_validation():
                     assert val == 0.1
 
             with When("value is out of bounds (greater than or equal to 1.0 with upper_open=True)"):
-                with Then("a ValueError is raised"):
+                with Then("a ValueError is raised for upper bound violation"):
                     with pytest.raises(ValueError):
                         validate_probability("dropout", 1.0, upper_open=True)
 
             with When("value is negative"):
-                with And("a ValueError is raised"):
+                with And("a ValueError is raised for negative probability"):
                     with pytest.raises(ValueError):
                         validate_probability("dropout", -0.01)
 
@@ -82,7 +82,7 @@ def test_choice_and_divisible_validation():
                     assert div_res == 768
 
             with When("numerator is not divisible by denominator"):
-                with And("a ValueError is raised"):
+                with And("a ValueError is raised for non-divisible numerator"):
                     with pytest.raises(ValueError):
                         validate_divisible("hidden_size", 768, 13)
 

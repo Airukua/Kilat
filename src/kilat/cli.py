@@ -49,6 +49,7 @@ from kilat.models.transformer import KilatTransformer
 from kilat.utils.banner import print_kilat_banner
 
 CLI_VERSION = "2.0.0"
+ACTION_STORE_TRUE = "store_true"
 
 
 def _cmd_verify(args: argparse.Namespace) -> int:
@@ -400,11 +401,12 @@ def _cmd_sft(args: argparse.Namespace) -> int:
     # 4. Training Arguments
     precision = args.precision
     if precision == "auto":
-        precision = (
-            "bf16"
-            if (torch.cuda.is_available() and torch.cuda.is_bf16_supported())
-            else ("fp16" if torch.cuda.is_available() else "fp32")
-        )
+        if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
+            precision = "bf16"
+        elif torch.cuda.is_available():
+            precision = "fp16"
+        else:
+            precision = "fp32"
 
     train_args = TrainingArguments(
         output_dir=args.output_dir,
@@ -485,12 +487,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_verify.add_argument(
         "--full",
-        action="store_true",
+        action=ACTION_STORE_TRUE,
         help="Also execute Stage 7 WSD/muP scaling checks and Stage 8 readiness sign-off",
     )
     p_verify.add_argument(
         "--keep-going",
-        action="store_true",
+        action=ACTION_STORE_TRUE,
         help="Continue running subsequent gates even if an earlier gate fails",
     )
     p_verify.add_argument(
@@ -507,7 +509,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_verify.add_argument(
         "--allow-train-val-overlap",
-        action="store_true",
+        action=ACTION_STORE_TRUE,
         help="Permit train and validation 13-gram overlap (for natural corpora like TinyStories)",
     )
     p_verify.add_argument(
@@ -518,8 +520,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="Dot-notation config override (e.g. --override training.learning_rate=1e-4)",
     )
-    p_verify.add_argument("-q", "--quiet", action="store_true", help="Suppress banner and progress")
-    p_verify.add_argument("--json", action="store_true", help="Emit JSON report to stdout")
+    p_verify.add_argument("-q", "--quiet", action=ACTION_STORE_TRUE, help="Suppress banner and progress")
+    p_verify.add_argument("--json", action=ACTION_STORE_TRUE, help="Emit JSON report to stdout")
     p_verify.set_defaults(handler=_cmd_verify)
 
     # 2. kilat chaos
@@ -535,8 +537,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Comma-separated scenario IDs or 'all' (default: all)",
     )
     p_chaos.add_argument("--seed", type=int, default=42, help="Deterministic RNG seed")
-    p_chaos.add_argument("-q", "--quiet", action="store_true", help="Suppress banner and progress")
-    p_chaos.add_argument("--json", action="store_true", help="Emit JSON summary to stdout")
+    p_chaos.add_argument("-q", "--quiet", action=ACTION_STORE_TRUE, help="Suppress banner and progress")
+    p_chaos.add_argument("--json", action=ACTION_STORE_TRUE, help="Emit JSON summary to stdout")
     p_chaos.set_defaults(handler=_cmd_chaos)
 
     # 3. kilat certify
@@ -591,11 +593,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_certify.add_argument(
         "--list-models",
-        action="store_true",
+        action=ACTION_STORE_TRUE,
         help="List all registered models in benchmark registry and exit",
     )
-    p_certify.add_argument("-q", "--quiet", action="store_true", help="Suppress banner and logs")
-    p_certify.add_argument("--json", action="store_true", help="Emit JSON summary to stdout")
+    p_certify.add_argument("-q", "--quiet", action=ACTION_STORE_TRUE, help="Suppress banner and logs")
+    p_certify.add_argument("--json", action=ACTION_STORE_TRUE, help="Emit JSON summary to stdout")
     p_certify.set_defaults(handler=_cmd_certify)
 
     # 3. kilat train
@@ -620,10 +622,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_train.add_argument(
         "--skip-preflight",
-        action="store_true",
+        action=ACTION_STORE_TRUE,
         help="Skip fast Gate 1 theoretical preflight verification before training",
     )
-    p_train.add_argument("-q", "--quiet", action="store_true", help="Suppress banner")
+    p_train.add_argument("-q", "--quiet", action=ACTION_STORE_TRUE, help="Suppress banner")
     p_train.set_defaults(handler=_cmd_train)
 
     # 4. kilat prepare-data
@@ -650,13 +652,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_prep.add_argument(
         "--append-eos",
-        action="store_true",
+        action=ACTION_STORE_TRUE,
         default=False,
         help="Append tokenizer EOS token ID at the end of each document/record",
     )
-    p_prep.add_argument("--force", action="store_true", help="Overwrite output file if it exists")
-    p_prep.add_argument("-q", "--quiet", action="store_true", help="Suppress banner and progress")
-    p_prep.add_argument("--json", action="store_true", help="Emit metadata JSON to stdout")
+    p_prep.add_argument("--force", action=ACTION_STORE_TRUE, help="Overwrite output file if it exists")
+    p_prep.add_argument("-q", "--quiet", action=ACTION_STORE_TRUE, help="Suppress banner and progress")
+    p_prep.add_argument("--json", action=ACTION_STORE_TRUE, help="Emit metadata JSON to stdout")
     p_prep.set_defaults(handler=_cmd_prepare_data)
 
     # 5. kilat generate
@@ -681,10 +683,10 @@ def build_parser() -> argparse.ArgumentParser:
         default=1.0,
         help="Repetition penalty parameter (1.0 = no penalty)",
     )
-    p_gen.add_argument("--do-sample", action="store_true", help="Enable stochastic sampling")
+    p_gen.add_argument("--do-sample", action=ACTION_STORE_TRUE, help="Enable stochastic sampling")
     p_gen.add_argument("--device", type=str, default="auto", help="Device ('auto', 'cpu', 'cuda')")
-    p_gen.add_argument("-q", "--quiet", action="store_true", help="Suppress banner")
-    p_gen.add_argument("--json", action="store_true", help="Emit JSON output to stdout")
+    p_gen.add_argument("-q", "--quiet", action=ACTION_STORE_TRUE, help="Suppress banner")
+    p_gen.add_argument("--json", action=ACTION_STORE_TRUE, help="Emit JSON output to stdout")
     p_gen.set_defaults(handler=_cmd_generate)
 
     # 6. kilat export-hf
@@ -697,15 +699,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_export.add_argument("--config", type=str, default=None, help="Optional explicit config YAML")
     p_export.add_argument(
         "--no-safetensors",
-        action="store_true",
+        action=ACTION_STORE_TRUE,
         help="Write pytorch_model.bin instead of model.safetensors",
     )
     p_export.add_argument("--device", type=str, default="cpu", choices=["cpu", "cuda"])
-    p_export.add_argument("--strict", action="store_true", help="Require strict state_dict match")
-    p_export.add_argument("--skip-validation", action="store_true", help="Skip forward validation")
-    p_export.add_argument("--skip-tokenizer", action="store_true", help="Skip tokenizer export")
-    p_export.add_argument("-q", "--quiet", action="store_true", help="Suppress banner and logs")
-    p_export.add_argument("--json", action="store_true", help="Emit JSON summary to stdout")
+    p_export.add_argument("--strict", action=ACTION_STORE_TRUE, help="Require strict state_dict match")
+    p_export.add_argument("--skip-validation", action=ACTION_STORE_TRUE, help="Skip forward validation")
+    p_export.add_argument("--skip-tokenizer", action=ACTION_STORE_TRUE, help="Skip tokenizer export")
+    p_export.add_argument("-q", "--quiet", action=ACTION_STORE_TRUE, help="Suppress banner and logs")
+    p_export.add_argument("--json", action=ACTION_STORE_TRUE, help="Emit JSON summary to stdout")
     p_export.set_defaults(handler=_cmd_export_hf)
 
     # 7. kilat sft
@@ -741,8 +743,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_sft.add_argument("--seed", type=int, default=42, help="RNG seed")
     p_sft.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "cuda"])
-    p_sft.add_argument("-q", "--quiet", action="store_true", help="Suppress banner and logs")
-    p_sft.add_argument("--json", action="store_true", help="Emit JSON output")
+    p_sft.add_argument("-q", "--quiet", action=ACTION_STORE_TRUE, help="Suppress banner and logs")
+    p_sft.add_argument("--json", action=ACTION_STORE_TRUE, help="Emit JSON output")
     p_sft.set_defaults(handler=_cmd_sft)
 
     return parser

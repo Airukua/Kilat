@@ -44,6 +44,7 @@ Specialized domain knowledge is organized under `.agents/skills/`. Agents must i
     │   ├── gpu-performance/             # VRAM profiling, zero-sync forward, activation checkpointing
     │   ├── assurance-chaos-engineering/ # Gate 0 + 6-Gate pre-flight verify, Saboteur chaos injection, FlightRecorder
     │   ├── senior-software-architecture/# Modular package boundaries, clean layering, anti-pattern eradication, CLI/test consolidation
+    │   ├── integration-architecture/    # Ecosystem bridges (HF, PEFT, TRL): thin adapters, zero-duplication, automated bundling
     │   └── ml-security-assurance/       # OWASP LLM/ML Top 10 + NCSC Secure AI: supply chain, deserialization, Gate 0
     ├── research/                        # Specialized architectures (MoE, MLA, Triton kernels, DDP)
     └── product/                         # DX, documentation, release engineering

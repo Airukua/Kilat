@@ -17,7 +17,7 @@ Activate this skill whenever:
 
 ---
 
-## 2. The 6 Architectural Pillars of Senior ML Engineering
+## 2. The 8 Architectural Pillars of Senior ML Engineering
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
@@ -25,7 +25,8 @@ Activate this skill whenever:
 ├────────────────────────────────────────────────────────────────────────┤
 │ Layer 5: CLI & Entrypoints           (src/kilat/cli.py)                │
 │                            │                                           │
-│ Layer 4: Workflows & Verification    (assurance/, benchmarking/)       │
+│ Layer 4: Workflows, Integrations     (assurance/, benchmarking/,       │
+│          & Verification               integrations/)                   │
 │                            │                                           │
 │ Layer 3: Engine & Lifecycle          (engine/: trainer, checkpoint)    │
 │                            │                                           │
@@ -97,6 +98,48 @@ Dependencies must flow strictly downward. Violating this creates hidden coupling
   - `src/kilat/models/decay.py`: `GlobalDecayLayer` (pure $O(N)$ recurrence, Triton scan, zero KV cache).
   - `src/kilat/models/mla.py`: `LatentAttentionLayer` (pure MLA, compressed KV cache, decoupled RoPE).
   - `src/kilat/models/blocks.py`: `KilatBlock` orchestrating decay or MLA per layer based on `recall_pattern`.
+
+### Pillar 7: Third-Party Ecosystem Integration Architecture (The Anti-Monolith & Zero-Duplication Standard)
+- **Anti-Pattern**: *The 1000-Line Remote-Code Duplication Trap ("Sampah yang Susah Dirawat")*.
+  - When bridging Kilat to external frameworks (Hugging Face, vLLM, PEFT, TRL), a junior tendency is to copy-paste the entire neural network (RMSNorm, SwiGLU, DeepSeekMoE, KilatAttention, blocks) into a single 1000+ line monolithic `modeling_<name>.py` file under `src/kilat/integrations/`.
+  - **Why this is unmaintainable technical debt**:
+    1. **Dual Maintenance & Code Drift**: Any architectural fix, numerical stability guard, or kernel improvement applied to `src/kilat/models/` will not propagate to the 1000-line copy. The two implementations inevitably diverge silently.
+    2. **Violation of DRY & SSOT**: Repeating 800+ lines of identical tensor operations creates redundant clutter that bloats git history and complicates code audits.
+    3. **Violation of SRP**: Normalization, FFN routing, attention kernels, caching, and causal wrappers are conflated into a single unreadable "God file".
+- **The Senior Architecture Solution: Two-Tier Integration Pattern**:
+  ```
+  ┌────────────────────────────────────────────────────────────────────────┐
+  │              TWO-TIER SENIOR INTEGRATION ARCHITECTURE                  │
+  ├────────────────────────────────────────────────────────────────────────┤
+  │ TIER 1: In-Tree Canonical Adapter (< 250 lines, Zero Duplication)      │
+  │   src/kilat/integrations/<ecosystem>/                                  │
+  │   ├── configuration_kilat.py  (~100 lines: PretrainedConfig bridge)    │
+  │   ├── modeling_kilat.py       (~150 lines: Thin PreTrainedModel shim)  │
+  │   └── __init__.py             (~30 lines: Explicit register hook)      │
+  │   * Principle: Imports directly from `kilat.models.*` & `kilat.configs`│
+  │   * Zero duplicate RMSNorm, zero duplicate MoE, zero duplicate kernels │
+  │   * Strictly composes or subclasses canonical Kilat primitives         │
+  ├────────────────────────────────────────────────────────────────────────┤
+  │ TIER 2: Out-of-Tree Synthesized Hub Bundle (Build/Export Time Only)    │
+  │   src/kilat/inference/export_hf.py (Automated Code Bundler)            │
+  │   * Principle: Single Source of Truth (SSOT).                          │
+  │   * When `kilat export-hf` executes:                                   │
+  │     The exporter automatically synthesizes/inlines the self-contained  │
+  │     remote-code file into the target checkpoint directory for Hub      │
+  │     upload (`trust_remote_code=True`).                                 │
+  │   * The 1000-line standalone file is an EXPORT ARTIFACT,               │
+  │     NEVER tracked as hand-edited source code in `src/`!                │
+  └────────────────────────────────────────────────────────────────────────┘
+  ```
+
+### Pillar 8: Module Complexity & File Line-Count Ceilings (< 400 Lines Budget)
+- **Hard Ceiling**: **400 lines per file maximum**.
+- **Soft Alert**: **300 lines per file**. When a module approaches 300 lines, investigate decomposing it into single-responsibility submodules.
+- **Directory Nesting Budget**: Maximum depth of **3 levels** (`src/kilat/<domain>/<submodule>.py` or `src/kilat/integrations/<ecosystem>/<module>.py`). Arbitrarily deep directory hierarchies that obscure file ownership and create import mazes are forbidden.
+- **Rule of Composition over Monolith**:
+  - Thin translation adapters must ONLY adapt interfaces (e.g. converting `forward(input_ids, attention_mask, labels)` into Kilat's canonical tensor calls).
+  - Adapters must never duplicate neural network layer math.
+  - Parity tests (`tests/integrations/`) must mathematically prove that native execution and adapter execution produce $\Delta = 0.0$ logit and loss divergence.
 
 ---
 
