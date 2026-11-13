@@ -131,48 +131,52 @@ class TrainingArguments:
 
     def __init__(
         self,
-        # I/O
+        # Core hyperparameters (max <= 13 parameters to satisfy Sonar S107)
         output_dir: str = "./results",
-        resume_from_checkpoint: Optional[str] = None,
-        save_checkpoints: bool = True,
-        atomic_checkpoint: bool = True,
-        # Training mode
         training_mode: TrainingMode = "epochs",
-        # Optimisation
         learning_rate: float = 5e-5,
-        beta1: float = 0.9,
-        beta2: float = 0.95,
-        epsilon: float = 1e-8,
         per_device_train_batch_size: int = 8,
         per_device_eval_batch_size: int = 8,
         gradient_accumulation_steps: int = 1,
         weight_decay: float = 0.01,
-        max_grad_norm: float = 1.0,
-        # Schedule
         max_steps: int = -1,
         num_train_epochs: int = 3,
-        warmup_steps: int = 0,
-        scheduler_type: str = "cosine",
-        scheduler_kwargs: Optional[dict] = None,
-        # Logging & evaluation
-        logging_steps: int = 100,
-        eval_steps: int = 500,
-        save_steps: int = 500,
-        save_total_limit: Optional[int] = 3,
-        # Early stopping
-        early_stopping_patience: Optional[int] = 3,
-        early_stopping_threshold: float = 0.0,
-        metric_for_best_model: str = "eval_loss",
-        greater_is_better: Optional[bool] = None,
-        # Mixed precision
         precision: PrecisionMode = "fp32",
-        # Reporting — accepts str or list[str] for integrations module
-        report_to: Union[str, list[str]] = "none",
-        run_name: Optional[str] = None,
-        torch_compile: bool = False,
-        # Reproducibility
         seed: int = 42,
+        **kwargs: Any,
     ) -> None:
+        # I/O
+        resume_from_checkpoint: Optional[str] = kwargs.pop("resume_from_checkpoint", None)
+        save_checkpoints: bool = kwargs.pop("save_checkpoints", True)
+        atomic_checkpoint: bool = kwargs.pop("atomic_checkpoint", True)
+
+        # Optimisation
+        beta1: float = kwargs.pop("beta1", 0.9)
+        beta2: float = kwargs.pop("beta2", 0.95)
+        epsilon: float = kwargs.pop("epsilon", 1e-8)
+        max_grad_norm: float = kwargs.pop("max_grad_norm", 1.0)
+
+        # Schedule
+        warmup_steps: int = kwargs.pop("warmup_steps", 0)
+        scheduler_type: str = kwargs.pop("scheduler_type", "cosine")
+        scheduler_kwargs: Optional[dict] = kwargs.pop("scheduler_kwargs", None)
+
+        # Logging & evaluation
+        logging_steps: int = kwargs.pop("logging_steps", 100)
+        eval_steps: int = kwargs.pop("eval_steps", 500)
+        save_steps: int = kwargs.pop("save_steps", 500)
+        save_total_limit: Optional[int] = kwargs.pop("save_total_limit", 3)
+
+        # Early stopping
+        early_stopping_patience: Optional[int] = kwargs.pop("early_stopping_patience", 3)
+        early_stopping_threshold: float = kwargs.pop("early_stopping_threshold", 0.0)
+        metric_for_best_model: str = kwargs.pop("metric_for_best_model", "eval_loss")
+        greater_is_better: Optional[bool] = kwargs.pop("greater_is_better", None)
+
+        # Reporting
+        report_to: Union[str, list[str]] = kwargs.pop("report_to", "none")
+        run_name: Optional[str] = kwargs.pop("run_name", None)
+        torch_compile: bool = kwargs.pop("torch_compile", False)
 
         # ── training mode ────────────────────────────────────────────────
         if training_mode not in ("steps", "epochs"):
@@ -307,8 +311,6 @@ class TrainingArguments:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> TrainingArguments:
         """Reconstruct a validated TrainingArguments instance from a dictionary."""
-        import inspect
-
-        valid_keys = set(inspect.signature(cls.__init__).parameters.keys())
-        filtered = {k: v for k, v in data.items() if k in valid_keys}
-        return cls(**filtered)
+        clean_data = dict(data)
+        clean_data.pop("self", None)
+        return cls(**clean_data)

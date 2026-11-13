@@ -82,7 +82,12 @@ def test_sampling_strategies():
             with When("GreedySampler is applied"):
                 greedy = GreedySampler()
                 sampled_token = greedy(logits)
-                token_val = sampled_token.tokens.item() if hasattr(sampled_token, "tokens") else (sampled_token.item() if isinstance(sampled_token, torch.Tensor) else sampled_token)
+                if hasattr(sampled_token, "tokens"):
+                    token_val = sampled_token.tokens.item()
+                elif isinstance(sampled_token, torch.Tensor):
+                    token_val = sampled_token.item()
+                else:
+                    token_val = sampled_token
                 with Then("the argmax token (index 3) is selected"):
                     assert token_val == 3
 

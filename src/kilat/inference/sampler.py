@@ -39,6 +39,8 @@ from typing import List, Optional, Tuple, Union
 import torch
 import torch.nn.functional as F
 
+_ERR_INVALID_TEMPERATURE = "temperature must be > 0, got "
+
 
 # ============================================================================
 # Base Sampling Classes
@@ -126,7 +128,7 @@ class MultinomialSampler(Sampler):
             Lower = less random, higher = more random.
         """
         if temperature <= 0:
-            raise ValueError(f"temperature must be > 0, got {temperature}")
+            raise ValueError(f"{_ERR_INVALID_TEMPERATURE}{temperature}")
 
         self.temperature = temperature
 
@@ -261,7 +263,7 @@ class TopKSampler(Sampler):
         if top_k < 0:
             raise ValueError(f"top_k must be >= 0, got {top_k}")
         if temperature <= 0:
-            raise ValueError(f"temperature must be > 0, got {temperature}")
+            raise ValueError(f"{_ERR_INVALID_TEMPERATURE}{temperature}")
 
         self.top_k = top_k
         self.temperature = temperature
@@ -353,7 +355,7 @@ class TopPSampler(Sampler):
         if not 0 < top_p <= 1:
             raise ValueError(f"top_p must be in (0, 1], got {top_p}")
         if temperature <= 0:
-            raise ValueError(f"temperature must be > 0, got {temperature}")
+            raise ValueError(f"{_ERR_INVALID_TEMPERATURE}{temperature}")
 
         self.top_p = top_p
         self.temperature = temperature
@@ -450,7 +452,7 @@ class TopKTopPSampler(Sampler):
         if not 0 < top_p <= 1:
             raise ValueError(f"top_p must be in (0, 1], got {top_p}")
         if temperature <= 0:
-            raise ValueError(f"temperature must be > 0, got {temperature}")
+            raise ValueError(f"{_ERR_INVALID_TEMPERATURE}{temperature}")
 
         self.top_k = top_k
         self.top_p = top_p
@@ -555,7 +557,7 @@ class TypicalSampler(Sampler):
             In (0, 1]. 1.0 = disabled.
         """
         if temperature <= 0:
-            raise ValueError(f"temperature must be > 0, got {temperature}")
+            raise ValueError(f"{_ERR_INVALID_TEMPERATURE}{temperature}")
         if not 0 < typical_p <= 1:
             raise ValueError(f"typical_p must be in (0, 1], got {typical_p}")
 

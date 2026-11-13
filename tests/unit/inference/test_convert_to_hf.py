@@ -22,6 +22,8 @@ from kilat.models.transformer import KilatTransformer
 from kilat.configs.model_config import KilatConfig
 from tests.shared.bdd import Scenario, Given, When, Then, And
 
+_FILE_TOKENIZER_JSON = "tokenizer.json"
+
 
 def test_clean_state_dict_ddp_and_tying():
     with Scenario("Unit: Checkpoint State Dict Cleaning"):
@@ -94,14 +96,14 @@ def test_converter_helpers_and_validation():
             model = KilatTransformer(config)
 
             with Given("tokenizer files in checkpoint"):
-                (ckpt_dir / "tokenizer.json").write_text('{"version": "1.0"}')
+                (ckpt_dir / _FILE_TOKENIZER_JSON).write_text('{"version": "1.0"}')
                 (ckpt_dir / "spm.model").write_bytes(b"dummy_spm")
 
                 with When("copying tokenizer from checkpoint"):
                     copied = copy_tokenizer_from_checkpoint(ckpt_dir, out_dir, config)
                     with Then("tokenizer files are copied"):
                         assert copied is True
-                        assert (out_dir / "tokenizer.json").exists()
+                        assert (out_dir / _FILE_TOKENIZER_JSON).exists()
                         assert (out_dir / "spm.model").exists()
 
                 with When("saving tokenizer configuration fallback"):
@@ -137,7 +139,7 @@ def test_convert_checkpoint_with_custom_config_and_tokenizer():
                 config.to_yaml(cfg_file)
 
                 # Add dummy tokenizer file to checkpoint
-                (ckpt_dir / "tokenizer.json").write_text('{"vocab": {}}')
+                (ckpt_dir / _FILE_TOKENIZER_JSON).write_text('{"vocab": {}}')
 
                 with When("converting using explicit config_path and skip_tokenizer=False"):
                     res = convert_checkpoint_to_hf(
@@ -149,7 +151,7 @@ def test_convert_checkpoint_with_custom_config_and_tokenizer():
                     )
                     with Then("the conversion succeeds"):
                         assert res["success"] is True
-                        assert (out_dir / "tokenizer.json").exists()
+                        assert (out_dir / _FILE_TOKENIZER_JSON).exists()
                         assert res["tokenizer_copied"] is True
 
 

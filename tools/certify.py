@@ -114,7 +114,9 @@ def main():
         if any(not res.get("passed", True) for res in results.values()):
             all_passed = False
 
-    return 0 if all_passed else 1
+    if not all_passed:
+        return 1
+    return 0
 
 
 if __name__ == "__main__":

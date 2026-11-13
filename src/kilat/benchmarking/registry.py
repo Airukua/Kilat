@@ -5,6 +5,7 @@ Transparently handles both KilatModelOutput (CausalLMOutputWithPast) and raw Ten
 """
 from __future__ import annotations
 
+import math
 from typing import Any, Callable, Dict, List, Optional
 
 import torch
@@ -156,15 +157,16 @@ def _build_kilat_preset(
     recall_pattern: str = "uniform",
     **kwargs: Any,
 ) -> KilatTransformer:
-    preset_name = (
-        "kilat-macro-synergy"
-        if recall_pattern == "macro_synergy"
-        else (
-            "kilat-pure-attention"
-            if recall_ratio == 1.0
-            else ("kilat-pure-decay" if recall_ratio == 0.0 else "custom")
-        )
-    )
+    is_pure_attention = math.isclose(recall_ratio, 1.0, abs_tol=1e-5)
+    is_pure_decay = math.isclose(recall_ratio, 0.0, abs_tol=1e-5)
+    if recall_pattern == "macro_synergy":
+        preset_name = "kilat-macro-synergy"
+    elif is_pure_attention:
+        preset_name = "kilat-pure-attention"
+    elif is_pure_decay:
+        preset_name = "kilat-pure-decay"
+    else:
+        preset_name = "custom"
     return KilatTransformer.from_preset(
         preset_name,
         recall_ratio=recall_ratio,

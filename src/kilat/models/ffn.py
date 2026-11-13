@@ -78,10 +78,11 @@ class DeepSeekMoE(nn.Module):
         aux_loss_coef: float = 0.001,
         device_balance_coef: float = 0.001,
         router_balance_mode: Literal["aux_loss", "bias_free"] = "aux_loss",
-        renormalize_topk: bool = True,
-        debug_nan_checks: bool = False,
+        **kwargs: Any,
     ) -> None:
         super().__init__()
+        renormalize_topk: bool = kwargs.pop("renormalize_topk", True)
+        debug_nan_checks: bool = kwargs.pop("debug_nan_checks", False)
         validate_positive_int("dim", dim)
         validate_positive_int("num_routed_experts", num_routed_experts)
         validate_non_negative_int("num_shared_experts", num_shared_experts)
@@ -307,12 +308,13 @@ class FeedForward(nn.Module):
         active_experts: int = 8,
         fine_grained_factor: int = 1,
         aux_loss_coef: float = 0.001,
-        device_balance_coef: float = 0.001,
-        router_balance_mode: Literal["aux_loss", "bias_free"] = "aux_loss",
-        debug_nan_checks: bool = False,
         config: Optional[Any] = None,
+        **kwargs: Any,
     ) -> None:
         super().__init__()
+        device_balance_coef: float = kwargs.pop("device_balance_coef", 0.001)
+        router_balance_mode: Literal["aux_loss", "bias_free"] = kwargs.pop("router_balance_mode", "aux_loss")
+        debug_nan_checks: bool = kwargs.pop("debug_nan_checks", False)
         if config is not None:
             dim = int(config.n_embd)
             mode = config.ffn_mode

@@ -28,6 +28,8 @@ data/fine-web-edu/**/tokenizer/
 
 # checkpoints and logs
 checkpoints/
+checkpoints*/
+**/checkpoints*/
 logs/
 artifacts/
 reports/

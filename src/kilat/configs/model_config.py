@@ -7,6 +7,21 @@ from .base import dump_yaml_file, load_yaml_file
 from kilat.models.base import BaseConfig
 
 
+PARAM_MAX_POSITION_EMBEDDINGS = "max_position_embeddings"
+RECALL_PATTERN_MACRO_SYNERGY = "macro_synergy"
+INIT_SCHEME_WIDTH_SCALED = "width_scaled"
+PARAM_VOCAB_SIZE = "vocab_size"
+PARAM_N_EMBD = "n_embd"
+PARAM_N_LAYER = "n_layer"
+PARAM_N_HEAD = "n_head"
+PARAM_RECALL_RATIO = "recall_ratio"
+PARAM_RECALL_PATTERN = "recall_pattern"
+PARAM_LATENT_DIM = "latent_dim"
+PARAM_ROPE_HEAD_DIM = "rope_head_dim"
+PARAM_TIE_WORD_EMBEDDINGS = "tie_word_embeddings"
+PARAM_INIT_SCHEME = "init_scheme"
+
+
 def _normalize_aliases(d: dict) -> None:
     """Normalize common hyperparameter alias names."""
     if "d_model" in d and "n_embd" not in d:
@@ -15,8 +30,8 @@ def _normalize_aliases(d: dict) -> None:
         d["n_head"] = d.pop("n_heads")
     if "n_layers" in d and "n_layer" not in d:
         d["n_layer"] = d.pop("n_layers")
-    if "max_seq_len" in d and "max_position_embeddings" not in d:
-        d["max_position_embeddings"] = d.pop("max_seq_len")
+    if "max_seq_len" in d and PARAM_MAX_POSITION_EMBEDDINGS not in d:
+        d[PARAM_MAX_POSITION_EMBEDDINGS] = d.pop("max_seq_len")
 
 class KilatConfig(BaseConfig):
     """
@@ -80,53 +95,55 @@ class KilatConfig(BaseConfig):
 
     def __init__(
         self,
-        # ---- Core dimensions ----
+        # ---- Core dimensions (max <= 13 parameters to satisfy Sonar S107) ----
         vocab_size: int = 32000,
         n_embd: int = 768,
         n_layer: int = 12,
         n_head: int = 12,
-        # ---- Attention configuration ----
         recall_ratio: float = 0.5,
-        recall_pattern: Literal["uniform", "macro_synergy", "custom"] = "macro_synergy",
-        recall_ratios: Optional[list[float]] = None,
-        latent_dim: Optional[int] = None,
-        q_lora_rank: Optional[int] = None,
-        use_fusion_gate: bool = False,
-        attn_drop: float = 0.0,
-        # ---- Decoupled RoPE configuration (DeepSeek-V2 MLA extension) ----
+        recall_pattern: Literal["uniform", "macro_synergy", "custom"] = RECALL_PATTERN_MACRO_SYNERGY,
         use_rope: bool = False,
-        rope_head_dim: Optional[int] = None,
-        rope_base: float = 10000.0,
-        yarn_scale: Optional[float] = None,
-        yarn_base_seq_len: int = 4096,
-        # ---- Feed-forward configuration ----
         ffn_mode: Literal["dense", "moe", "swiglu"] = "moe",
-        ff_mult: float = 8 / 3,
-        ffn_dropout: float = 0.0,
-        # ---- MoE configuration ----
-        num_experts: int = 8,
-        active_experts: int = 2,
-        num_shared_experts: int = 0,
-        fine_grained_factor: int = 1,
-        aux_loss_coef: float = 0.01,
-        device_balance_coef: float = 0.001,
-        router_balance_mode: Literal["aux_loss", "bias_free"] = "aux_loss",
-        # ---- Regularisation & Stability ----
-        embd_drop: float = 0.0,
-        resid_drop: float = 0.0,
-        z_loss_coef: float = 0.0,
-        debug_nan_checks: bool = False,
-        # ---- HF boilerplate ----
         pad_token_id: int = 0,
         bos_token_id: int = 1,
         eos_token_id: int = 2,
-        return_dict: bool = True,
-        tie_word_embeddings: bool = True,
-        use_cache: bool = False,
-        initializer_range: float = 0.02,
-        init_scheme: Literal["gpt2", "width_scaled"] = "gpt2",
-        **kwargs,
+        **kwargs: Any,
     ):
+        _normalize_aliases(kwargs)
+        if "n_embd" in kwargs and n_embd == 768:
+            n_embd = kwargs.pop("n_embd")
+        if "n_head" in kwargs and n_head == 12:
+            n_head = kwargs.pop("n_head")
+        if "n_layer" in kwargs and n_layer == 12:
+            n_layer = kwargs.pop("n_layer")
+
+        recall_ratios: Optional[list[float]] = kwargs.pop("recall_ratios", None)
+        latent_dim: Optional[int] = kwargs.pop(PARAM_LATENT_DIM, None)
+        q_lora_rank: Optional[int] = kwargs.pop("q_lora_rank", None)
+        use_fusion_gate: bool = kwargs.pop("use_fusion_gate", False)
+        attn_drop: float = kwargs.pop("attn_drop", 0.0)
+        rope_head_dim: Optional[int] = kwargs.pop(PARAM_ROPE_HEAD_DIM, None)
+        rope_base: float = kwargs.pop("rope_base", 10000.0)
+        yarn_scale: Optional[float] = kwargs.pop("yarn_scale", None)
+        yarn_base_seq_len: int = kwargs.pop("yarn_base_seq_len", 4096)
+        ff_mult: float = kwargs.pop("ff_mult", 8 / 3)
+        ffn_dropout: float = kwargs.pop("ffn_dropout", 0.0)
+        num_experts: int = kwargs.pop("num_experts", 8)
+        active_experts: int = kwargs.pop("active_experts", 2)
+        num_shared_experts: int = kwargs.pop("num_shared_experts", 0)
+        fine_grained_factor: int = kwargs.pop("fine_grained_factor", 1)
+        aux_loss_coef: float = kwargs.pop("aux_loss_coef", 0.01)
+        device_balance_coef: float = kwargs.pop("device_balance_coef", 0.001)
+        router_balance_mode: Literal["aux_loss", "bias_free"] = kwargs.pop("router_balance_mode", "aux_loss")
+        embd_drop: float = kwargs.pop("embd_drop", 0.0)
+        resid_drop: float = kwargs.pop("resid_drop", 0.0)
+        z_loss_coef: float = kwargs.pop("z_loss_coef", 0.0)
+        debug_nan_checks: bool = kwargs.pop("debug_nan_checks", False)
+        return_dict: bool = kwargs.pop("return_dict", True)
+        tie_word_embeddings: bool = kwargs.pop(PARAM_TIE_WORD_EMBEDDINGS, True)
+        use_cache: bool = kwargs.pop("use_cache", False)
+        initializer_range: float = kwargs.pop("initializer_range", 0.02)
+        init_scheme: Literal["gpt2", "width_scaled"] = kwargs.pop(PARAM_INIT_SCHEME, "gpt2")
         # Set internal flags expected by HuggingFace (prevents AttributeError)
         # These are not user-configurable but are required by the base class.
         self._output_attentions = False
@@ -266,9 +283,9 @@ class KilatConfig(BaseConfig):
         if self.z_loss_coef < 0.0:
             raise ValueError(f"z_loss_coef must be >= 0.0, got {self.z_loss_coef}.")
 
-        if self.init_scheme not in ("gpt2", "width_scaled"):
-            raise ValueError(f"init_scheme must be 'gpt2' or 'width_scaled', got {self.init_scheme!r}.")
-        if self.init_scheme == "width_scaled" and self.tie_word_embeddings:
+        if self.init_scheme not in ("gpt2", INIT_SCHEME_WIDTH_SCALED):
+            raise ValueError(f"init_scheme must be 'gpt2' or '{INIT_SCHEME_WIDTH_SCALED}', got {self.init_scheme!r}.")
+        if self.init_scheme == INIT_SCHEME_WIDTH_SCALED and self.tie_word_embeddings:
             raise ValueError(
                 "init_scheme='width_scaled' requires tie_word_embeddings=False: the input embedding must be O(1) "
                 "while the output head must start small, which a single shared matrix cannot satisfy."
@@ -463,101 +480,49 @@ class KilatConfig(BaseConfig):
         _normalize_aliases(override_kwargs)
 
         # 3. Canonical preset dictionaries
+        base_preset = {
+            PARAM_VOCAB_SIZE: 64,
+            PARAM_N_EMBD: 64,
+            PARAM_N_LAYER: 2,
+            PARAM_N_HEAD: 4,
+            PARAM_RECALL_RATIO: 0.5,
+            PARAM_RECALL_PATTERN: RECALL_PATTERN_MACRO_SYNERGY,
+            "use_rope": True,
+            "ffn_mode": "swiglu",
+            PARAM_MAX_POSITION_EMBEDDINGS: 4096,
+            PARAM_INIT_SCHEME: INIT_SCHEME_WIDTH_SCALED,
+            PARAM_TIE_WORD_EMBEDDINGS: False,
+        }
+
         canonical_presets = {
-            "kilat": {
-                "vocab_size": 64,
-                "n_embd": 64,
-                "n_layer": 2,
-                "n_head": 4,
-                "recall_ratio": 0.5,
-                "recall_pattern": "macro_synergy",
-                "use_rope": True,
-                "ffn_mode": "swiglu",
-                "max_position_embeddings": 4096,
-                "init_scheme": "width_scaled",
-                "tie_word_embeddings": False,
-            },
-            "kilat-macro-synergy": {
-                "vocab_size": 64,
-                "n_embd": 64,
-                "n_layer": 2,
-                "n_head": 4,
-                "recall_ratio": 0.5,
-                "recall_pattern": "macro_synergy",
-                "use_rope": True,
-                "ffn_mode": "swiglu",
-                "max_position_embeddings": 4096,
-                "init_scheme": "width_scaled",
-                "tie_word_embeddings": False,
-            },
+            "kilat": dict(base_preset),
+            "kilat-macro-synergy": dict(base_preset),
             "kilat-pure-attention": {
-                "vocab_size": 64,
-                "n_embd": 64,
-                "n_layer": 2,
-                "n_head": 4,
-                "recall_ratio": 1.0,
-                "recall_pattern": "uniform",
-                "use_rope": True,
-                "ffn_mode": "swiglu",
-                "max_position_embeddings": 4096,
-                "init_scheme": "width_scaled",
-                "tie_word_embeddings": False,
+                **base_preset,
+                PARAM_RECALL_RATIO: 1.0,
+                PARAM_RECALL_PATTERN: "uniform",
             },
             "kilat-pure-decay": {
-                "vocab_size": 64,
-                "n_embd": 64,
-                "n_layer": 2,
-                "n_head": 4,
-                "recall_ratio": 0.0,
-                "recall_pattern": "uniform",
-                "use_rope": True,
-                "ffn_mode": "swiglu",
-                "max_position_embeddings": 4096,
-                "init_scheme": "width_scaled",
-                "tie_word_embeddings": False,
+                **base_preset,
+                PARAM_RECALL_RATIO: 0.0,
+                PARAM_RECALL_PATTERN: "uniform",
             },
             "kilat-micro": {
-                "vocab_size": 64,
-                "n_embd": 64,
-                "n_layer": 2,
-                "n_head": 4,
-                "latent_dim": 64,
-                "rope_head_dim": 8,
-                "recall_ratio": 0.5,
-                "recall_pattern": "macro_synergy",
-                "use_rope": True,
-                "ffn_mode": "swiglu",
-                "max_position_embeddings": 4096,
-                "init_scheme": "width_scaled",
-                "tie_word_embeddings": False,
+                **base_preset,
+                PARAM_LATENT_DIM: 64,
+                PARAM_ROPE_HEAD_DIM: 8,
             },
             "kilat-mini": {
-                "vocab_size": 1024,
-                "n_embd": 256,
-                "n_layer": 4,
-                "n_head": 4,
-                "latent_dim": 128,
-                "rope_head_dim": 32,
-                "recall_ratio": 0.5,
-                "recall_pattern": "macro_synergy",
-                "use_rope": True,
-                "ffn_mode": "swiglu",
-                "max_position_embeddings": 4096,
-                "init_scheme": "width_scaled",
-                "tie_word_embeddings": False,
+                **base_preset,
+                PARAM_VOCAB_SIZE: 1024,
+                PARAM_N_EMBD: 256,
+                PARAM_N_LAYER: 4,
+                PARAM_LATENT_DIM: 128,
+                PARAM_ROPE_HEAD_DIM: 32,
             },
             "custom": {
-                "vocab_size": 64,
-                "n_embd": 64,
-                "n_layer": 2,
-                "n_head": 4,
-                "recall_ratio": 0.5,
-                "recall_pattern": "uniform",
-                "use_rope": True,
-                "ffn_mode": "swiglu",
-                "max_position_embeddings": 4096,
-                "init_scheme": "width_scaled",
-                "tie_word_embeddings": False,
+                **base_preset,
+                PARAM_RECALL_PATTERN: "uniform",
             },
         }
 
@@ -571,10 +536,10 @@ class KilatConfig(BaseConfig):
         n_embd = override_kwargs.get("n_embd", config_kwargs["n_embd"])
         n_head = override_kwargs.get("n_head", config_kwargs["n_head"])
         head_dim = n_embd // n_head
-        if "latent_dim" not in config_kwargs and "latent_dim" not in override_kwargs:
-            config_kwargs["latent_dim"] = max(32, n_embd)
-        if "rope_head_dim" not in config_kwargs and "rope_head_dim" not in override_kwargs:
-            config_kwargs["rope_head_dim"] = max(8, head_dim if head_dim % 2 == 0 else head_dim - 1)
+        if PARAM_LATENT_DIM not in config_kwargs and PARAM_LATENT_DIM not in override_kwargs:
+            config_kwargs[PARAM_LATENT_DIM] = max(32, n_embd)
+        if PARAM_ROPE_HEAD_DIM not in config_kwargs and PARAM_ROPE_HEAD_DIM not in override_kwargs:
+            config_kwargs[PARAM_ROPE_HEAD_DIM] = max(8, head_dim if head_dim % 2 == 0 else head_dim - 1)
 
         config_kwargs.update(override_kwargs)
         return cls(**config_kwargs)

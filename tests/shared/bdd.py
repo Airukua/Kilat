@@ -206,7 +206,12 @@ def _flush_bdd_report(exception: Optional[BaseException] = None) -> None:
     if ctx.current_when:
         lines.append(f"    when {ctx.current_when}")
 
-    indent = "      " if ctx.current_when else ("    " if ctx.current_given else "  ")
+    if ctx.current_when:
+        indent = "      "
+    elif ctx.current_given:
+        indent = "    "
+    else:
+        indent = "  "
 
     for step in ctx.steps:
         duration_str = f"{step.duration_ms:.1f} ms" if step.duration_ms >= 1.0 else "<1 ms"

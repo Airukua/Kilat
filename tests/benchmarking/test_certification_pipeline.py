@@ -19,6 +19,9 @@ from kilat.benchmarking.pillars.p5_diagnostics import DiagnosticsConfig, run_pil
 from kilat.benchmarking.registry import build_model
 from tests.shared.bdd import And, Given, Scenario, Then, When
 
+KEY_VOCAB_SIZE = "vocab_size"
+KEY_BATCH_SIZE = "batch_size"
+
 
 def test_pillar1_mechanical_correctness_kilat():
     with Scenario("Benchmark: Pillar 1 Mechanical Correctness on Kilat-v2"):
@@ -34,7 +37,7 @@ def test_pillar1_mechanical_correctness_kilat():
                 device="cpu",
             )
             def builder(**kw):
-                params = {"vocab_size": 32, "d_model": 32, "n_layers": 2, "n_heads": 2}
+                params = {KEY_VOCAB_SIZE: 32, "d_model": 32, "n_layers": 2, "n_heads": 2}
                 params.update(kw)
                 return build_model("kilat-macro-synergy", **params)
 
@@ -65,12 +68,12 @@ def test_pillar4_efficiency_and_speedup():
                 device="cpu",
             )
             def model_builder(**kw):
-                params = {"vocab_size": 32, "d_model": 32, "n_layers": 2, "n_heads": 2}
+                params = {KEY_VOCAB_SIZE: 32, "d_model": 32, "n_layers": 2, "n_heads": 2}
                 params.update(kw)
                 return build_model("kilat-macro-synergy", **params)
 
             def base_builder(**kw):
-                params = {"vocab_size": 32, "d_model": 32, "n_layers": 2, "n_heads": 2}
+                params = {KEY_VOCAB_SIZE: 32, "d_model": 32, "n_layers": 2, "n_heads": 2}
                 params.update(kw)
                 return build_model("reference-attention", **params)
 
@@ -95,8 +98,8 @@ def test_full_certification_harness_execution(tmp_path: Path):
             raw_cfg = {
                 "pillar1": {
                     "seq_len": 16,
-                    "vocab_size": 64,
-                    "batch_size": 2,
+                    KEY_VOCAB_SIZE: 64,
+                    KEY_BATCH_SIZE: 2,
                     "overfit_steps": 30,
                     "overfit_loss_threshold": 0.20,
                     "seeds": [0],
@@ -107,31 +110,31 @@ def test_full_certification_harness_execution(tmp_path: Path):
                     "context_lengths": [32],
                     "seeds": [0],
                     "train_steps": 20,
-                    "vocab_size": 64,
-                    "batch_size": 8,
+                    KEY_VOCAB_SIZE: 64,
+                    KEY_BATCH_SIZE: 8,
                     "device": "cpu",
                 },
                 "pillar3": {
                     "seq_lens": [32],
                     "token_budgets": [500],
                     "eval_every_tokens": 250,
-                    "vocab_size": 64,
-                    "batch_size": 4,
+                    KEY_VOCAB_SIZE: 64,
+                    KEY_BATCH_SIZE: 4,
                     "device": "cpu",
                 },
                 "pillar4": {
                     "seq_lens": [16],
-                    "batch_size": 2,
+                    KEY_BATCH_SIZE: 2,
                     "n_warmup": 1,
                     "n_iters": 2,
                     "n_decode_steps": 2,
-                    "vocab_size": 64,
+                    KEY_VOCAB_SIZE: 64,
                     "device": "cpu",
                 },
                 "pillar5": {
                     "seq_len": 32,
-                    "vocab_size": 64,
-                    "batch_size": 2,
+                    KEY_VOCAB_SIZE: 64,
+                    KEY_BATCH_SIZE: 2,
                     "device": "cpu",
                     "buckets": [0, 16, 32],
                 },

@@ -6,6 +6,8 @@ from kilat.models.decay import GlobalDecayLayer, run_global_decay_recurrence
 from kilat.models.mla import LatentAttentionLayer, apply_rope_to_tokens
 from kilat.models.attention import KilatAttention, KilatAttentionRoPE
 
+_PARAM_PREFIX = "Parameter "
+
 
 class TestDecoupledLayers:
     def test_global_decay_layer_forward_and_cache_parity(self):
@@ -49,9 +51,9 @@ class TestDecoupledLayers:
         loss.backward()
 
         for name, p in layer.named_parameters():
-            assert p.grad is not None, f"Parameter {name} has no gradient"
-            assert torch.isfinite(p.grad).all(), f"Parameter {name} gradient is not finite"
-            assert p.grad.abs().sum().item() > 0.0, f"Parameter {name} gradient is dead (zero)"
+            assert p.grad is not None, f"{_PARAM_PREFIX}{name} has no gradient"
+            assert torch.isfinite(p.grad).all(), f"{_PARAM_PREFIX}{name} gradient is not finite"
+            assert p.grad.abs().sum().item() > 0.0, f"{_PARAM_PREFIX}{name} gradient is dead (zero)"
 
     def test_latent_attention_layer_forward_and_rope(self):
         """LatentAttentionLayer must support low-rank KV compression and Decoupled RoPE."""
@@ -80,8 +82,8 @@ class TestDecoupledLayers:
 
         for name, p in mla_rope.named_parameters():
             if p.requires_grad:
-                assert p.grad is not None, f"Parameter {name} has no gradient"
-                assert torch.isfinite(p.grad).all(), f"Parameter {name} gradient is not finite"
+                assert p.grad is not None, f"{_PARAM_PREFIX}{name} has no gradient"
+                assert torch.isfinite(p.grad).all(), f"{_PARAM_PREFIX}{name} gradient is not finite"
 
     def test_kilat_attention_state_dict_exact_invariants(self):
         """KilatAttention and KilatAttentionRoPE must maintain 100% parameter name backward compatibility."""

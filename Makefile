@@ -1,4 +1,4 @@
-.PHONY: help install install-dev lint lint-fix format format-check type-check check test security verify chaos clean build pre-commit pre-commit-install
+.PHONY: help install install-dev lint lint-fix format format-check type-check quality check test security verify chaos clean build pre-commit pre-commit-install
 
 PYTHON ?= $(if $(wildcard .venv/bin/python),.venv/bin/python,python3)
 PIP ?= $(PYTHON) -m pip
@@ -35,7 +35,10 @@ format-check: ## Check code formatting without making changes
 type-check: ## Run mypy type checker on source code
 	$(MYPY) src
 
-check: lint type-check ## Run standard quality checks (lint and type-check)
+quality: ## Run SonarLint & AST Code Quality Hygiene Auditor (< 0.1s static analysis)
+	$(PYTHON) tools/sonar_auditor.py src tests
+
+check: lint type-check quality ## Run standard quality checks (lint, type-check, and sonar quality audit)
 
 test: ## Run test suite if tests directory exists
 	@if [ -d "tests" ]; then \

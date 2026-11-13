@@ -72,6 +72,13 @@ def should_save_on_rank0(state: TrainerState) -> bool:
     return state.is_world_process_zero
 
 
+_KEY_TORCH_CUDA = "torch_cuda"
+_CHECKPOINT_PREFIX = "checkpoint-"
+_TOKENIZER_CONFIG_NAME = "tokenizer_config.json"
+_KEY_TRAINER_STATE = "trainer_state"
+_KEY_CALLBACK_STATES = "callback_states"
+
+
 def set_seed(seed: int) -> None:
     """Seed Python, NumPy, and PyTorch (CPU + CUDA) deterministically."""
     random.seed(seed)
@@ -97,7 +104,7 @@ def capture_rng_state() -> dict[str, Any]:
             float(np_st[4]),
         ),
         "torch_cpu": torch.get_rng_state().clone(),
-        "torch_cuda": (
+        _KEY_TORCH_CUDA: (
             [s.clone() for s in torch.cuda.get_rng_state_all()]
             if torch.cuda.is_available()
             else None
@@ -125,12 +132,12 @@ def restore_rng_state(rng_state: dict[str, Any]) -> None:
             torch.set_rng_state(cpu_st.detach().cpu().to(dtype=torch.uint8))
     if (
         torch.cuda.is_available()
-        and "torch_cuda" in rng_state
-        and rng_state["torch_cuda"] is not None
+        and _KEY_TORCH_CUDA in rng_state
+        and rng_state[_KEY_TORCH_CUDA] is not None
     ):
         cuda_states = [
             s.detach().cpu().to(dtype=torch.uint8)
-            for s in rng_state["torch_cuda"][: torch.cuda.device_count()]
+            for s in rng_state[_KEY_TORCH_CUDA][: torch.cuda.device_count()]
             if isinstance(s, torch.Tensor)
         ]
         if len(cuda_states) == torch.cuda.device_count():
@@ -227,7 +234,7 @@ def _strip_model_prefixes(state_dict: dict[str, torch.Tensor]) -> dict[str, torc
     cleaned: dict[str, torch.Tensor] = {}
     for key, val in state_dict.items():
         k = key
-        while k.startswith("module.") or k.startswith("_orig_mod."):
+        while k.startswith(("module.", "_orig_mod.")):
             if k.startswith("module."):
                 k = k[len("module.") :]
             if k.startswith("_orig_mod."):
@@ -427,10 +434,11 @@ def save_checkpoint(
     early_stopping: Optional[EarlyStoppingCallback] = None,
     additional_state: Optional[dict[str, Any]] = None,
     training_args: Optional[Any] = None,   # <-- save hyperparameters
-    tokenizer: Optional[Any] = None,       # <-- tokenizer instance to save
-    tokenizer_config: Optional[Any] = None, # <-- tokenizer config for metadata
-    atomic: bool = True,                   # <-- atomic write
+    **kwargs: Any,
 ) -> None:
+    tokenizer: Optional[Any] = kwargs.pop("tokenizer", None)
+    tokenizer_config: Optional[Any] = kwargs.pop("tokenizer_config", None)
+    atomic: bool = kwargs.pop("atomic", True)
     """
     Save a complete training checkpoint with atomic write and config preservation.
 
@@ -521,11 +529,11 @@ def save_checkpoint(
 
     # Determine checkpoint folder name
     if tag is not None:
-        folder_name = f"checkpoint-{tag}"
+        folder_name = f"{_CHECKPOINT_PREFIX}{tag}"
     elif step is not None:
-        folder_name = f"checkpoint-{step}"
+        folder_name = f"{_CHECKPOINT_PREFIX}{step}"
     else:
-        folder_name = "checkpoint-latest"
+        folder_name = f"{_CHECKPOINT_PREFIX}latest"
 
     final_path = os.path.join(output_dir, folder_name)
 
@@ -555,17 +563,17 @@ def save_checkpoint(
                     if model_path and os.path.exists(model_path):
                         shutil.copy2(model_path, os.path.join(temp_path, "spm.model"))
                         if hasattr(tokenizer_config, "to_dict"):
-                            with open(os.path.join(temp_path, "tokenizer_config.json"), "w") as f:
+                            with open(os.path.join(temp_path, _TOKENIZER_CONFIG_NAME), "w") as f:
                                 json.dump(tokenizer_config.to_dict(), f, indent=2)
                         logger.info("SentencePiece tokenizer saved to %s", temp_path)
                 else:
                     if tokenizer_config and hasattr(tokenizer_config, "to_dict"):
-                        with open(os.path.join(temp_path, "tokenizer_config.json"), "w") as f:
+                        with open(os.path.join(temp_path, _TOKENIZER_CONFIG_NAME), "w") as f:
                             json.dump(tokenizer_config.to_dict(), f, indent=2)
                         logger.info("Tokenizer config saved (fallback)")
             else:
                 if tokenizer_config and hasattr(tokenizer_config, "to_dict"):
-                    with open(os.path.join(temp_path, "tokenizer_config.json"), "w") as f:
+                    with open(os.path.join(temp_path, _TOKENIZER_CONFIG_NAME), "w") as f:
                         json.dump(tokenizer_config.to_dict(), f, indent=2)
                     logger.info("Tokenizer config saved (Hub reference)")
 
@@ -592,8 +600,8 @@ def save_checkpoint(
             "optimizer": optimizer.state_dict(),
             "scheduler": scheduler.state_dict() if hasattr(scheduler, "state_dict") else None,
             "scaler": scaler.state_dict() if scaler is not None else None,
-            "trainer_state": clean_trainer_state,
-            "callback_states": callback_handler.state_dict(),
+            _KEY_TRAINER_STATE: clean_trainer_state,
+            _KEY_CALLBACK_STATES: callback_handler.state_dict(),
             "rng_state": capture_rng_state(),
         }
         if early_stopping is not None:
@@ -716,15 +724,15 @@ def load_checkpoint(
         if scaler is not None and "scaler" in training_state and training_state["scaler"] is not None:
             scaler.load_state_dict(training_state["scaler"])
 
-        saved_state = training_state.get("trainer_state", {})
+        saved_state = training_state.get(_KEY_TRAINER_STATE, {})
         for key, value in saved_state.items():
             if hasattr(state, key):
                 setattr(state, key, value)
             else:
                 logger.warning("Saved TrainerState has unknown key '%s', skipping.", key)
 
-        if "callback_states" in training_state:
-            callback_handler.load_state_dict(training_state["callback_states"])
+        if _KEY_CALLBACK_STATES in training_state:
+            callback_handler.load_state_dict(training_state[_KEY_CALLBACK_STATES])
 
         if early_stopping is not None and "early_stopping" in training_state:
             es_state = training_state["early_stopping"]
@@ -745,7 +753,7 @@ def load_checkpoint(
         logger.warning("No training_state.pt found – starting from scratch (step=0).")
 
     # Phase 3: Restore tokenizer config if available
-    tokenizer_config_path = os.path.join(checkpoint_path, "tokenizer_config.json")
+    tokenizer_config_path = os.path.join(checkpoint_path, _TOKENIZER_CONFIG_NAME)
     if os.path.exists(tokenizer_config_path) and tokenizer_config is not None:
         try:
             with open(tokenizer_config_path, "r") as f:
@@ -790,7 +798,7 @@ def get_latest_checkpoint(output_dir: str) -> Optional[str]:
         return None
     checkpoints = [
         d for d in os.listdir(output_dir)
-        if d.startswith("checkpoint-") and os.path.isdir(os.path.join(output_dir, d))
+        if d.startswith(_CHECKPOINT_PREFIX) and os.path.isdir(os.path.join(output_dir, d))
     ]
     if not checkpoints:
         return None
@@ -831,12 +839,12 @@ def prune_checkpoints(output_dir: str, save_total_limit: Optional[int]) -> None:
         return
 
     def is_prunable(name: str) -> bool:
-        suffix = name.replace("checkpoint-", "", 1)
+        suffix = name.replace(_CHECKPOINT_PREFIX, "", 1)
         return suffix.isdigit()
 
     all_checkpoints = [
         d for d in os.listdir(output_dir)
-        if d.startswith("checkpoint-") and os.path.isdir(os.path.join(output_dir, d))
+        if d.startswith(_CHECKPOINT_PREFIX) and os.path.isdir(os.path.join(output_dir, d))
     ]
     prunable = [d for d in all_checkpoints if is_prunable(d)]
     # Sort by modification time, oldest first
@@ -878,8 +886,8 @@ def save_checkpoint_simple(
     checkpoint = {
         "model_state_dict": model_to_save.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
-        "trainer_state": state.__dict__,
-        "callback_states": callback_handler.state_dict(),
+        _KEY_TRAINER_STATE: state.__dict__,
+        _KEY_CALLBACK_STATES: callback_handler.state_dict(),
     }
     if hasattr(scheduler, "state_dict"):
         checkpoint["scheduler_state_dict"] = scheduler.state_dict()
@@ -920,7 +928,7 @@ def load_checkpoint_simple(
         scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
 
     # Trainer state
-    saved_state = checkpoint["trainer_state"]
+    saved_state = checkpoint[_KEY_TRAINER_STATE]
     for key, value in saved_state.items():
         if hasattr(state, key):
             setattr(state, key, value)

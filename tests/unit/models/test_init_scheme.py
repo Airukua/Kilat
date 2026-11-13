@@ -18,13 +18,16 @@ from kilat.configs.model_config import KilatConfig
 from kilat.models.transformer import KilatTransformer
 from tests.shared.bdd import And, Given, Scenario, Then, When
 
+PRESET_PURE_ATTENTION = "kilat-pure-attention"
+SCHEME_WIDTH_SCALED = "width_scaled"
+
 
 def _micro(scheme: str, **kw) -> KilatTransformer:
     params = dict(vocab_size=128, d_model=64, n_layers=2, n_heads=2, max_seq_len=32)
     params.update(kw)
     if scheme == "gpt2":
         params.update(init_scheme="gpt2", tie_word_embeddings=True)
-    return KilatTransformer.from_preset("kilat-pure-attention", **params)
+    return KilatTransformer.from_preset(PRESET_PURE_ATTENTION, **params)
 
 
 def test_init_scheme_config_contract():
@@ -40,19 +43,19 @@ def test_init_scheme_config_contract():
                 assert KilatConfig.from_dict(d).init_scheme == "gpt2"
 
         with Given("canonical kilat-* presets (all narrow widths)"):
-            for name in ["kilat", "kilat-macro-synergy", "kilat-pure-attention", "kilat-pure-decay", "kilat-micro", "kilat-mini"]:
+            for name in ["kilat", "kilat-macro-synergy", PRESET_PURE_ATTENTION, "kilat-pure-decay", "kilat-micro", "kilat-mini"]:
                 cfg = KilatConfig.from_preset(name)
                 with Then(f"{name} uses width_scaled and untied embeddings"):
-                    assert cfg.init_scheme == "width_scaled"
+                    assert cfg.init_scheme == SCHEME_WIDTH_SCALED
                     assert cfg.tie_word_embeddings is False
             with And("init_scheme round-trips through to_dict/from_dict"):
-                cfg = KilatConfig.from_preset("kilat-pure-attention")
-                assert KilatConfig.from_dict(cfg.to_dict()).init_scheme == "width_scaled"
+                cfg = KilatConfig.from_preset(PRESET_PURE_ATTENTION)
+                assert KilatConfig.from_dict(cfg.to_dict()).init_scheme == SCHEME_WIDTH_SCALED
 
         with Given("invalid combinations"):
             with Then("width_scaled with tied embeddings is rejected with an explanation"):
                 with pytest.raises(ValueError, match="tie_word_embeddings=False"):
-                    KilatConfig(init_scheme="width_scaled", tie_word_embeddings=True)
+                    KilatConfig(init_scheme=SCHEME_WIDTH_SCALED, tie_word_embeddings=True)
             with And("unknown schemes are rejected"):
                 with pytest.raises(ValueError, match="init_scheme"):
                     KilatConfig(init_scheme="xavier")
@@ -81,7 +84,7 @@ def test_width_scaled_init_statistics():
 
 def test_width_scaled_init_loss_satisfies_gate1():
     with Scenario("Unit: width_scaled Keeps Gate 1 Unbiased Initial Loss"):
-        for preset in ["kilat-pure-attention", "kilat-macro-synergy", "kilat-pure-decay"]:
+        for preset in [PRESET_PURE_ATTENTION, "kilat-macro-synergy", "kilat-pure-decay"]:
             with Given(f"an untrained width_scaled {preset} with V=512"):
                 torch.manual_seed(0)
                 m = KilatTransformer.from_preset(preset, vocab_size=512, d_model=64, n_layers=2, max_seq_len=64)
@@ -114,7 +117,7 @@ def test_width_scaled_fixes_pure_attention_mqar_plateau():
     with Scenario("Capability Regression: Pure-Attention MQAR Plateau (root cause guard)"):
         with Given("identical pure-attention models differing only in init scheme"):
             torch.manual_seed(0)
-            fixed = _micro("width_scaled")
+            fixed = _micro(SCHEME_WIDTH_SCALED)
             torch.manual_seed(0)
             legacy = _micro("gpt2")
             with When("both train 450 steps on mini-MQAR (seq 32, 4 KV pairs)"):

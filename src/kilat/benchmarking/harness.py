@@ -20,6 +20,11 @@ def load_certification_config(config_path: str) -> Dict[str, Any]:
         return yaml.safe_load(f) or {}
 
 
+def _print_pillar_status(passed: bool) -> None:
+    status = "PASS" if passed else "FAIL"
+    print(f"    Status: {status}")
+
+
 class CertificationHarness:
     """Unified harness executing the 5 certification pillars."""
 
@@ -40,9 +45,9 @@ class CertificationHarness:
     ) -> Dict[str, Any]:
         """Run requested pillars on a single registered model."""
         pillars = pillars or ["p1", "p2", "p3", "p4", "p5"]
-        print(f"\n=======================================================")
+        print("\n=======================================================")
         print(f"⚡ Starting KMCP Certification for: {model_name}")
-        print(f"=======================================================")
+        print("=======================================================")
 
         def builder(**kw):
             return build_model(model_name, **kw)
@@ -62,27 +67,27 @@ class CertificationHarness:
         if "p1" in pillars:
             print("--> [Pillar 1/5] Running Mechanical & Causal Correctness...")
             results["p1"] = run_pillar1(builder, self.p1_cfg)
-            print(f"    Status: {'PASS' if results['p1']['passed'] else 'FAIL'}")
+            _print_pillar_status(bool(results["p1"]["passed"]))
 
         if "p2" in pillars:
             print(f"--> [Pillar 2/5] Running Mechanistic Capability ({self.p2_cfg.task})...")
             results["p2"] = run_pillar2(builder, self.p2_cfg, arch_name=model_name)
-            print(f"    Status: {'PASS' if results['p2']['passed'] else 'FAIL'}")
+            _print_pillar_status(bool(results["p2"]["passed"]))
 
         if "p3" in pillars:
             print("--> [Pillar 3/5] Running Empirical Scaling Laws...")
             results["p3"] = run_pillar3(builder, self.p3_cfg)
-            print(f"    Status: {'PASS' if results['p3']['passed'] else 'FAIL'}")
+            _print_pillar_status(bool(results["p3"]["passed"]))
 
         if "p4" in pillars:
             print("--> [Pillar 4/5] Running Hardware Efficiency Dynamics...")
             results["p4"] = run_pillar4(builder, self.p4_cfg, baseline_builder=comparative_builder)
-            print(f"    Status: {'PASS' if results['p4']['passed'] else 'FAIL'}")
+            _print_pillar_status(bool(results["p4"]["passed"]))
 
         if "p5" in pillars:
             print("--> [Pillar 5/5] Running Mechanistic Diagnostics...")
             results["p5"] = run_pillar5(builder, self.p5_cfg)
-            print(f"    Status: {'PASS' if results['p5']['passed'] else 'FAIL'}")
+            _print_pillar_status(bool(results["p5"]["passed"]))
 
         dossier_path = write_certification_dossier(
             output_dir=output_dir,

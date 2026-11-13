@@ -49,6 +49,9 @@ from kilat.utils.report import count_parameters
 
 logger = logging.getLogger(__name__)
 
+_METRIC_PERPLEXITY = "perplexity"
+_KEY_EPOCH_ITER_RNG_STATE = "epoch_iter_rng_state"
+
 
 class KilatTrainer:
     """
@@ -278,11 +281,12 @@ class KilatTrainer:
         # Distributed Data Parallel wrapping
         if is_distributed_initialized() and not isinstance(self.model, nn.parallel.DistributedDataParallel):
             if self.device.type == "cuda":
-                dev_idx = (
-                    self.device.index
-                    if self.device.index is not None
-                    else (torch.cuda.current_device() if torch.cuda.is_available() else 0)
-                )
+                if self.device.index is not None:
+                    dev_idx = self.device.index
+                elif torch.cuda.is_available():
+                    dev_idx = torch.cuda.current_device()
+                else:
+                    dev_idx = 0
                 device_ids = [dev_idx]
             else:
                 device_ids = None
@@ -592,10 +596,10 @@ class KilatTrainer:
         cycle_epoch = int(self.state.epoch)
         set_dataloader_epoch(self.train_dataloader, cycle_epoch)
 
-        if isinstance(resumed_dl, dict) and resumed_dl.get("epoch_iter_rng_state") is not None:
+        if isinstance(resumed_dl, dict) and resumed_dl.get(_KEY_EPOCH_ITER_RNG_STATE) is not None:
             # Deterministic exact-batch fast-forward to preserve bitwise RNG + sampler parity
             post_step_rng = capture_rng_state()
-            self._epoch_iter_rng_state = resumed_dl["epoch_iter_rng_state"]
+            self._epoch_iter_rng_state = resumed_dl[_KEY_EPOCH_ITER_RNG_STATE]
             restore_rng_state(self._epoch_iter_rng_state)
             data_iter = iter(self.train_dataloader)
             skip_batches = int(resumed_dl.get("batches_in_current_cycle", 0))
@@ -694,9 +698,9 @@ class KilatTrainer:
 
         resumed_dl = getattr(self.state, "_resumed_dataloader_state", None)
         skip_batches = 0
-        if isinstance(resumed_dl, dict) and resumed_dl.get("epoch_iter_rng_state") is not None:
+        if isinstance(resumed_dl, dict) and resumed_dl.get(_KEY_EPOCH_ITER_RNG_STATE) is not None:
             post_step_rng = capture_rng_state()
-            self._epoch_iter_rng_state = resumed_dl["epoch_iter_rng_state"]
+            self._epoch_iter_rng_state = resumed_dl[_KEY_EPOCH_ITER_RNG_STATE]
             restore_rng_state(self._epoch_iter_rng_state)
             raw_iter = iter(self.train_dataloader)
             skip_batches = int(resumed_dl.get("batches_in_current_cycle", 0))
@@ -1111,8 +1115,8 @@ class KilatTrainer:
             if self.scaler is not None:
                 logs["grad_scale"] = self.scaler.get_scale()
             # Perplexity is strictly exp(pure CE loss), never polluted by MoE aux_loss
-            logs["perplexity"] = compute_perplexity(pure_ce)
-            logs["ppl"] = logs["perplexity"]
+            logs[_METRIC_PERPLEXITY] = compute_perplexity(pure_ce)
+            logs["ppl"] = logs[_METRIC_PERPLEXITY]
 
             self._log(logs)
 
@@ -1163,7 +1167,7 @@ class KilatTrainer:
             `tag` is None. These checkpoints are prunable.
         """
         dl_state = {
-            "epoch_iter_rng_state": self._epoch_iter_rng_state,
+            _KEY_EPOCH_ITER_RNG_STATE: self._epoch_iter_rng_state,
             "batches_in_current_cycle": self._batches_in_current_cycle,
         }
         save_checkpoint(

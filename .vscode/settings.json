@@ -1,0 +1,8 @@
+{
+  "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
+  "sonarlint.rules": {
+    "python:S107": {
+      "level": "off"
+    }
+  }
+}

@@ -45,6 +45,7 @@ _CODE_PRIORITY: tuple[AssuranceFailureCode, ...] = (
     AssuranceFailureCode.ERR_INSECURE_DESERIALIZATION,
     AssuranceFailureCode.ERR_SHELL_INJECTION_RISK,
     AssuranceFailureCode.ERR_UNTRUSTED_DYNAMIC_IMPORT,
+    AssuranceFailureCode.ERR_CODE_QUALITY_VIOLATION,
 )
 
 
@@ -183,6 +184,8 @@ def run_gate0_security(
     t0 = time.perf_counter()
     roots = [Path(r) for r in source_roots] if source_roots is not None else [_default_source_root()]
 
+    from kilat.assurance.quality import audit_codebase
+
     findings: list[SecurityFinding] = []
     files_scanned = 0
     for root in roots:
@@ -191,9 +194,22 @@ def run_gate0_security(
         files_scanned += n
     findings.extend(audit_tokenizer_config(getattr(main_cfg, "tokenizer", None)))
 
+    quality_findings, _ = audit_codebase(roots)
+    for qf in quality_findings:
+        findings.append(
+            SecurityFinding(
+                rule=qf.rule,
+                code=AssuranceFailureCode.ERR_CODE_QUALITY_VIOLATION.value,
+                location=qf.location,
+                detail=qf.detail,
+                owasp="SonarLint Clean Code Invariants",
+            )
+        )
+
     metrics: dict[str, Any] = {
         "files_scanned": files_scanned,
         "findings_count": len(findings),
+        "quality_findings_count": len(quality_findings),
         "findings": [asdict(f) for f in findings],
         "trusted_module_prefixes": list(trusted_module_prefixes()),
         "frameworks": [
@@ -201,6 +217,7 @@ def run_gate0_security(
             "OWASP Machine Learning Security Top 10",
             "OWASP Top 10 2021",
             "NCSC/CISA Guidelines for Secure AI System Development",
+            "SonarLint Standalone Clean Code Invariants",
         ],
     }
 

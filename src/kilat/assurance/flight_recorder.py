@@ -255,7 +255,7 @@ class FlightRecorderCallback(TrainerCallback):
 
         # Guard: Differentiate evaluation logs from training logs
         is_eval = ("eval_loss" in logs) or any(
-            k.startswith("eval_") or k.startswith("eval/") for k in logs.keys()
+            k.startswith(("eval_", "eval/")) for k in logs.keys()
         )
         if is_eval and ("loss" not in logs and "ce_loss" not in logs):
             eval_loss = float(logs.get("eval_loss", 0.0))

@@ -25,11 +25,12 @@ from kilat.utils.security import (
 from tests.shared.bdd import And, Given, Scenario, Then, When
 
 GOOD_SHA = "0123456789abcdef0123456789abcdef01234567"
+_ENV_TRUSTED_MODULES = "KILAT_TRUSTED_MODULES"
 
 
 def test_trusted_module_allowlist(monkeypatch):
     with Scenario("Unit: Dynamic Import Allowlist"):
-        monkeypatch.delenv("KILAT_TRUSTED_MODULES", raising=False)
+        monkeypatch.delenv(_ENV_TRUSTED_MODULES, raising=False)
         monkeypatch.delenv("KILAT_TOKENIZER_BUILDER", raising=False)
         with Given("the default allowlist"):
             with Then("first-party kilat modules are trusted"):
@@ -42,12 +43,12 @@ def test_trusted_module_allowlist(monkeypatch):
                 assert not is_trusted_module(".kilat")
                 assert not is_trusted_module("")
             with And("assert_trusted_module raises an ImportError subclass"):
-                with pytest.raises(UntrustedModuleError, match="KILAT_TRUSTED_MODULES"):
+                with pytest.raises(UntrustedModuleError, match=_ENV_TRUSTED_MODULES):
                     assert_trusted_module("os")
                 assert issubclass(UntrustedModuleError, ImportError)
 
         with Given("an operator who extends the allowlist via environment"):
-            monkeypatch.setenv("KILAT_TRUSTED_MODULES", "my_org.tok, other ")
+            monkeypatch.setenv(_ENV_TRUSTED_MODULES, "my_org.tok, other ")
             monkeypatch.setenv("KILAT_TOKENIZER_BUILDER", "env_mod.sub:build")
             with When("resolving trusted prefixes"):
                 prefixes = trusted_module_prefixes()
@@ -91,7 +92,7 @@ def test_revision_pinning_policy(monkeypatch):
 
 def test_checkpoint_tokenizer_config_cannot_import_arbitrary_code(tmp_path, monkeypatch):
     with Scenario("Unit: Malicious tokenizer_config.json in Checkpoint (OWASP LLM03/ML06)"):
-        monkeypatch.delenv("KILAT_TRUSTED_MODULES", raising=False)
+        monkeypatch.delenv(_ENV_TRUSTED_MODULES, raising=False)
         monkeypatch.delenv("KILAT_TOKENIZER_BUILDER", raising=False)
         with Given("a downloaded checkpoint whose tokenizer_config.json points at a stdlib gadget"):
             (tmp_path / "tokenizer_config.json").write_text(
