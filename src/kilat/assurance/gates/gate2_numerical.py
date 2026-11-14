@@ -7,7 +7,12 @@ from typing import Any, Optional
 import torch
 import torch.nn as nn
 
-from kilat.assurance.types import AssuranceError, AssuranceFailureCode, GateResult
+from kilat.assurance.types import (
+    AssuranceError,
+    AssuranceFailureCode,
+    GateResult,
+    unwrap_kilat_model,
+)
 from kilat.configs.model_config import KilatConfig
 from kilat.engine.checkpoint import capture_rng_state, get_device, restore_rng_state
 from kilat.models.attention import KilatAttention, KilatAttentionRoPE
@@ -156,6 +161,7 @@ def run_gate2_numerical(
 
         torch.manual_seed(20261110)
         target_model = model if model is not None else KilatTransformer(model_config)
+        base_model = unwrap_kilat_model(target_model)
         device = get_device(target_model)
         was_training = target_model.training
         vocab_size = int(model_config.vocab_size)
@@ -194,7 +200,9 @@ def run_gate2_numerical(
             out.retain_grad()
             captured_emb.append(out)
 
-        wte_hook = target_model.wte.register_forward_hook(_capture_wte)
+        orig_wte_req = bool(base_model.wte.weight.requires_grad)
+        base_model.wte.weight.requires_grad_(True)
+        wte_hook = base_model.wte.register_forward_hook(_capture_wte)
         try:
             logits_jac = target_model(x_base, return_dict=True).logits
             t_mid = seq_len // 2
@@ -209,6 +217,8 @@ def run_gate2_numerical(
                     )
         finally:
             wte_hook.remove()
+            base_model.wte.weight.grad = None
+            base_model.wte.weight.requires_grad_(orig_wte_req)
             target_model.zero_grad(set_to_none=True)
 
         # ── 3. Cross-Sample Batch Isolation Test ────────────────────────────────
@@ -231,41 +241,75 @@ def run_gate2_numerical(
         target_model.zero_grad(set_to_none=True)
         grad_seq_len = min(max(16, seq_len), max_pos)
         x_grad = torch.randint(0, vocab_size, (6, grad_seq_len), device=device, dtype=torch.long)
-        out_g = target_model(x_grad, labels=x_grad, return_dict=True)
-        logits_g, loss_g = out_g.logits, out_g.loss
-        if loss_g is None or not torch.isfinite(logits_g).all() or not torch.isfinite(loss_g):
-            raise AssuranceError(
-                AssuranceFailureCode.ERR_NON_FINITE_ACTIVATION,
-                "Non-finite logits or loss encountered during gradient connectivity check.",
-            )
-        loss_g.backward()
 
-        missing_grads: list[str] = []
-        zero_grads: list[str] = []
-        frozen_with_grads: list[str] = []
-        checked_trainable = 0
-
-        for name, param in target_model.named_parameters():
-            if not param.requires_grad:
-                if param.grad is not None and float(param.grad.abs().max().item()) > 0.0:
-                    frozen_with_grads.append(name)
-                continue
-
-            checked_trainable += 1
-            if param.grad is None:
-                missing_grads.append(name)
-                continue
-            if not torch.isfinite(param.grad).all():
+        def _audit_gradients() -> tuple[list[str], list[str], list[str], int]:
+            target_model.zero_grad(set_to_none=True)
+            out_g = target_model(x_grad, labels=x_grad, return_dict=True)
+            logits_g, loss_g = out_g.logits, out_g.loss
+            if loss_g is None or not torch.isfinite(logits_g).all() or not torch.isfinite(loss_g):
                 raise AssuranceError(
                     AssuranceFailureCode.ERR_NON_FINITE_ACTIVATION,
-                    f"Non-finite gradient detected on parameter '{name}'.",
-                    {"parameter": name},
+                    "Non-finite logits or loss encountered during gradient connectivity check.",
                 )
-            grad_norm = float(param.grad.detach().float().norm().item())
-            if math.isclose(grad_norm, 0.0, abs_tol=1e-12) or ("router" in name and grad_norm < 1e-6):
-                # Catches both exact 0.0 gradients and Top-1 MoE w/(w+eps) ~1e-9 crushed router gradients
-                if ".routed_experts." not in name:
-                    zero_grads.append(name)
+            loss_g.backward()
+
+            m_grads: list[str] = []
+            z_grads: list[str] = []
+            f_grads: list[str] = []
+            c_trainable = 0
+
+            for name, param in target_model.named_parameters():
+                if not param.requires_grad:
+                    if param.grad is not None and float(param.grad.abs().max().item()) > 0.0:
+                        f_grads.append(name)
+                    continue
+
+                c_trainable += 1
+                if param.grad is None:
+                    m_grads.append(name)
+                    continue
+                if not torch.isfinite(param.grad).all():
+                    raise AssuranceError(
+                        AssuranceFailureCode.ERR_NON_FINITE_ACTIVATION,
+                        f"Non-finite gradient detected on parameter '{name}'.",
+                        {"parameter": name},
+                    )
+                grad_norm = float(param.grad.detach().float().norm().item())
+                if math.isclose(grad_norm, 0.0, abs_tol=1e-12) or ("router" in name and grad_norm < 1e-6):
+                    # Catches both exact 0.0 gradients and Top-1 MoE w/(w+eps) ~1e-9 crushed router gradients
+                    if ".routed_experts." not in name:
+                        z_grads.append(name)
+            return m_grads, z_grads, f_grads, c_trainable
+
+        missing_grads, zero_grads, frozen_with_grads, checked_trainable = _audit_gradients()
+
+        # Standard PEFT LoRA initializes lora_B = 0 so Delta W = B A = 0 at t=0, which makes
+        # dL/dA = B^T dL/d(Delta W) = 0 on step 0 while dL/dB != 0. Verify 2-step connectivity
+        # by taking a temporary micro-step on zero-initialized lora_B tensors and re-auditing.
+        if (
+            not missing_grads
+            and not frozen_with_grads
+            and zero_grads
+            and all("lora_a" in n.lower() for n in zero_grads)
+        ):
+            saved_lora_b: list[tuple[nn.Parameter, torch.Tensor]] = []
+            for name, param in target_model.named_parameters():
+                if (
+                    param.requires_grad
+                    and "lora_b" in name.lower()
+                    and param.grad is not None
+                    and float(param.detach().abs().max().item()) == 0.0
+                ):
+                    saved_lora_b.append((param, param.detach().clone()))
+                    with torch.no_grad():
+                        param.add_(param.grad, alpha=-1e-2)
+            try:
+                if saved_lora_b:
+                    missing_grads, zero_grads, frozen_with_grads, checked_trainable = _audit_gradients()
+            finally:
+                with torch.no_grad():
+                    for p_b, orig_b in saved_lora_b:
+                        p_b.copy_(orig_b)
 
         target_model.zero_grad(set_to_none=True)
         if not was_training:

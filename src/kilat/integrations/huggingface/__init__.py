@@ -10,6 +10,14 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
+from .peft import DEFAULT_KILAT_LORA_TARGET_MODULES, get_kilat_lora_config
+from .trl import (
+    KilatCompletionOnlyCollator,
+    compute_dpo_preference_loss,
+    compute_sequence_logprobs,
+    prepare_kilat_for_post_training,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -50,4 +58,12 @@ def register_kilat() -> None:
         logger.debug("transformers is not installed; skipping AutoClass registration.")
 
 
-__all__ = ["register_kilat"]
+__all__ = [
+    "register_kilat",
+    "get_kilat_lora_config",
+    "DEFAULT_KILAT_LORA_TARGET_MODULES",
+    "KilatCompletionOnlyCollator",
+    "compute_dpo_preference_loss",
+    "compute_sequence_logprobs",
+    "prepare_kilat_for_post_training",
+]

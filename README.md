@@ -48,8 +48,9 @@ You don't need any local GPU setup to get started. Open and run our end-to-end n
 
 | Notebook | Description | Colab Link |
 | :--- | :--- | :---: |
-| **General Pre-Training** | Pre-train a custom Kilat sub-quadratic LLM from scratch on raw text / TinyStories. | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Airukua/Kilat/blob/main/notebooks/kilat_general_pretraining_colab.ipynb) |
-| **Supervised Fine-Tuning (SFT)** | Instruction-tune a base model on conversational / Alpaca-style datasets with prompt loss masking. | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Airukua/Kilat/blob/main/notebooks/kilat_sft_colab.ipynb) |
+| **1. General Pre-Training** | Pre-train a custom Kilat sub-quadratic LLM from scratch, run 6-Gate Assurance, and export to Hugging Face Hub. | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Airukua/Kilat/blob/main/notebooks/kilat_general_pretraining_colab.ipynb) |
+| **2. PEFT LoRA Fine-Tuning** | Adapt Kilat with Low-Rank Adaptation (`peft`), verify `PeftModel` across Gates `G0`–`G6`, and merge weights via `merge_and_unload()`. | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Airukua/Kilat/blob/main/notebooks/kilat_peft_lora_example.ipynb) |
+| **3. SFT & DPO Alignment** | Instruction-tune on conversational datasets with `-100` prompt loss masking, non-reentrant checkpointing, and DPO preference alignment. | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Airukua/Kilat/blob/main/notebooks/kilat_sft_colab.ipynb) |
 
 *Pre-trained model checkpoint available on Hugging Face: [**AiRukua/tiny-stories-kilat-35M**](https://huggingface.co/AiRukua/tiny-stories-kilat-35M).*
 
