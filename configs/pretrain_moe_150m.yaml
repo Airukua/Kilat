@@ -1,0 +1,103 @@
+# ==============================================================================
+# Kilat Production Config: 150M DeepSeekMoE on FineWeb-Edu (`pretrain_moe_150m.yaml`)
+# ==============================================================================
+# Architecture : Hybrid Global Decay (O(1)) + Latent MLA + DeepSeekMoE (Top-2/8 + 1 Shared)
+# Target Scale : 151.0M Total Parameters (~59.5M Active per token)
+# Token Budget : 20,000,000,000 tokens (10B x 2 epochs)
+# Hardware     : 1x NVIDIA A100 80GB (ETA: ~16 hours)
+# Launch CLI   : kilat train --config configs/pretrain_moe_150m.yaml
+# ==============================================================================
+
+experiment:
+  name: kilat-moe-150m-20b
+  description: 150M DeepSeekMoE Pre-training on FineWeb-Edu 20B Tokens
+  tags: ["moe", "deepseek-moe", "mla", "global-decay", "fineweb-edu", "wsdlr", "150m"]
+
+model:
+  vocab_size: 50257
+  n_embd: 384
+  n_layer: 12
+  n_head: 6
+  max_position_embeddings: 2048
+
+  recall_ratio: 0.5
+  latent_dim: 96
+  attn_drop: 0.0
+
+  use_rope: true
+  rope_head_dim: 32
+  rope_base: 10000.0
+
+  # DeepSeekMoE Topology: Top-2 of 8 routed + 1 always-on shared expert
+  ffn_mode: moe
+  ff_mult: 2.6666666667
+  ffn_dropout: 0.0
+  num_experts: 8
+  active_experts: 2
+  num_shared_experts: 1
+  fine_grained_factor: 1
+  aux_loss_coef: 0.01
+  device_balance_coef: 0.0
+  router_balance_mode: bias_free
+  bias_update_speed: 0.001
+
+  embd_drop: 0.0
+  resid_drop: 0.0
+  pad_token_id: 0
+  bos_token_id: 1
+  eos_token_id: 2
+  tie_word_embeddings: true
+  use_cache: false
+  initializer_range: 0.02
+  norm_eps: 1.0e-6
+  debug_nan_checks: false
+
+tokenizer:
+  tokenizer_type: gpt2
+  tokenizer_name_or_path: gpt2
+  use_fast: true
+  local_files_only: false
+
+dataloader:
+  dataset_format: memmap
+  train_data_path: ./data_fineweb_edu/fineweb_edu_train.npy
+  eval_data_path: ./data_fineweb_edu/fineweb_edu_validation_100M.npy
+  train_batch_size: 16
+  eval_batch_size: 16
+  max_seq_length: 2048
+  truncation: right
+  use_packing: false
+  num_workers: 4
+  pin_memory: true
+  drop_last: true
+  use_distributed_sampler: true
+  distributed_shuffle: true
+
+training:
+  output_dir: ./checkpoints/moe_150m_20b
+  resume_from_checkpoint: null
+  save_checkpoints: true
+  atomic_checkpoint: true
+  training_mode: steps
+  max_steps: 38147
+  num_train_epochs: 2
+  warmup_steps: 2000
+  learning_rate: 4.0e-4
+  beta1: 0.9
+  beta2: 0.95
+  epsilon: 1.0e-8
+  weight_decay: 0.05
+  gradient_accumulation_steps: 16
+  max_grad_norm: 1.0
+  scheduler_type: wsdlr
+  scheduler_kwargs:
+    num_decay_steps: 6147
+  precision: bf16
+  logging_steps: 50
+  eval_steps: 1000
+  save_steps: 1000
+  save_total_limit: 5
+  early_stopping_patience: 10
+  report_to: "none"
+  run_name: kilat-150m-moe-fineweb
+  seed: 42
