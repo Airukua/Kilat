@@ -14,6 +14,8 @@ from pathlib import Path
 
 import pytest
 import torch
+
+pytest.importorskip("peft")
 from peft import get_peft_model
 
 from kilat.assurance.runner import run_verification_pipeline

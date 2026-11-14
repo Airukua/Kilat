@@ -37,6 +37,20 @@ reporting = [
     "mlflow>=2.10",
     "comet_ml>=3.45",
 ]
+serving = [
+    "fastapi>=0.100.0",
+    "uvicorn>=0.23.0",
+    "httpx>=0.24.0",
+    "pydantic>=2.0",
+]
+integrations = [
+    "peft>=0.10.0",
+    "trl>=0.8.0",
+    "fastapi>=0.100.0",
+    "uvicorn>=0.23.0",
+    "httpx>=0.24.0",
+    "pydantic>=2.0",
+]
 dev = [
     "ruff>=0.4.0",
     "mypy>=1.10.0",
@@ -88,7 +102,7 @@ ignore = [
 # Tensor-shape invariants in numerical code; NOT security controls. assurance/ may not use assert
 # (stripped under `python -O`), so it is deliberately excluded from this list.
 "src/kilat/{models,data,distillation,benchmarking}/**" = ["S101"]
-"tests/**" = ["S101", "S105", "S106", "S108", "S311", "S603", "S607"]
+"tests/**" = ["S101", "S105", "S106", "S108", "S311", "S603", "S607", "E402"]
 "src/kilat/inference/export_hf.py" = ["E402"]
 
 [tool.ruff.lint.isort]

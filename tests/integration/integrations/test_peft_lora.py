@@ -15,6 +15,8 @@ from pathlib import Path
 
 import pytest
 import torch
+
+pytest.importorskip("peft")
 from peft import LoraConfig, PeftModel, TaskType, get_peft_model
 
 from kilat.assurance.gates.gate1_theory import run_gate1_theory
