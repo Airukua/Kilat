@@ -41,6 +41,7 @@ def register_kilat() -> None:
 
         try:
             AutoConfig.register("kilat", KilatConfig)
+            AutoConfig.register("kilat_transformer", KilatConfig)
         except Exception as exc:
             logger.debug("AutoConfig registration skipped: %s", exc)
 
