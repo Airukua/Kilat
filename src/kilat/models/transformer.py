@@ -617,6 +617,9 @@ class KilatTransformer(KilatPreTrainedModel, GenerationMixin):
         """
         return_dict = return_dict if return_dict is not None else self.config.return_dict
         use_cache = use_cache if use_cache is not None else self.config.use_cache
+        if self.training and self.is_gradient_checkpointing and use_cache:
+            logger.warning("`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`.")
+            use_cache = False
 
         validate_tensor_rank(input_ids, 2, "input_ids")
 
@@ -639,11 +642,25 @@ class KilatTransformer(KilatPreTrainedModel, GenerationMixin):
         present_key_values = []
 
         for i, block in enumerate(self.layers):
-            x, layer_aux_loss, layer_present = block(
-                x,
-                past_key_values=past_key_values[i] if past_key_values else None,
-                use_cache=use_cache,
-            )
+            grad_ckpt = getattr(block, "gradient_checkpointing", False)
+            if self.training and bool(grad_ckpt):
+                ckpt_fn = (
+                    grad_ckpt
+                    if callable(grad_ckpt)
+                    else lambda fn, *a: torch.utils.checkpoint.checkpoint(fn, *a, use_reentrant=False)
+                )
+                x, layer_aux_loss, layer_present = ckpt_fn(
+                    block.__call__,
+                    x,
+                    None,
+                    False,
+                )
+            else:
+                x, layer_aux_loss, layer_present = block(
+                    x,
+                    past_key_values=past_key_values[i] if past_key_values else None,
+                    use_cache=use_cache,
+                )
             if layer_aux_loss is not None:
                 total_aux_loss = total_aux_loss + layer_aux_loss
                 has_moe = True

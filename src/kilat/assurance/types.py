@@ -8,6 +8,31 @@ from enum import Enum
 from typing import Any, Optional
 
 
+def unwrap_kilat_model(model: Any) -> Any:
+    """
+    Unwrap PEFT (`PeftModel`) or Hugging Face wrapper layers to reach the underlying
+    `KilatTransformer` instance holding `.layers`, `.wte`, and `._last_loss_breakdown`.
+    """
+    curr = model
+    for _ in range(5):
+        if hasattr(curr, "layers") and hasattr(curr, "wte"):
+            return curr
+        if hasattr(curr, "get_base_model") and callable(curr.get_base_model):
+            base = curr.get_base_model()
+            if base is not None and base is not curr:
+                curr = base
+                continue
+        if hasattr(curr, "base_model") and curr.base_model is not curr:
+            curr = curr.base_model
+            continue
+        if hasattr(curr, "model") and curr.model is not curr:
+            curr = curr.model
+            continue
+        break
+    return curr
+
+
+
 class AssuranceFailureCode(str, Enum):
     """Structured failure codes for Kilat's 3-Layer Assurance & Chaos Pipeline."""
 

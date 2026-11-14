@@ -9,6 +9,9 @@ import pytest
 
 # Ensure Triton FP fusion is explicitly enabled to maintain numerical performance and silence warnings
 os.environ.setdefault("TRITON_DEFAULT_FP_FUSION", "1")
+# Cap CPU thread pools during tests to prevent CPU/RAM exhaustion on constrained hosts
+os.environ.setdefault("OMP_NUM_THREADS", "2")
+os.environ.setdefault("MKL_NUM_THREADS", "2")
 
 # Ensure project root and src are discoverable
 PROJECT_ROOT = Path(__file__).resolve().parent.parent

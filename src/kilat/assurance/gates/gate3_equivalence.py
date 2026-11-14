@@ -6,7 +6,12 @@ from typing import Optional
 
 import torch
 
-from kilat.assurance.types import AssuranceError, AssuranceFailureCode, GateResult
+from kilat.assurance.types import (
+    AssuranceError,
+    AssuranceFailureCode,
+    GateResult,
+    unwrap_kilat_model,
+)
 from kilat.configs.model_config import KilatConfig
 from kilat.engine.checkpoint import capture_rng_state, get_device, restore_rng_state
 from kilat.models.attention import KilatAttention, KilatAttentionRoPE
@@ -116,7 +121,9 @@ def run_gate3_equivalence(
                         log_lam.fill_(25.0)
             try:
                 if saved_lambdas:
-                    v_sz = int(model.config.vocab_size)
+                    base_model = unwrap_kilat_model(model)
+                    cfg_obj = getattr(base_model, "config", getattr(model, "config", None))
+                    v_sz = int(getattr(cfg_obj, "vocab_size", 64))
                     toks = torch.randint(0, v_sz, (1, 6), device=dev, dtype=torch.long)
                     with torch.no_grad():
                         logits_full_ext = model(toks, return_dict=True).logits

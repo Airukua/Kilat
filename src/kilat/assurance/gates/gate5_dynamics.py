@@ -7,7 +7,12 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
-from kilat.assurance.types import AssuranceError, AssuranceFailureCode, GateResult
+from kilat.assurance.types import (
+    AssuranceError,
+    AssuranceFailureCode,
+    GateResult,
+    unwrap_kilat_model,
+)
 from kilat.configs.model_config import KilatConfig
 from kilat.engine.checkpoint import capture_rng_state, get_device, restore_rng_state
 from kilat.engine.optimizer import create_optimizer
@@ -107,8 +112,10 @@ def run_gate5_dynamics(
     try:
         torch.manual_seed(20261112)
         target_model = model if model is not None else KilatTransformer(model_config)
+        base_model = unwrap_kilat_model(target_model)
         device = get_device(target_model)
         was_training = target_model.training
+        is_peft_frozen = not bool(base_model.wte.weight.requires_grad)
 
         # Snapshot original state so `model` (if caller-provided with runtime hooks) exits clean
         orig_state = {k: v.detach().clone() for k, v in target_model.state_dict().items()}
@@ -127,6 +134,8 @@ def run_gate5_dynamics(
 
             is_moe = getattr(model_config, "ffn_mode", "dense") == "moe"
             overfit_lr = min(1.5e-2, 1.0e-2 * math.sqrt(64.0 / float(max(16, n_embd))))
+            if is_peft_frozen:
+                overfit_lr = min(3.0e-2, overfit_lr * 2.5)
 
             # Temporarily disable dropout during exact memorization test
             saved_dropouts: list[tuple[nn.Module, str, float]] = []
@@ -155,7 +164,9 @@ def run_gate5_dynamics(
                             AssuranceFailureCode.ERR_NON_FINITE_ACTIVATION,
                             f"Non-finite logits/loss at memorization step {step_idx + 1}.",
                         )
-                    breakdown = getattr(target_model, "_last_loss_breakdown", {})
+                    breakdown = getattr(target_model, "_last_loss_breakdown", None) or getattr(
+                        base_model, "_last_loss_breakdown", {}
+                    )
                     ce_val = float(breakdown["ce_loss"].item()) if "ce_loss" in breakdown else float(loss.item())
                     if step_idx == 0:
                         initial_ce = ce_val
@@ -184,7 +195,13 @@ def run_gate5_dynamics(
                 for mod, attr, val in saved_dropouts:
                     setattr(mod, attr, val)
 
-            ce_threshold = 0.10 if is_moe else 0.05
+            if is_peft_frozen:
+                # When lm_head (std=1/d) and ln_f (gamma=1) are frozen at init, Cauchy-Schwarz bounds
+                # |<w_v, ln_f(h)>| <= ||w_v||_2 * sqrt(d) ~ 1.0, so CE is lower-bounded by ~ln(V) - 1.0.
+                # Verify substantial monotonic adapter optimization (>= 10% CE reduction toward the bound).
+                ce_threshold = initial_ce * 0.90
+            else:
+                ce_threshold = 0.10 if is_moe else 0.05
             if final_ce >= ce_threshold:
                 raise AssuranceError(
                     AssuranceFailureCode.ERR_OVERFIT_FAILURE,
@@ -200,7 +217,11 @@ def run_gate5_dynamics(
             for lr_mult in (1.0, 3.0):
                 target_model.load_state_dict(orig_state)
                 sweep_opt = create_optimizer(target_model, learning_rate=base_lr * lr_mult, weight_decay=0.01)
-                w_ref = target_model.wte.weight.detach().float().clone()
+                trainable_refs = [
+                    (p, p.detach().float().clone())
+                    for p in target_model.parameters()
+                    if p.requires_grad
+                ]
                 for s_i in range(15):
                     sweep_opt.zero_grad(set_to_none=True)
                     b_sweep = torch.randint(0, vocab_size, (2, seq_len), device=device, dtype=torch.long)
@@ -222,9 +243,11 @@ def run_gate5_dynamics(
                     torch.nn.utils.clip_grad_norm_(target_model.parameters(), 1.0)
                     sweep_opt.step()
 
-                w_now = target_model.wte.weight.detach().float()
-                upd_ratio = float((w_now - w_ref).norm().item()) / max(1e-8, float(w_ref.norm().item()))
-                max_update_ratio = max(max_update_ratio, upd_ratio)
+                if trainable_refs:
+                    delta_sq = sum(float((p.detach().float() - p0).pow(2).sum().item()) for p, p0 in trainable_refs)
+                    ref_sq = sum(float(p0.pow(2).sum().item()) for _, p0 in trainable_refs)
+                    upd_ratio = math.sqrt(delta_sq) / max(1e-8, math.sqrt(ref_sq))
+                    max_update_ratio = max(max_update_ratio, upd_ratio)
         finally:
             target_model.load_state_dict(orig_state)
             target_model.zero_grad(set_to_none=True)

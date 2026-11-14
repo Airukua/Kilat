@@ -7,7 +7,12 @@ from typing import Any, Optional
 import torch
 import torch.nn as nn
 
-from kilat.assurance.types import AssuranceError, AssuranceFailureCode, GateResult
+from kilat.assurance.types import (
+    AssuranceError,
+    AssuranceFailureCode,
+    GateResult,
+    unwrap_kilat_model,
+)
 from kilat.configs.model_config import KilatConfig
 from kilat.engine.checkpoint import capture_rng_state, get_device, restore_rng_state
 from kilat.engine.optimizer import create_optimizer
@@ -15,10 +20,11 @@ from kilat.models.blocks import RMSNorm
 from kilat.models.transformer import KilatTransformer
 
 
-def _estimate_active_parameters(model: KilatTransformer) -> tuple[int, int]:
+def _estimate_active_parameters(model: nn.Module) -> tuple[int, int]:
     """Return `(total_params, active_params)` accounting for routed MoE sparsity."""
     total_params = sum(p.numel() for p in model.parameters())
-    cfg = model.config
+    base_model = unwrap_kilat_model(model)
+    cfg = getattr(base_model, "config", getattr(model, "config", None))
     if getattr(cfg, "ffn_mode", "dense") != "moe":
         return total_params, total_params
 
@@ -37,7 +43,7 @@ def _estimate_active_parameters(model: KilatTransformer) -> tuple[int, int]:
 
 def run_gate1_theory(
     model_config: KilatConfig,
-    model: Optional[KilatTransformer] = None,
+    model: Optional[nn.Module] = None,
     weight_decay: float = 0.1,
 ) -> GateResult:
     """
@@ -45,7 +51,8 @@ def run_gate1_theory(
     Verifies:
       1. Unbiased initial pure CE loss |L_CE(0) - ln(V)| <= 0.15 on uniform random tokens.
       2. Residual stream variance growth ratio std(h_L) / std(h_1) in [0.3, 3.0].
-      3. Zero 1D / RMSNorm / LayerNorm / bias / log_lambda parameters leaked into weight_decay > 0.
+      3. Zero 1D / RMSNorm / LayerNorm / bias / log_lambda parameters leaked into weight_decay > 0,
+         and zero PEFT LoRA adapters attached to forbidden structural modules (router, rms, wte, log_lambda).
       4. Active vs total parameter accounting and FLOPs/VRAM estimates.
     """
     t0 = time.perf_counter()
@@ -53,6 +60,7 @@ def run_gate1_theory(
     try:
         torch.manual_seed(20261109)
         target_model = model if model is not None else KilatTransformer(model_config)
+        base_model = unwrap_kilat_model(target_model)
         device = get_device(target_model)
         was_training = target_model.training
         target_model.eval()
@@ -64,7 +72,7 @@ def run_gate1_theory(
 
         layer_stds: dict[int, float] = {}
         hooks = []
-        blocks = target_model.layers
+        blocks = base_model.layers
         n_layers = len(blocks)
 
         def _make_std_hook(idx: int) -> Any:
@@ -85,7 +93,9 @@ def run_gate1_theory(
                 input_ids = torch.randint(0, vocab_size, (batch_size, seq_len), device=device, dtype=torch.long)
                 out = target_model(input_ids, labels=input_ids, return_dict=True)
                 loss = out.loss
-                breakdown = getattr(target_model, "_last_loss_breakdown", None)
+                breakdown = getattr(target_model, "_last_loss_breakdown", None) or getattr(
+                    base_model, "_last_loss_breakdown", None
+                )
                 if isinstance(breakdown, dict) and "ce_loss" in breakdown:
                     initial_ce_loss = float(breakdown["ce_loss"].item())
                 else:
@@ -150,6 +160,21 @@ def run_gate1_theory(
                 AssuranceFailureCode.ERR_WEIGHT_DECAY_LEAK,
                 f"Found {len(leaked_names)} 1D/norm/log_lambda parameters in weight_decay > 0 group: {leaked_names}",
                 {"leaked_params": leaked_names},
+            )
+
+        # Audit PEFT LoRA structural target rules (forbid LoRA on router/rms/wte/log_lambda)
+        forbidden_lora_segments = ("router", "rms1", "rms2", "ln_f", "wte", "wpe", "log_lambda")
+        illegal_lora_params = [
+            name
+            for name, _ in target_model.named_parameters()
+            if "lora_" in name.lower()
+            and any(f".{seg}." in f".{name.lower()}." for seg in forbidden_lora_segments)
+        ]
+        if illegal_lora_params:
+            raise AssuranceError(
+                AssuranceFailureCode.ERR_WEIGHT_DECAY_LEAK,
+                f"PEFT LoRA adapters attached to forbidden structural modules: {illegal_lora_params}",
+                {"illegal_lora_params": illegal_lora_params},
             )
 
         total_params, active_params = _estimate_active_parameters(target_model)

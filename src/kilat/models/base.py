@@ -1,4 +1,5 @@
 from __future__ import annotations
+import functools
 import json
 import logging
 import os
@@ -9,6 +10,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
+import torch.utils.checkpoint
 
 from kilat.utils.security import (
     UnpinnedRevisionError,
@@ -340,6 +342,8 @@ class BasePreTrainedModel(nn.Module):
         """
         super().__init__()
         self.config = config
+        self.warnings_issued: Dict[str, bool] = {}
+        self._require_grads_hook: Optional[Any] = None
 
     def _init_weights(self, module: nn.Module):
         """
@@ -518,6 +522,16 @@ class BasePreTrainedModel(nn.Module):
             with open(save_dir / index_name, "w", encoding="utf-8") as f:
                 json.dump(index, f, indent=2)
             logger.info(f"Model sharded into {len(shards)} files at {save_dir}")
+
+    @classmethod
+    def _from_config(cls, config: Any, **kwargs: Any) -> BasePreTrainedModel:
+        """Instantiate model from a configuration object (required by Hugging Face AutoModel.from_config)."""
+        torch_dtype = kwargs.pop("torch_dtype", kwargs.pop("dtype", None))
+        kwargs.pop("attn_implementation", None)
+        model = cls(config, **kwargs)
+        if isinstance(torch_dtype, torch.dtype):
+            model = model.to(dtype=torch_dtype)
+        return model
 
     @classmethod
     def from_pretrained(
@@ -867,12 +881,39 @@ class BasePreTrainedModel(nn.Module):
                 f"{self.__class__.__name__} does not support gradient checkpointing. "
                 "Set supports_gradient_checkpointing = True and implement checkpointing in block layers."
             )
-        self._set_gradient_checkpointing(enable=True)
+        kw = dict(gradient_checkpointing_kwargs) if gradient_checkpointing_kwargs is not None else {}
+        if "use_reentrant" not in kw:
+            kw["use_reentrant"] = False
+        checkpoint_func = functools.partial(torch.utils.checkpoint.checkpoint, **kw)
+        self._set_gradient_checkpointing(enable=True, gradient_checkpointing_func=checkpoint_func)
 
     def gradient_checkpointing_disable(self):
         """Disable gradient checkpointing (restore full memory usage)."""
         if self.supports_gradient_checkpointing:
             self._set_gradient_checkpointing(enable=False)
+
+    def enable_input_require_grads(self):
+        """
+        Enable gradients on the input embeddings output tensor so non-reentrant
+        gradient checkpointing works when base embeddings are frozen (e.g. PEFT LoRA).
+        """
+        if self._require_grads_hook is not None:
+            return
+
+        def _make_inputs_require_grads(_module: nn.Module, _input: Any, output: torch.Tensor) -> None:
+            output.requires_grad_(True)
+
+        emb_fn = getattr(self, "get_input_embeddings", None)
+        if callable(emb_fn):
+            emb_layer = emb_fn()
+            if isinstance(emb_layer, nn.Module):
+                self._require_grads_hook = emb_layer.register_forward_hook(_make_inputs_require_grads)
+
+    def disable_input_require_grads(self):
+        """Remove the input-embedding gradient hook installed by `enable_input_require_grads`."""
+        if self._require_grads_hook is not None:
+            self._require_grads_hook.remove()
+            self._require_grads_hook = None
 
     def _set_gradient_checkpointing(
         self,

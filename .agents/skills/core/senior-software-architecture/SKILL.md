@@ -139,7 +139,7 @@ Dependencies must flow strictly downward. Violating this creates hidden coupling
 - **Rule of Composition over Monolith**:
   - Thin translation adapters must ONLY adapt interfaces (e.g. converting `forward(input_ids, attention_mask, labels)` into Kilat's canonical tensor calls).
   - Adapters must never duplicate neural network layer math.
-  - Parity tests (`tests/integrations/`) must mathematically prove that native execution and adapter execution produce $\Delta = 0.0$ logit and loss divergence.
+  - Parity tests (`tests/integration/integrations/`) must mathematically prove that native execution and adapter execution produce $\Delta = 0.0$ logit and loss divergence.
 
 ---
 

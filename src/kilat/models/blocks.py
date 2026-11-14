@@ -214,6 +214,7 @@ class Block(nn.Module):
 
         self.resid_drop = nn.Dropout(resid_drop) if resid_drop > 0 else nn.Identity()
         self.use_rope = use_rope
+        self.gradient_checkpointing: Any = False
 
     def forward(
         self,
