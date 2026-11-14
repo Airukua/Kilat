@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
+from .data import convert_hf_dataset_to_memmap
 from .peft import DEFAULT_KILAT_LORA_TARGET_MODULES, get_kilat_lora_config
 from .trl import (
     KilatCompletionOnlyCollator,
@@ -60,6 +61,7 @@ def register_kilat() -> None:
 
 __all__ = [
     "register_kilat",
+    "convert_hf_dataset_to_memmap",
     "get_kilat_lora_config",
     "DEFAULT_KILAT_LORA_TARGET_MODULES",
     "KilatCompletionOnlyCollator",

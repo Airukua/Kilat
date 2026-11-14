@@ -400,6 +400,7 @@ class GenerationMixin:
         if generation_config is None:
             generation_config = GenerationConfig()
 
+        streamer = kwargs.pop("streamer", None)
         generation_config = self._validate_generation_config(generation_config, **kwargs)
 
         # Get model-specific token IDs
@@ -443,6 +444,7 @@ class GenerationMixin:
                     generation_config,
                     max_length=max_length,
                     max_new_tokens=max_new_tokens,
+                    streamer=streamer,
                 )
             else:
                 return self._greedy_search(
@@ -450,6 +452,7 @@ class GenerationMixin:
                     generation_config,
                     max_length=max_length,
                     max_new_tokens=max_new_tokens,
+                    streamer=streamer,
                 )
 
     def _greedy_search(
@@ -458,6 +461,7 @@ class GenerationMixin:
         generation_config: GenerationConfig,
         max_length: int,
         max_new_tokens: int,
+        streamer: Any = None,
     ) -> torch.Tensor:
         """
         Greedy decoding: pick the token with highest probability at each step.
@@ -499,6 +503,9 @@ class GenerationMixin:
             next_token = torch.argmax(logits, dim=-1, keepdim=True)
             generated = torch.cat([generated, next_token], dim=1)
 
+            if streamer is not None:
+                streamer.put(next_token.cpu())
+
             # Check stopping criteria
             should_stop = stopping_criteria(generated)
             if should_stop.all():
@@ -508,6 +515,9 @@ class GenerationMixin:
             if eos_token_id is not None and (next_token == eos_token_id).all():
                 break
 
+        if streamer is not None:
+            streamer.end()
+
         return generated
 
     def _sample(
@@ -516,6 +526,7 @@ class GenerationMixin:
         generation_config: GenerationConfig,
         max_length: int,
         max_new_tokens: int,
+        streamer: Any = None,
     ) -> torch.Tensor:
         """
         Multinomial sampling: sample next token from probability distribution.
@@ -558,6 +569,9 @@ class GenerationMixin:
             next_token = sampler(logits)
             generated = torch.cat([generated, next_token], dim=1)
 
+            if streamer is not None:
+                streamer.put(next_token.cpu())
+
             # Check stopping criteria
             should_stop = stopping_criteria(generated)
             if should_stop.all():
@@ -565,6 +579,9 @@ class GenerationMixin:
 
             if eos_token_id is not None and (next_token == eos_token_id).all():
                 break
+
+        if streamer is not None:
+            streamer.end()
 
         return generated
 
