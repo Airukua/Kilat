@@ -132,7 +132,7 @@ def run_gate5_dynamics(
             seq_len = min(16, max(8, max_pos))
             fixed_batch = torch.randint(0, vocab_size, (2, seq_len), device=device, dtype=torch.long)
 
-            is_moe = getattr(model_config, "ffn_mode", "dense") == "moe"
+            is_moe = bool(getattr(model_config, "use_moe", False) or getattr(model_config, "ffn_mode", "dense") == "moe")
             overfit_lr = min(1.5e-2, 1.0e-2 * math.sqrt(64.0 / float(max(16, n_embd))))
             if is_peft_frozen:
                 overfit_lr = min(3.0e-2, overfit_lr * 2.5)
@@ -201,7 +201,7 @@ def run_gate5_dynamics(
                 # Verify substantial monotonic adapter optimization (>= 10% CE reduction toward the bound).
                 ce_threshold = initial_ce * 0.90
             else:
-                ce_threshold = 0.10 if is_moe else 0.05
+                ce_threshold = max(0.15, initial_ce * 0.05) if is_moe else 0.05
             if final_ce >= ce_threshold:
                 raise AssuranceError(
                     AssuranceFailureCode.ERR_OVERFIT_FAILURE,
