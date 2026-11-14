@@ -62,8 +62,8 @@ dataloader:
   dataset_format: memmap
   train_data_path: ./data_fineweb_edu/fineweb_edu_train.npy
   eval_data_path: ./data_fineweb_edu/fineweb_edu_validation_100M.npy
-  train_batch_size: 16
-  eval_batch_size: 16
+  train_batch_size: 32
+  eval_batch_size: 32
   max_seq_length: 2048
   truncation: right
   use_packing: false
@@ -87,7 +87,7 @@ training:
   beta2: 0.95
   epsilon: 1.0e-8
   weight_decay: 0.05
-  gradient_accumulation_steps: 16
+  gradient_accumulation_steps: 8
   max_grad_norm: 1.0
   scheduler_type: wsdlr
   scheduler_kwargs:
