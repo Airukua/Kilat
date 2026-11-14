@@ -298,8 +298,9 @@ class KilatTrainer:
 
         # Mixed precision setup
         self.amp_dtype: Optional[torch.dtype] = resolve_amp_dtype(args.precision)
+        use_scaler = getattr(args, "use_grad_scaler", getattr(args, "precision", "fp32") == "fp16")
         self.scaler: Optional[torch.amp.GradScaler] = (
-            torch.amp.GradScaler() if args.use_grad_scaler else None
+            torch.amp.GradScaler() if use_scaler else None
         )
 
         # Optimizer – independent of scheduler
