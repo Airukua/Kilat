@@ -8,6 +8,9 @@ import json
 from typing import Any, Optional
 import pytest
 import torch
+
+pytest.importorskip("fastapi")
+pytest.importorskip("httpx")
 from fastapi.testclient import TestClient
 
 from kilat.configs import KilatConfig
