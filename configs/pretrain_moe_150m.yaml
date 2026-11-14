@@ -3,15 +3,15 @@
 # ==============================================================================
 # Architecture : Hybrid Global Decay (O(1)) + Latent MLA + DeepSeekMoE (Top-2/8 + 1 Shared)
 # Target Scale : 151.0M Total Parameters (~59.5M Active per token)
-# Token Budget : 20,000,000,000 tokens (10B x 2 epochs)
-# Hardware     : 1x NVIDIA A100 80GB (ETA: ~16 hours)
+# Token Budget : 10,000,000,000 tokens (10B x 1 epoch - Single Pass, Zero Data Repetition)
+# Hardware     : 1x NVIDIA A100 80GB (ETA: ~7.9 hours)
 # Launch CLI   : kilat train --config configs/pretrain_moe_150m.yaml
 # ==============================================================================
 
 experiment:
-  name: kilat-moe-150m-20b
-  description: 150M DeepSeekMoE Pre-training on FineWeb-Edu 20B Tokens
-  tags: ["moe", "deepseek-moe", "mla", "global-decay", "fineweb-edu", "wsdlr", "150m"]
+  name: kilat-moe-150m-10b
+  description: 150M DeepSeekMoE Pre-training on FineWeb-Edu 10B Tokens (1 Epoch)
+  tags: ["moe", "deepseek-moe", "mla", "global-decay", "fineweb-edu", "wsdlr", "150m", "10b"]
 
 model:
   vocab_size: 50257
@@ -74,14 +74,14 @@ dataloader:
   distributed_shuffle: true
 
 training:
-  output_dir: ./checkpoints/moe_150m_20b
+  output_dir: ./checkpoints/moe_150m_10b
   resume_from_checkpoint: null
   save_checkpoints: true
   atomic_checkpoint: true
   training_mode: steps
-  max_steps: 38147
-  num_train_epochs: 2
-  warmup_steps: 2000
+  max_steps: 19073
+  num_train_epochs: 1
+  warmup_steps: 1000
   learning_rate: 4.0e-4
   beta1: 0.9
   beta2: 0.95
@@ -91,7 +91,7 @@ training:
   max_grad_norm: 1.0
   scheduler_type: wsdlr
   scheduler_kwargs:
-    num_decay_steps: 6147
+    num_decay_steps: 3073
   precision: bf16
   logging_steps: 50
   eval_steps: 1000
