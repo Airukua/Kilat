@@ -963,12 +963,13 @@ class KilatForCausalLM(KilatPreTrainedModel, GenerationMixin):
         is_first_iteration: Optional[bool] = False,
         **kwargs: Any,
     ) -> Dict[str, Any]:
+        use_cache = kwargs.get("use_cache", getattr(self.config, "use_cache", False))
         if past_key_values is not None:
             input_ids = input_ids[:, -1:]
         return {
             "input_ids": input_ids,
             "past_key_values": past_key_values,
-            "use_cache": True,
+            "use_cache": use_cache,
             "attention_mask": attention_mask,
         }
 

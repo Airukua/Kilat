@@ -92,6 +92,11 @@ class KilatConfig(BaseConfig):
     """
 
     model_type = "kilat_transformer"
+    attribute_map = {
+        "num_hidden_layers": "n_layer",
+        "hidden_size": "n_embd",
+        "num_attention_heads": "n_head",
+    }
 
     def __init__(
         self,
@@ -216,6 +221,31 @@ class KilatConfig(BaseConfig):
 
         # Run validation after all attributes are set
         self._validate()
+
+    @property
+    def num_hidden_layers(self) -> int:
+        return self.n_layer
+
+    @num_hidden_layers.setter
+    def num_hidden_layers(self, value: int) -> None:
+        self.n_layer = value
+
+    @property
+    def hidden_size(self) -> int:
+        return self.n_embd
+
+    @hidden_size.setter
+    def hidden_size(self, value: int) -> None:
+        self.n_embd = value
+
+    @property
+    def num_attention_heads(self) -> int:
+        return self.n_head
+
+    @num_attention_heads.setter
+    def num_attention_heads(self, value: int) -> None:
+        self.n_head = value
+
 
     def __post_init__(self, **kwargs):
         """

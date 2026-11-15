@@ -17,6 +17,11 @@ class KilatConfig(PretrainedConfig):
 
     model_type = "kilat"
     keys_to_ignore_at_inference = ["past_key_values"]
+    attribute_map = {
+        "num_hidden_layers": "n_layer",
+        "hidden_size": "n_embd",
+        "num_attention_heads": "n_head",
+    }
 
     def __init__(
         self,
@@ -89,6 +94,11 @@ class KilatConfig(PretrainedConfig):
         self.n_head = n_head
         self.head_dim = n_embd // n_head
 
+        # Hugging Face standard attribute aliases
+        self.num_hidden_layers = n_layer
+        self.hidden_size = n_embd
+        self.num_attention_heads = n_head
+
         self.recall_ratio = recall_ratio
         self.recall_pattern = recall_pattern
         self.recall_ratios = recall_ratios
@@ -122,3 +132,28 @@ class KilatConfig(PretrainedConfig):
         self.initializer_range = initializer_range
         self.init_scheme = init_scheme
         self.use_cache = use_cache
+
+    @property
+    def num_hidden_layers(self) -> int:
+        return self.n_layer
+
+    @num_hidden_layers.setter
+    def num_hidden_layers(self, value: int) -> None:
+        self.n_layer = value
+
+    @property
+    def hidden_size(self) -> int:
+        return self.n_embd
+
+    @hidden_size.setter
+    def hidden_size(self, value: int) -> None:
+        self.n_embd = value
+
+    @property
+    def num_attention_heads(self) -> int:
+        return self.n_head
+
+    @num_attention_heads.setter
+    def num_attention_heads(self, value: int) -> None:
+        self.n_head = value
+
