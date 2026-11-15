@@ -238,6 +238,8 @@ Contributions are very welcome! Whether you are implementing new attention kerne
 
 Kilat is licensed under the **Apache 2.0 License**. See [LICENSE](LICENSE) for details.
 
+> Kilat is built to be shared. Anyone is welcome to use, study, modify, and build upon it, including for commercial purposes. You don't owe me payment for using my work, but please respect the effort behind it. Preserve the original attribution, acknowledge the project, and never claim someone else's work as your own.
+
 ```bibtex
 @misc{kilat2026,
   author = {Abdul Wahid Rukua},
