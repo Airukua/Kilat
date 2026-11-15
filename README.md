@@ -5,11 +5,11 @@
 **The Modern Lightweight Sub-Quadratic LLM Framework**  
 *Pre-Train, Fine-Tune (SFT), and Deploy Custom Language Models on Consumer GPUs & Google Colab*
 
-[![Open In Colab: Pre-Training](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Airukua/Kilat/blob/main/notebooks/kilat_general_pretraining_colab.ipynb)
-[![Open In Colab: SFT](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Airukua/Kilat/blob/main/notebooks/kilat_sft_colab.ipynb)
-[![Hugging Face Model](https://img.shields.io/badge/🤗%20HuggingFace-tiny--stories--kilat--35M-FFD21E?style=flat-square)](https://huggingface.co/AiRukua/tiny-stories-kilat-35M)
+[![Open In Colab: MoE Pre-Training](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Airukua/Kilat/blob/main/notebooks/kilat_moe_pretraining_colab.ipynb)
+[![Hugging Face: 150M-Kilat-SMALL-10B](https://img.shields.io/badge/🤗%20HuggingFace-150M--Kilat--SMALL--10B-FFD21E?style=flat-square)](https://huggingface.co/AiRukua/150M-Kilat-SMALL-10B)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue?style=flat-square)](https://www.python.org/downloads/)
 [![PyTorch 2.0+](https://img.shields.io/badge/PyTorch-2.0%2B-EE4C2C?style=flat-square&logo=pytorch&logoColor=white)](https://pytorch.org/)
+[![Assurance & Chaos](https://img.shields.io/badge/Assurance-16%20Chaos%20Gates%20Passed-brightgreen?style=flat-square)](#-zero-wasted-compute-guarantee-assurance--chaos-engineering)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg?style=flat-square)](LICENSE)
 
 <p align="center">
@@ -20,17 +20,23 @@
 
 ---
 
-## 💡 Why Kilat? Train LLMs Without a Supercomputer
+## 🌟 What's New in Kilat v2.0?
 
-Most existing LLM frameworks (like Megatron-LM or standard Transformer implementations) assume you have a cluster of 8x H100 enterprise GPUs. Trying to train or fine-tune models on consumer hardware (like an RTX 3060/4050/4060 laptop GPU, or a free Google Colab T4) usually leads to one frustrating outcome: **`CUDA Out of Memory (OOM)`**.
+- 🚀 **Flagship Foundation Model Released**: [**`AiRukua/150M-Kilat-SMALL-10B`**](https://huggingface.co/AiRukua/150M-Kilat-SMALL-10B) — Pre-trained from scratch on **10 Billion tokens of FineWeb-Edu**.
+- 🧠 **Macro-Synergy Hybrid Topology**: Combines **Global Exponential Decay** (0-byte KV cache recurrent linear attention) + **Latent MLA** (4x compressed KV cache) + **DeepSeekMoE** (8 routed experts, Top-2 active + 1 shared expert).
+- 🛡️ **Active ML Chaos Engineering**: Built-in non-destructive fault injection (`kilat chaos` with 8 core training scenarios `C-01..C-08` + 8 Hugging Face resilience scenarios `HFC-01..HFC-08`).
+- ⚡ **Seamless Hugging Face Hub Integration**: Direct inference with `AutoModelForCausalLM.from_pretrained("AiRukua/150M-Kilat-SMALL-10B", trust_remote_code=True)`.
 
-**Kilat** (*Indonesian: lightning*) is engineered from the ground up for **maximum efficiency and accessibility**. It combines sub-quadratic attention with modern state-of-the-art architectures so developers, indie hackers, and practitioners can build custom domain models, small language models (SLMs), and edge AI agents without enterprise budgets.
+---
 
-### The Lightweight Architectural Advantage: **Macro-Synergy**
+## 💡 Why Kilat? Train LLMs Without an Enterprise Supercomputer
 
-Kilat solves the memory bottleneck with its flagship **Macro-Synergy** architecture, which interleaves:
-1. **$O(N)$ Global Exponential Decay Contextualizer (Even Layers)**: Uses a hardware-accelerated Triton parallel prefix scan. **Requires EXACTLY 0 BYTES of KV-Cache.**
+Most existing LLM frameworks assume you have a cluster of 8x H100 GPUs. Trying to train or fine-tune models on consumer hardware (such as an RTX 3060/4060 laptop GPU, or a free Google Colab T4) usually leads to **`CUDA Out of Memory (OOM)`**.
+
+**Kilat** (*Indonesian: lightning*) is engineered from the ground up for **maximum efficiency, numerical proof, and hardware accessibility**:
+1. **$O(N)$ Global Exponential Decay Contextualizer (Even Layers)**: Hardware-accelerated recurrent linear scan. **Requires EXACTLY 0 BYTES of KV-Cache.**
 2. **Latent Multi-Head Latent Attention (MLA) (Odd Layers)**: Low-rank joint key-value compression with Decoupled RoPE, dedicating 100% capacity to associative memory retrieval.
+3. **Fine-Grained DeepSeekMoE**: 1 shared expert + 8 routed experts with loss-free dynamic bias balancing, giving 151M parameter capacity while computing only **~59.5M active parameters per token**.
 
 | Metric | Standard Transformer | Kilat Macro-Synergy | Real-World Benefit |
 | :--- | :---: | :---: | :--- |
@@ -42,53 +48,122 @@ Kilat solves the memory bottleneck with its flagship **Macro-Synergy** architect
 
 ---
 
+## 🚀 Flagship Model: 150M - Kilat SMALL 10B
+
+Our flagship foundation model is available on Hugging Face Hub: [**`AiRukua/150M-Kilat-SMALL-10B`**](https://huggingface.co/AiRukua/150M-Kilat-SMALL-10B).
+
+| Specification | Value |
+| :--- | :--- |
+| **Total Parameters** | **150,996,480 (~151M)** |
+| **Active Parameters / Token** | **59,510,784 (~59.5M)** |
+| **Architecture** | Hybrid Global Decay + Latent MLA + DeepSeekMoE |
+| **Layers / Heads / Width** | 12 Layers / 6 Heads / 384 Dim (Latent Dim 96) |
+| **Experts Configuration** | 8 Routed Experts (Top-2 Active) + 1 Shared Expert |
+| **Pre-Training Corpus** | **10 Billion Tokens** ([FineWeb-Edu](https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu), single-pass) |
+| **Context Window** | 2,048 tokens |
+| **License** | Apache 2.0 (Commercial & Research friendly) |
+
+---
+
+## 💻 Quickstart: Generating with the Pre-Trained Model
+
+### 1. Installation
+```bash
+pip install torch transformers accelerate huggingface_hub
+```
+
+### 2. Crucial Guide on Base Model Generation Settings
+> ⚠️ **Base Model Note**: `150M-Kilat-SMALL-10B` is a **raw foundation model**, not an instruction/chat tuned assistant. It is designed to continue factual and educational sentences. Without repetition penalties, compact models can fall into n-gram loops.
+
+Always use **tuned sampling parameters** (`temperature=0.75`, `top_p=0.92`, `repetition_penalty=1.18`, `no_repeat_ngram_size=3`):
+
+```python
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+model_id = "AiRukua/150M-Kilat-SMALL-10B"
+
+print(f"📥 Loading {model_id}...")
+tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
+model = AutoModelForCausalLM.from_pretrained(
+    model_id,
+    trust_remote_code=True,
+    dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+    device_map="auto" if torch.cuda.is_available() else None,
+)
+
+# Start with an educational or scientific opening phrase
+prompt = "Photosynthesis is the process by which green plants"
+inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+
+# Recommended sampling parameters for 150M base models
+outputs = model.generate(
+    **inputs,
+    max_new_tokens=60,
+    do_sample=True,
+    temperature=0.75,
+    top_p=0.92,
+    top_k=50,
+    repetition_penalty=1.18,
+    no_repeat_ngram_size=3,
+    use_cache=False,
+    pad_token_id=tokenizer.eos_token_id,
+)
+
+print("\n--- Output ---")
+print(tokenizer.decode(outputs[0], skip_special_tokens=True))
+```
+
+### Output Example:
+> *"Photosynthesis is the process by which green plants convert sunlight into energy. The plant can use this energy to produce food, especially carbohydrates, as well as photosynthesis. However, while there are many other methods for converting light energy into chemical energy..."*
+
+---
+
 ## 🚀 1-Click Interactive Google Colab Notebooks
 
 You don't need any local GPU setup to get started. Open and run our end-to-end notebooks directly in Google Colab (compatible with free T4 GPU tier):
 
 | Notebook | Description | Colab Link |
 | :--- | :--- | :---: |
-| **1. General Pre-Training** | Pre-train a custom Kilat sub-quadratic LLM from scratch, run 6-Gate Assurance, and export to Hugging Face Hub. | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Airukua/Kilat/blob/main/notebooks/kilat_general_pretraining_colab.ipynb) |
-| **2. PEFT LoRA Fine-Tuning** | Adapt Kilat with Low-Rank Adaptation (`peft`), verify `PeftModel` across Gates `G0`–`G6`, and merge weights via `merge_and_unload()`. | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Airukua/Kilat/blob/main/notebooks/kilat_peft_lora_example.ipynb) |
-| **3. SFT & DPO Alignment** | Instruction-tune on conversational datasets with `-100` prompt loss masking, non-reentrant checkpointing, and DPO preference alignment. | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Airukua/Kilat/blob/main/notebooks/kilat_sft_colab.ipynb) |
-
-*Pre-trained model checkpoint available on Hugging Face: [**AiRukua/tiny-stories-kilat-35M**](https://huggingface.co/AiRukua/tiny-stories-kilat-35M).*
+| **1. MoE Pre-Training (150M 10B)** | Pre-train the 150M DeepSeekMoE + Macro-Synergy architecture from scratch on FineWeb-Edu, resume checkpoints, and export to Hub. | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Airukua/Kilat/blob/main/notebooks/kilat_moe_pretraining_colab.ipynb) |
+| **2. General Pre-Training** | Pre-train dense and hybrid sub-quadratic models, run 6-Gate Assurance, and export to Hugging Face Hub. | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Airukua/Kilat/blob/main/notebooks/kilat_general_pretraining_colab.ipynb) |
+| **3. PEFT LoRA Fine-Tuning** | Adapt Kilat with Low-Rank Adaptation (`peft`), verify `PeftModel` across Gates `G0`–`G6`, and merge weights via `merge_and_unload()`. | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Airukua/Kilat/blob/main/notebooks/kilat_peft_lora_example.ipynb) |
+| **4. SFT Alignment** | Supervised fine-tuning with `-100` prompt loss masking and non-reentrant activation checkpointing. | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Airukua/Kilat/blob/main/notebooks/kilat_sft_colab.ipynb) |
 
 ---
 
-## 📦 Installation
+## 📦 Installation for Local Development
 
 ```bash
-# Install directly from GitHub
-pip install git+https://github.com/Airukua/Kilat.git
-
-# Or clone for local development / custom training
+# Clone the repository
 git clone https://github.com/Airukua/Kilat.git
 cd Kilat
-pip install -e .
+
+# Install in editable mode with development dependencies
+pip install -e ".[dev]"
 ```
 
 *Requirements: Python 3.10+, PyTorch 2.0+ (CUDA recommended for Triton kernel acceleration).*
 
 ---
 
-## ⚡ The 4-Step Workflow (Unified CLI)
+## ⚡ The Unified CLI (`kilat`)
 
-Kilat provides an all-in-one CLI tool (`kilat`) that covers your entire lifecycle from raw data to a deployable Hugging Face model:
+Kilat includes a complete, production-ready command line interface:
 
 ### 1. Pre-Train from Scratch
 ```bash
-# Train on CPU or consumer GPU using lightweight presets
-kilat train --config configs/small_dense.yaml \
-  --set training.max_steps=1000 \
-  --set training.output_dir=./checkpoints/my_base_model
+# Pre-train with DeepSeekMoE preset on single or multi-GPU
+kilat train --config configs/small_moe.yaml \
+  --set training.max_steps=10000 \
+  --set training.output_dir=./checkpoints/my_moe_model
 ```
 
 ### 2. Supervised Fine-Tuning (SFT / Instruction Tuning)
-Fine-tune your base model on Alpaca, ChatML, or JSONL instruction datasets with automatic prompt-loss masking:
+Fine-tune base models on Alpaca, ChatML, or JSONL instruction datasets:
 ```bash
 kilat sft \
-  --model ./checkpoints/my_base_model/checkpoint-best \
+  --model ./checkpoints/my_moe_model/checkpoint-best \
   --data ./my_instructions.jsonl \
   --output-dir ./checkpoints/my_sft_model \
   --epochs 3 \
@@ -96,130 +171,36 @@ kilat sft \
   --lr 3e-5
 ```
 
-### 3. Generate & Test (Interactive Inference)
-Generate text using Kilat's optimized incremental `LayerHybridCache`:
-```bash
-kilat generate \
-  --checkpoint ./checkpoints/my_sft_model/checkpoint-best \
-  --prompt "Below is an instruction that describes a task.\n\n### Instruction:\nWrite a story about a brave cat.\n\n### Response:\n" \
-  --max-new-tokens 64 \
-  --do-sample \
-  --temperature 0.7
-```
-
-### 4. Export to Hugging Face
-Convert your trained Kilat checkpoint into standard Hugging Face `model.safetensors` format with tokenizer and configuration:
+### 3. Export to Hugging Face
+Convert any Kilat checkpoint into standard Hugging Face `model.safetensors` format with remote code adapters and optimal `generation_config.json`:
 ```bash
 kilat export-hf \
-  --checkpoint ./checkpoints/my_sft_model/checkpoint-best \
-  --output ./hf_export
+  --checkpoint ./checkpoints/my_moe_model/checkpoint-best \
+  --output ./checkpoints/my_moe_model_hf
 ```
 
 ---
 
-## 🐍 Python API Quickstart
+## 🛡️ Zero-Wasted-Compute Guarantee: Assurance & Chaos Engineering
 
-### 1. Minimal Pre-Training Script
+In ML systems, errors rarely raise explicit exceptions. Models can run smoothly and report decreasing loss while silently corrupting gradients, learning on leaky data, breaking RNG determinism, or dropping optimizer states.
 
-```python
-from kilat import (
-    KilatConfig,
-    KilatTrainer,
-    KilatTransformer,
-    TrainingArguments,
-    build_dataloaders_from_config,
-    MainConfig,
-)
+Kilat solves this with an industrial-grade **Assurance & Active ML Chaos Engineering Pipeline**:
 
-# Load lightweight preset (or build custom config in Python)
-config = MainConfig.from_yaml("configs/debug_cpu.yaml")
-model = KilatTransformer(config)
-train_loader, eval_loader = build_dataloaders_from_config(config)
-
-trainer = KilatTrainer(
-    model=model,
-    args=config.to_training_arguments(),
-    train_dataloader=train_loader,
-    eval_dataloader=eval_loader,
-    tokenizer=config.build_tokenizer(),
-)
-trainer.train()
-```
-
-### 2. Supervised Fine-Tuning (SFT) in Python
-
-```python
-from kilat.data.sft import SFTDataset, SFTDataCollator
-from kilat.data.tokenizer import AutoTokenizer
-from kilat.engine.sft_trainer import KilatSFTTrainer
-from kilat.models.transformer import KilatTransformer
-from kilat.engine.args import TrainingArguments
-
-# Load pre-trained base model & tokenizer
-model = KilatTransformer.from_pretrained("AiRukua/tiny-stories-kilat-35M")
-tokenizer = AutoTokenizer.from_pretrained("AiRukua/tiny-stories-kilat-35M")
-
-# Load instruction dataset (Alpaca or ChatML format)
-train_dataset = SFTDataset("instructions.jsonl", tokenizer=tokenizer, max_length=512)
-collator = SFTDataCollator(tokenizer=tokenizer, pad_to_multiple_of=8)
-
-args = TrainingArguments(output_dir="./sft_output", max_steps=100, learning_rate=3e-5)
-trainer = KilatSFTTrainer(
-    model=model,
-    args=args,
-    train_dataset=train_dataset,
-    data_collator=collator,
-    tokenizer=tokenizer,
-)
-trainer.train()
-```
-
-### 3. Text Generation with `LayerHybridCache`
-
-```python
-from kilat.inference.generator import TextGenerator
-from kilat.models.transformer import KilatTransformer
-from kilat.data.tokenizer import AutoTokenizer
-
-model = KilatTransformer.from_pretrained("./sft_output/checkpoint-best")
-tokenizer = AutoTokenizer.from_pretrained("./sft_output/checkpoint-best")
-
-generator = TextGenerator(model, tokenizer)
-output = generator.generate("Once upon a time", max_new_tokens=64, temperature=0.7)
-print(output)
-```
-
----
-
-## 🎯 Ready-to-Run Hardware Presets (`configs/`)
-
-Choose the preset tailored to your available hardware:
-
-| Preset Config | Recommended Hardware | Parameters | Architecture Highlights |
-| :--- | :--- | :---: | :--- |
-| [`configs/debug_cpu.yaml`](configs/debug_cpu.yaml) | **Any Laptop CPU** | ~0.5M | Instant smoke test (< 5 seconds), in-memory synthetic data |
-| [`configs/small_dense.yaml`](configs/small_dense.yaml) | **Colab T4 / RTX 4050/3060** (6–8 GB VRAM) | ~35M–85M | 12-layer Dense SwiGLU + Macro-Synergy (Decay + MLA) |
-| [`configs/small_moe.yaml`](configs/small_moe.yaml) | **RTX 3060 / 4070** (8–16 GB VRAM) | ~120M | 10-layer DeepSeekMoE (8 experts, Top-2, `bias_free` balancing) |
-| [`configs/standard_moe.yaml`](configs/standard_moe.yaml) | **Multi-GPU / FSDP** | 500M+ | 24-layer DeepSeekMoE with sequence packing & distributed sync |
-
----
-
-## 🛡️ Zero-Wasted-Compute Guarantee (Assurance & Verification)
-
-When training LLMs on limited hardware or free cloud tiers, **wasting compute is painful**. In standard training scripts, silent bugs often lurk unnoticed for hours:
-- Gradients silently zeroed out or exploding in non-norm layers.
-- Data leaking across sequence boundaries without proper causal masks.
-- Resuming from checkpoints failing to restore exact RNG seeds and optimizer states.
-
-Kilat solves this with its **Pre-Training Assurance Pipeline**:
 ```bash
-# Run pre-flight verification before spending compute
-kilat verify --config configs/small_dense.yaml
+# 1. Run Pre-Flight Validation Gates (Theory, Gradients, Equivalence, Resumption)
+kilat verify --config configs/small_moe.yaml
+
+# 2. Run Active ML Chaos Saboteur (C-01 .. C-08)
+kilat chaos -s all
+
+# 3. Run Hugging Face Integration Chaos Suite (HFC-01 .. HFC-08)
+kilat chaos -s hf
 ```
-- **Theory & Init**: Guarantees unbiased initial cross-entropy ($|\mathcal{L}_0 - \ln V| \le 0.15$).
-- **FP64 Analytical Gradcheck**: Numerically proves exact mathematical derivatives across custom Triton kernels.
-- **Bitwise Parity**: Guarantees `0.0` bitwise checkpoint resumption parity so interrupted runs resume with 100% mathematical fidelity.
-- **Active ML Chaos Saboteur (`kilat chaos`)**: Injects simulated ML bugs in-memory to prove the framework catches failures before you start training.
+
+### Injected Chaos Scenarios:
+- **`C-01..C-08`**: Silent autograd detachments, causal future leaks, cross-batch tensor reshapes, FP16 overflow storms, decay horizon singularities, MoE router collapse, poisoned batches, and mid-save preemption bit-rot.
+- **`HFC-01..HFC-08`**: Hugging Face `DynamicCache` foreign injection resilience, bidirectional schema drift (`num_hidden_layers`, `hidden_size`, `num_attention_heads`), adversarial sampling parameters, asymmetric left-padding, PEFT LoRA gradient isolation, and multithreaded streaming cancellation.
 
 ---
 
@@ -227,36 +208,20 @@ kilat verify --config configs/small_dense.yaml
 
 ```text
 Kilat/
-├── configs/                 # Ready-to-use YAML configs (laptop, Colab, single-GPU, MoE)
-├── notebooks/               # Interactive Colab notebooks (Pre-training & SFT)
+├── configs/                 # Production-ready YAML configs (laptop, Colab, MoE, multi-GPU)
+├── notebooks/               # Interactive Colab notebooks (MoE 150M, SFT, PEFT LoRA)
 ├── src/kilat/
 │   ├── cli.py               # Unified CLI (train, sft, generate, export-hf, verify, chaos)
 │   ├── models/              # KilatTransformer, Macro-Synergy (Decay + Latent MLA), DeepSeekMoE
 │   ├── engine/              # KilatTrainer, KilatSFTTrainer, Optimizer, Checkpointer, DDP
 │   ├── data/                # SFTDataset, KilatDataCollator, AutoTokenizer, Memmap preprocessor
-│   ├── inference/           # TextGenerator, LayerHybridCache, Hugging Face Exporter
-│   ├── assurance/           # 6 Pre-flight verification gates, Chaos Saboteur, FlightRecorder
+│   ├── inference/           # TextGenerator, LayerHybridCache, Hugging Face Exporter & Hub Templates
+│   ├── integrations/        # Hugging Face ecosystem bridges (AutoModel, PEFT LoRA, TRL)
+│   ├── assurance/           # 6 Pre-flight verification gates, FlightRecorder, Active Chaos Saboteur
 │   └── distillation/        # Knowledge distillation losses (Vanilla, Reverse, Adaptive)
-├── tests/                   # 400+ unit, invariant, and integration tests
-└── docs/                    # Mathematical derivations, architecture blueprints, and specs
+├── tests/                   # 400+ unit, invariant, and chaos integration tests
+└── docs/                    # Mathematical derivations, architecture blueprints, and model cards
 ```
-
----
-
-## 🗺️ Roadmap
-
-- [x] Sub-quadratic Macro-Synergy architecture (Global Decay + Latent MLA)
-- [x] $6.4\times$ KV-Cache reduction with $O(N)$ Triton parallel scan
-- [x] Supervised Fine-Tuning (SFT) engine with selective prompt masking
-- [x] Unified CLI (`kilat train`, `kilat sft`, `kilat generate`, `kilat export-hf`)
-- [x] Interactive Google Colab Notebooks (Pre-training & SFT)
-- [x] Hugging Face Hub integration & model release ([`AiRukua/tiny-stories-kilat-35M`](https://huggingface.co/AiRukua/tiny-stories-kilat-35M))
-- [x] Fine-grained DeepSeekMoE with loss-free dynamic bias balancing (`bias_free`)
-- [x] 8-stage pre-training assurance pipeline and active chaos saboteur
-- [ ] 4-bit / 8-bit Quantized SFT (QLoRA for Kilat architectures)
-- [ ] Direct Preference Optimization (DPO / ORPO) alignment trainer
-- [ ] Web-based interactive chat demo (Gradio / Streamlit)
-- [ ] ONNX and WebGPU runtime export for in-browser local inference
 
 ---
 
@@ -265,11 +230,12 @@ Kilat/
 Kilat is licensed under the **Apache 2.0 License**. See [LICENSE](LICENSE) for details.
 
 ```bibtex
-@software{kilat2026,
+@misc{kilat2026,
   author = {Abdul Wahid Rukua},
-  title  = {Kilat: The Lightweight Sub-Quadratic LLM Framework},
+  title  = {Kilat: Kernelized Lightweight Attention Transformer with Hybrid Macro-Synergy and Sparse MoE},
   year   = {2026},
-  url    = {https://github.com/Airukua/Kilat}
+  publisher = {GitHub},
+  howpublished = {\url{https://github.com/Airukua/Kilat}}
 }
 ```
 
@@ -278,7 +244,7 @@ Kilat is licensed under the **Apache 2.0 License**. See [LICENSE](LICENSE) for d
 ## 👤 Author & Community
 
 **Abdul Wahid Rukua** — AI/ML Engineer  
-*Focus: Efficient Sequence Modeling, Lightweight LLMs, Indonesian NLP & Low-Resource Language Technologies.*
+*Focus: Efficient Sequence Modeling, Lightweight LLMs, and Sub-Quadratic Architectures.*
 
 [![Hugging Face](https://img.shields.io/badge/🤗%20HuggingFace-AiRukua-FFD21E?style=flat-square)](https://huggingface.co/AiRukua)
 [![LinkedIn](https://img.shields.io/badge/LinkedIn-abdul--wahid--rukua-0A66C2?style=flat-square&logo=linkedin&logoColor=white)](https://www.linkedin.com/in/abdul-wahid-rukua/)
