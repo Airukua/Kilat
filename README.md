@@ -225,6 +225,15 @@ Kilat/
 
 ---
 
+## 🤝 Contributing & Community
+
+Contributions are very welcome! Whether you are implementing new attention kernels, optimizing memory efficiency, improving documentation, or adding chaos scenarios:
+
+- Please read our [**Contributing Guide**](CONTRIBUTING.md) to understand our 5 Golden Invariants, code standards, and verification workflow.
+- All participants must adhere to our [**Code of Conduct**](CODE_OF_CONDUCT.md).
+
+---
+
 ## 📄 License & Citation
 
 Kilat is licensed under the **Apache 2.0 License**. See [LICENSE](LICENSE) for details.
