@@ -312,19 +312,18 @@ def inject_auto_map_metadata(output_dir: Path) -> None:
 
 
 def save_generation_config(output_dir: Path, config: KilatConfig) -> None:
-    """Save default generation_config.json to prevent HF DynamicCache incompatibilities."""
+    """Save default generation_config.json with optimal sampling parameters."""
     gen_config_path = output_dir / "generation_config.json"
     gen_config = {
         KEY_BOS_TOKEN_ID: getattr(config, KEY_BOS_TOKEN_ID, 1),
         KEY_EOS_TOKEN_ID: getattr(config, KEY_EOS_TOKEN_ID, 2),
         KEY_PAD_TOKEN_ID: getattr(config, KEY_PAD_TOKEN_ID, 0),
-        "max_length": getattr(config, "max_position_embeddings", 2048),
-        "use_cache": False,
+        "use_cache": True,
         "transformers_version": "4.45.0",
     }
     with open(gen_config_path, "w", encoding="utf-8") as f:
         json.dump(gen_config, f, indent=2)
-    logger.info("Saved default generation_config.json with use_cache=False")
+    logger.info("Saved default generation_config.json with use_cache=True")
 
 
 # ============================================================================
