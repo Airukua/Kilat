@@ -391,6 +391,78 @@ class LayerHybridCache(tuple):
 # 4. Attention (Macro-Synergy: Decay + Latent MLA)
 # ============================================================================
 
+
+def _fused_recall_attention(
+    q_sem: torch.Tensor,
+    k_sem: torch.Tensor,
+    v: torch.Tensor,
+    *,
+    q_rope: Optional[torch.Tensor],
+    k_rope: Optional[torch.Tensor],
+    scale: float,
+    past_seq_len: int,
+    dropout_p: float = 0.0,
+) -> torch.Tensor:
+    """Decoupled-RoPE recall attention in one fused ``scaled_dot_product_attention`` call."""
+    head_dim = q_sem.shape[-1]
+    if q_rope is not None and k_rope is not None:
+        q = torch.cat([q_sem, q_rope], dim=-1)
+        k = torch.cat([k_sem, k_rope], dim=-1)
+    else:
+        q, k = q_sem, k_sem
+    pad = q.shape[-1] - head_dim
+    v_in = F.pad(v, (0, pad)) if pad > 0 else v
+    correction = math.sqrt(q.shape[-1]) / scale
+    if abs(correction - 1.0) > 1e-12:
+        q = q * correction
+
+    n_query = q.shape[2]
+    attn_mask: Optional[torch.Tensor] = None
+    is_causal = False
+    if n_query > 1:
+        if past_seq_len == 0:
+            is_causal = True
+        else:
+            attn_mask = torch.ones((n_query, k.shape[2]), dtype=torch.bool, device=q.device).tril(
+                diagonal=past_seq_len
+            )
+    out = F.scaled_dot_product_attention(
+        q, k, v_in, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal
+    )
+    return out[..., :head_dim]
+
+
+def _absorbed_recall_decode(
+    q_sem: torch.Tensor,
+    kv_latent: torch.Tensor,
+    kv_b_weight: torch.Tensor,
+    *,
+    q_rope: Optional[torch.Tensor],
+    k_rope: Optional[torch.Tensor],
+    scale: float,
+    past_seq_len: int,
+) -> torch.Tensor:
+    """Weight-absorbed MLA decode for ``N == 1`` without expanding ``kv_b_proj`` over ``kv_len``."""
+    bsz, n_heads, _, head_dim = q_sem.shape
+    kv_len, latent_dim = kv_latent.shape[1], kv_latent.shape[2]
+    w_kv = kv_b_weight.view(2, n_heads, head_dim, latent_dim)
+    w_uk, w_uv = w_kv[0], w_kv[1]
+
+    q_abs = torch.einsum("bhsd,hdl->bhsl", q_sem, w_uk)
+    kv_exp = kv_latent.unsqueeze(1).expand(bsz, n_heads, kv_len, latent_dim)
+    out_latent = _fused_recall_attention(
+        q_abs,
+        kv_exp,
+        kv_exp,
+        q_rope=q_rope,
+        k_rope=k_rope,
+        scale=scale,
+        past_seq_len=past_seq_len,
+        dropout_p=0.0,
+    )
+    return torch.einsum("bhsl,hdl->bhsd", out_latent, w_uv)
+
+
 class KilatAttention(nn.Module):
     def __init__(
         self,
@@ -571,34 +643,34 @@ class KilatAttention(nn.Module):
                 new_rope_k = k_rope_comb.clone() if self.use_rope else None
 
             kv_len = kv_combined.shape[1]
-            kv_full = self.kv_b_proj(kv_combined)
-            KV_rec = kv_full.view(B, kv_len, 2, Hr, Dh).permute(2, 0, 3, 1, 4)
-            K_sem, V_rec = KV_rec[0], KV_rec[1]
+            use_rope_path = self.use_rope and Q_rope_rot is not None and k_rope_comb is not None
+            k_rope_rot = k_rope_comb.unsqueeze(1).expand(B, Hr, kv_len, self.rope_head_dim) if use_rope_path else None
+            scale = math.sqrt(Dh + (self.rope_head_dim if use_rope_path else 0))
 
-            score_dtype = torch.float64 if x.dtype == torch.float64 else torch.float32
-            score_sem = torch.matmul(Q_sem.to(score_dtype), K_sem.to(score_dtype).transpose(-2, -1))
-
-            if self.use_rope and Q_rope_rot is not None and k_rope_comb is not None:
-                K_rope_rot = k_rope_comb.unsqueeze(1).expand(B, Hr, kv_len, self.rope_head_dim)
-                score_rope = torch.matmul(Q_rope_rot.to(score_dtype), K_rope_rot.to(score_dtype).transpose(-2, -1))
-                scale = math.sqrt(Dh + self.rope_head_dim)
-                scores = (score_sem + score_rope) / scale
+            if not self.training and N == 1 and kv_len > 1:
+                out_recall = _absorbed_recall_decode(
+                    Q_sem,
+                    kv_combined,
+                    self.kv_b_proj.weight,
+                    q_rope=Q_rope_rot if use_rope_path else None,
+                    k_rope=k_rope_rot,
+                    scale=scale,
+                    past_seq_len=past_seq_len,
+                ).transpose(1, 2).reshape(B, N, Hr * Dh)
             else:
-                scale = math.sqrt(Dh)
-                scores = score_sem / scale
-
-            if N > 1:
-                causal_mask = torch.triu(
-                    torch.full((N, kv_len), float("-inf"), device=x.device, dtype=score_dtype),
-                    diagonal=1 + past_seq_len,
-                )
-                scores = scores + causal_mask
-
-            attn_weights = F.softmax(scores, dim=-1).to(V_rec.dtype)
-            if self.training and self.attn_drop > 0:
-                attn_weights = F.dropout(attn_weights, p=self.attn_drop)
-
-            out_recall = torch.matmul(attn_weights, V_rec).transpose(1, 2).reshape(B, N, Hr * Dh)
+                kv_full = self.kv_b_proj(kv_combined)
+                KV_rec = kv_full.view(B, kv_len, 2, Hr, Dh).permute(2, 0, 3, 1, 4)
+                K_sem, V_rec = KV_rec[0], KV_rec[1]
+                out_recall = _fused_recall_attention(
+                    Q_sem,
+                    K_sem,
+                    V_rec,
+                    q_rope=Q_rope_rot if use_rope_path else None,
+                    k_rope=k_rope_rot,
+                    scale=scale,
+                    past_seq_len=past_seq_len,
+                    dropout_p=self.attn_drop if self.training else 0.0,
+                ).transpose(1, 2).reshape(B, N, Hr * Dh)
 
         h_global = self.o_proj_global(out_global) if (self.n_global_heads > 0 and self.o_proj_global is not None) else None
         h_recall = self.o_proj_recall(out_recall) if (self.n_recall_heads > 0 and self.o_proj_recall is not None) else None

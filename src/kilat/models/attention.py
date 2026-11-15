@@ -8,7 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .decay import run_global_decay_recurrence
-from .mla import apply_rope_to_tokens
+from .mla import absorbed_recall_decode, apply_rope_to_tokens, fused_recall_attention
 from .norm import RMSNorm
 from .rope import apply_rotary_pos_emb, build_rope_cache
 
@@ -247,30 +247,41 @@ class KilatAttention(nn.Module):
             if use_cache:
                 new_latent_kv = kv_latent_combined.clone()
 
-            kv_full = self.kv_b_proj(kv_latent_combined)
-            KV_rec = kv_full.view(B, -1, 2, self.n_recall_heads, Dh).permute(2, 0, 3, 1, 4)
-            K_rec, V_rec = KV_rec[0], KV_rec[1]
-            kv_len = K_rec.shape[2]
-
-            if not has_cache or past_seq_len == 0:
-                attn_mask = None
-                is_causal = N > 1
-            elif N == 1:
-                attn_mask = None
-                is_causal = False
+            kv_len = kv_latent_combined.shape[1]
+            if not self.training and N == 1 and kv_len > 1:
+                out_recall = absorbed_recall_decode(
+                    Q_rec,
+                    kv_latent_combined,
+                    self.kv_b_proj.weight,
+                    q_rope=None,
+                    k_rope=None,
+                    scale=math.sqrt(Dh),
+                    past_seq_len=past_seq_len,
+                )
             else:
-                # Chunked prefill with cached prefix: query j attends to keys 0 .. past_seq_len + j
-                attn_mask = torch.ones((N, kv_len), dtype=torch.bool, device=x.device).tril(diagonal=past_seq_len)
-                is_causal = False
+                kv_full = self.kv_b_proj(kv_latent_combined)
+                KV_rec = kv_full.view(B, -1, 2, self.n_recall_heads, Dh).permute(2, 0, 3, 1, 4)
+                K_rec, V_rec = KV_rec[0], KV_rec[1]
 
-            out_recall = F.scaled_dot_product_attention(
-                Q_rec,
-                K_rec,
-                V_rec,
-                attn_mask=attn_mask,
-                dropout_p=self.attn_drop if self.training else 0.0,
-                is_causal=is_causal,
-            )
+                if not has_cache or past_seq_len == 0:
+                    attn_mask = None
+                    is_causal = N > 1
+                elif N == 1:
+                    attn_mask = None
+                    is_causal = False
+                else:
+                    # Chunked prefill with cached prefix: query j attends to keys 0 .. past_seq_len + j
+                    attn_mask = torch.ones((N, kv_len), dtype=torch.bool, device=x.device).tril(diagonal=past_seq_len)
+                    is_causal = False
+
+                out_recall = F.scaled_dot_product_attention(
+                    Q_rec,
+                    K_rec,
+                    V_rec,
+                    attn_mask=attn_mask,
+                    dropout_p=self.attn_drop if self.training else 0.0,
+                    is_causal=is_causal,
+                )
             out_recall = out_recall.transpose(1, 2).reshape(B, N, self.n_recall_heads * Dh)
 
         # Mechanistic Decoupled Projections & Synergy Gating
@@ -473,32 +484,31 @@ class KilatAttentionRoPE(KilatAttention):
 
             kv_len = kv_latent_combined.shape[1]
             K_rope_rotated = k_rope_rotated_shared.unsqueeze(1).expand(B, Hr, kv_len, Rd)
-
-            kv_full = self.kv_b_proj(kv_latent_combined)
-            KV_rec = kv_full.view(B, kv_len, 2, Hr, Dh).permute(2, 0, 3, 1, 4)
-            K_sem, V_rec = KV_rec[0], KV_rec[1]
-
             scale = math.sqrt(Dh + Rd) * getattr(self, "yarn_attn_factor", 1.0)
-            score_dtype = torch.float64 if x.dtype == torch.float64 else torch.float32
-            score_sem = torch.matmul(Q_sem.to(score_dtype), K_sem.to(score_dtype).transpose(-2, -1))
-            score_rope = torch.matmul(
-                Q_rope_rotated.to(score_dtype),
-                K_rope_rotated.to(score_dtype).transpose(-2, -1),
-            )
-            scores = (score_sem + score_rope) / scale
-
-            if N > 1:
-                causal_mask = torch.triu(
-                    torch.full((N, kv_len), float("-inf"), device=x.device, dtype=score_dtype),
-                    diagonal=1 + past_seq_len,
-                )
-                scores = scores + causal_mask
-
-            attn_weights = F.softmax(scores, dim=-1).to(V_rec.dtype)
-            if self.training and self.attn_drop > 0:
-                attn_weights = F.dropout(attn_weights, p=self.attn_drop)
-
-            out_recall = torch.matmul(attn_weights, V_rec).transpose(1, 2).reshape(B, N, Hr * Dh)
+            if not self.training and N == 1 and kv_len > 1:
+                out_recall = absorbed_recall_decode(
+                    Q_sem,
+                    kv_latent_combined,
+                    self.kv_b_proj.weight,
+                    q_rope=Q_rope_rotated,
+                    k_rope=K_rope_rotated,
+                    scale=scale,
+                    past_seq_len=past_seq_len,
+                ).transpose(1, 2).reshape(B, N, Hr * Dh)
+            else:
+                kv_full = self.kv_b_proj(kv_latent_combined)
+                KV_rec = kv_full.view(B, kv_len, 2, Hr, Dh).permute(2, 0, 3, 1, 4)
+                K_sem, V_rec = KV_rec[0], KV_rec[1]
+                out_recall = fused_recall_attention(
+                    Q_sem,
+                    K_sem,
+                    V_rec,
+                    q_rope=Q_rope_rotated,
+                    k_rope=K_rope_rotated,
+                    scale=scale,
+                    past_seq_len=past_seq_len,
+                    dropout_p=self.attn_drop if self.training else 0.0,
+                ).transpose(1, 2).reshape(B, N, Hr * Dh)
 
         # Mechanistic Decoupled Projections & Synergy Gating
         h_global = self.o_proj_global(out_global) if (self.n_global_heads > 0 and self.o_proj_global is not None) else None
