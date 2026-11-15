@@ -20,7 +20,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from kilat.assurance.types import unwrap_kilat_model
+from kilat.models.base import unwrap_kilat_model
 
 IGNORE_INDEX = -100
 
