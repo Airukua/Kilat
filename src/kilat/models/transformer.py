@@ -89,6 +89,10 @@ class KilatPreTrainedModel(BasePreTrainedModel):
     base_model_prefix = "transformer"
     supports_gradient_checkpointing = True
 
+    @classmethod
+    def _supports_default_dynamic_cache(cls) -> bool:
+        return False
+
     def _init_weights(self, module: nn.Module):
         """
         Default initialisation: Linear/Embedding weights ~ N(0, initializer_range), biases = 0.
@@ -627,7 +631,7 @@ class KilatTransformer(KilatPreTrainedModel, GenerationMixin):
         x = self.drop(self.wte(input_ids))
 
         # Prepare per‑layer cache list
-        if past_key_values is None:
+        if past_key_values is None or not isinstance(past_key_values, (tuple, list)):
             past_key_values = [None] * self.config.n_layer
         else:
             if len(past_key_values) != self.config.n_layer:

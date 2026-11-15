@@ -84,6 +84,30 @@ def _cmd_verify(args: argparse.Namespace) -> int:
 def _cmd_chaos(args: argparse.Namespace) -> int:
     print_kilat_banner(version=CLI_VERSION, quiet=bool(args.quiet or args.json))
     set_seed(int(args.seed))
+    scenarios_arg = (args.scenarios or "all").strip().lower()
+
+    if scenarios_arg in ("hf", "huggingface") or any(s.strip().startswith("hfc-") for s in scenarios_arg.split(",")):
+        from kilat.assurance.chaos import run_hf_chaos_suite
+        hf_scenarios = "all" if scenarios_arg in ("hf", "huggingface") else args.scenarios
+        hf_suite = run_hf_chaos_suite(scenarios=hf_scenarios)
+        payload = hf_suite.to_dict()
+        if args.json:
+            print(json.dumps(payload, indent=2))
+        elif not args.quiet:
+            rate_pct = 100.0 * hf_suite.scenarios_passed / max(1, hf_suite.scenarios_total)
+            print(
+                f"HF Chaos Suite Pass Rate : {hf_suite.scenarios_passed}/{hf_suite.scenarios_total} "
+                f"({rate_pct:.1f}%)"
+            )
+            print(f"Baseline Clean Pass      : {hf_suite.baseline_passed}")
+            for r in hf_suite.scenarios:
+                mark = "PASSED" if r.caught else "FAILED"
+                print(
+                    f"  [{mark:6s}] {r.scenario_id} {r.name:<48s} "
+                    f"({r.duration_ms / 1000.0:.3f}s)"
+                )
+        return 0 if hf_suite.passed else 1
+
     suite = run_chaos_suite(scenarios=(args.scenarios or "all").strip())
     payload = suite.to_dict()
 

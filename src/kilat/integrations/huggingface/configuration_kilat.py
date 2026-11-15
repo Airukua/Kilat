@@ -157,3 +157,11 @@ class KilatConfig(PretrainedConfig):
     def num_attention_heads(self, value: int) -> None:
         self.n_head = value
 
+    def to_dict(self) -> dict[str, Any]:
+        output = super().to_dict()
+        output["num_hidden_layers"] = self.n_layer
+        output["hidden_size"] = self.n_embd
+        output["num_attention_heads"] = self.n_head
+        output["attribute_map"] = dict(self.attribute_map)
+        return output
+

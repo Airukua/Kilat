@@ -27,6 +27,10 @@ class KilatModel(KilatTransformer):
     config_class = KilatConfig
     _tied_weights_keys = ["lm_head.weight"]
 
+    @classmethod
+    def _supports_default_dynamic_cache(cls) -> bool:
+        return False
+
     def __init__(self, config: Union[KilatConfig, KilatNativeConfig]):
         if isinstance(config, KilatConfig):
             native_cfg = KilatNativeConfig(**config.to_dict())
@@ -47,6 +51,10 @@ class KilatForCausalLM(KilatTransformer):
 
     config_class = KilatConfig
     _tied_weights_keys = ["lm_head.weight"]
+
+    @classmethod
+    def _supports_default_dynamic_cache(cls) -> bool:
+        return False
 
     def __init__(self, config: Union[KilatConfig, KilatNativeConfig]):
         if isinstance(config, KilatConfig):

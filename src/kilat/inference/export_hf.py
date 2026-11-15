@@ -98,6 +98,9 @@ KEY_MISSING_KEYS = "missing_keys"
 KEY_UNEXPECTED_KEYS = "unexpected_keys"
 KEY_CONFIG_SOURCE = "config_source"
 KEY_TOKENIZER_COPIED = "tokenizer_copied"
+KEY_PAD_TOKEN_ID = "pad_token_id"  # noqa: S105
+KEY_EOS_TOKEN_ID = "eos_token_id"  # noqa: S105
+KEY_BOS_TOKEN_ID = "bos_token_id"  # noqa: S105
 ACTION_STORE_TRUE = "store_true"
 
 
@@ -224,9 +227,9 @@ def save_tokenizer_config(
         "tokenizer_name_or_path": getattr(config, "tokenizer_name_or_path", "gpt2"),
         "use_fast": True,
         "local_files_only": False,
-        "pad_token_id": getattr(config, "pad_token_id", 0),
-        "eos_token_id": getattr(config, "eos_token_id", 2),
-        "bos_token_id": getattr(config, "bos_token_id", 1),
+        KEY_PAD_TOKEN_ID: getattr(config, KEY_PAD_TOKEN_ID, 0),
+        KEY_EOS_TOKEN_ID: getattr(config, KEY_EOS_TOKEN_ID, 2),
+        KEY_BOS_TOKEN_ID: getattr(config, KEY_BOS_TOKEN_ID, 1),
     }
 
     # Also save as YAML for human readability
@@ -293,10 +296,35 @@ def inject_auto_map_metadata(output_dir: Path) -> None:
         "AutoModel": "modeling_kilat.KilatModel",
         "AutoModelForCausalLM": "modeling_kilat.KilatForCausalLM",
     }
+    config_data["num_hidden_layers"] = config_data.get("n_layer", config_data.get("num_hidden_layers", 12))
+    config_data["hidden_size"] = config_data.get("n_embd", config_data.get("hidden_size", 768))
+    config_data["num_attention_heads"] = config_data.get("n_head", config_data.get("num_attention_heads", 12))
+    config_data["use_cache"] = False
+    config_data["attribute_map"] = {
+        "num_hidden_layers": "n_layer",
+        "hidden_size": "n_embd",
+        "num_attention_heads": "n_head",
+    }
 
     with open(config_json_path, "w", encoding="utf-8") as f:
         json.dump(config_data, f, indent=2, ensure_ascii=False)
     logger.info("Injected auto_map and architecture metadata into config.json")
+
+
+def save_generation_config(output_dir: Path, config: KilatConfig) -> None:
+    """Save default generation_config.json to prevent HF DynamicCache incompatibilities."""
+    gen_config_path = output_dir / "generation_config.json"
+    gen_config = {
+        KEY_BOS_TOKEN_ID: getattr(config, KEY_BOS_TOKEN_ID, 1),
+        KEY_EOS_TOKEN_ID: getattr(config, KEY_EOS_TOKEN_ID, 2),
+        KEY_PAD_TOKEN_ID: getattr(config, KEY_PAD_TOKEN_ID, 0),
+        "max_length": getattr(config, "max_position_embeddings", 2048),
+        "use_cache": False,
+        "transformers_version": "4.45.0",
+    }
+    with open(gen_config_path, "w", encoding="utf-8") as f:
+        json.dump(gen_config, f, indent=2)
+    logger.info("Saved default generation_config.json with use_cache=False")
 
 
 # ============================================================================
@@ -635,6 +663,7 @@ def convert_checkpoint_to_hf(
         # Step 5b: Copy standalone HF adapter files & inject auto_map metadata
         copy_hf_adapter_files(output_dir)
         inject_auto_map_metadata(output_dir)
+        save_generation_config(output_dir, config)
 
         # Step 6: Copy tokenizer (NEW)
         if not skip_tokenizer:

@@ -811,6 +811,10 @@ class KilatPreTrainedModel(PreTrainedModel):
     supports_gradient_checkpointing = True
     _no_split_modules = ["Block"]
 
+    @classmethod
+    def _supports_default_dynamic_cache(cls) -> bool:
+        return False
+
     def _init_weights(self, module: nn.Module) -> None:
         std = getattr(self.config, "initializer_range", 0.02)
         if isinstance(module, nn.Linear):
@@ -866,7 +870,7 @@ class KilatModel(KilatPreTrainedModel):
 
         x = self.drop(self.wte(input_ids))
 
-        if past_key_values is None:
+        if past_key_values is None or not isinstance(past_key_values, (tuple, list)):
             past_key_values = [None] * len(self.layers)
 
         present_key_values = [] if use_cache else None
@@ -909,6 +913,10 @@ class KilatModel(KilatPreTrainedModel):
 
 class KilatForCausalLM(KilatPreTrainedModel, GenerationMixin):
     _tied_weights_keys = {"lm_head.weight": "wte.weight"}
+
+    @classmethod
+    def _supports_default_dynamic_cache(cls) -> bool:
+        return False
 
     def __init__(self, config: KilatConfig):
         super().__init__(config)
@@ -964,11 +972,12 @@ class KilatForCausalLM(KilatPreTrainedModel, GenerationMixin):
         **kwargs: Any,
     ) -> Dict[str, Any]:
         use_cache = kwargs.get("use_cache", getattr(self.config, "use_cache", False))
-        if past_key_values is not None:
+        valid_cache = past_key_values if isinstance(past_key_values, (tuple, list)) else None
+        if valid_cache is not None:
             input_ids = input_ids[:, -1:]
         return {
             "input_ids": input_ids,
-            "past_key_values": past_key_values,
+            "past_key_values": valid_cache,
             "use_cache": use_cache,
             "attention_mask": attention_mask,
         }
@@ -1003,7 +1012,7 @@ class KilatForCausalLM(KilatPreTrainedModel, GenerationMixin):
 
         x = self.drop(self.wte(input_ids))
 
-        if past_key_values is None:
+        if past_key_values is None or not isinstance(past_key_values, (tuple, list)):
             past_key_values = [None] * len(self.layers)
 
         present_key_values = [] if use_cache else None

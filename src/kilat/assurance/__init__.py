@@ -2,11 +2,16 @@ from __future__ import annotations
 
 from kilat.assurance.chaos import (
     ALL_SCENARIO_IDS,
+    ALL_HF_SCENARIO_IDS,
     ChaosScenarioResult,
     ChaosSuiteReport,
+    HFChaosScenarioResult,
+    HFChaosSuiteReport,
+    HuggingFaceChaosSaboteur,
     Saboteur,
     SimulatedPreemptionError,
     run_chaos_suite,
+    run_hf_chaos_suite,
 )
 from kilat.assurance.flight_recorder import (
     FlightRecorderCallback,
@@ -34,6 +39,7 @@ from kilat.assurance.types import (
 
 __all__ = [
     "ALL_SCENARIO_IDS",
+    "ALL_HF_SCENARIO_IDS",
     "AssuranceError",
     "AssuranceFailureCode",
     "AssuranceReport",
@@ -41,10 +47,14 @@ __all__ = [
     "ChaosSuiteReport",
     "FlightRecorderCallback",
     "GateResult",
+    "HFChaosScenarioResult",
+    "HFChaosSuiteReport",
+    "HuggingFaceChaosSaboteur",
     "Saboteur",
     "SimulatedPreemptionError",
     "TrainingDivergedError",
     "run_chaos_suite",
+    "run_hf_chaos_suite",
     "run_gate1_theory",
     "run_gate2_numerical",
     "run_gate3_equivalence",
